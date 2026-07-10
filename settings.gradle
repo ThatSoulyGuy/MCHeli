@@ -27,5 +27,6 @@ plugins {
 
 rootProject.name = 'MCHeli'
 
+include 'mcheli-agnostic'
 include 'mcheli-1.7.10'
 include 'neoforge-1.21.1'

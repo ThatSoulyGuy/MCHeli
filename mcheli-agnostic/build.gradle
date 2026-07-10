@@ -1,0 +1,36 @@
+plugins {
+    id 'java-library'
+}
+
+group = 'mcheli'
+version = '1.0.0'
+
+// The AGNOSTIC layer of the MCHeli port: pure Java, with ZERO Minecraft / NeoForge / LWJGL
+// on the classpath. The boundary is COMPILER-ENFORCED — any accidental platform import in
+// mcheli.agnostic.* fails to compile here. The :neoforge-1.21.1 (dependent) module depends
+// on this module and implements its SPI (mcheli.agnostic.spi.*) against real NeoForge types.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// JUnit is a TEST-only dependency — it never touches the main (production) classpath, so the
+// agnostic layer stays pure Java at runtime while its logic is unit-testable without Minecraft.
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.11.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

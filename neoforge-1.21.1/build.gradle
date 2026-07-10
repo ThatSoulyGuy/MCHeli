@@ -40,3 +40,25 @@ neoForge {
         }
     }
 }
+
+dependencies {
+    // The agnostic layer (pure Java, zero Minecraft). The dependent layer implements its SPI
+    // (mcheli.agnostic.spi.*) against real NeoForge types.
+    //
+    // Three separate classpaths are required, and each fixes a distinct failure mode:
+    //   1. implementation            -> compile classpath (without it, the dependent code won't compile).
+    //   2. additionalRuntimeClasspath -> the DEV-RUN game classpath. A plain library subproject is NOT a
+    //      mod (no neoforge.mods.toml / FMLModType), so ModDevGradle does NOT load it into ModLauncher's
+    //      transformed module layer from `implementation` alone -> ClassNotFoundException at runtime.
+    //      This is the line that makes mcheli.agnostic.* visible inside runClient/runServer.
+    //   3. jarJar                    -> embeds the agnostic jar (Jar-in-Jar) into the PRODUCTION mod jar
+    //      so a distributed build has the same classes the dev run does.
+    implementation project(':mcheli-agnostic')
+    additionalRuntimeClasspath project(':mcheli-agnostic')
+    // NOTE: for a PROJECT dependency, do NOT add a `version { strictly ... }` constraint block here.
+    // That block only applies to external module coordinates; on a project dependency Groovy fails to
+    // resolve `version {}`, walks up the delegate chain, and clobbers `project.version` with the closure
+    // (poisoning the mod jar's filename). jarJar auto-derives the Jar-in-Jar range "[1.0.0,)" straight
+    // from the mcheli-agnostic project's own version, which is exactly what we want.
+    jarJar(project(':mcheli-agnostic'))
+}
