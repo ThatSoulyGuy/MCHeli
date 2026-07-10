@@ -1,0 +1,13 @@
+// MCHeli monorepo — base project.
+//
+// Subprojects (each owns its own Minecraft toolchain; nothing is shared beyond metadata,
+// because the two eras use incompatible modding toolchains):
+//   :mcheli-1.7.10   — the decompiled, compiling & runnable 1.7.10 reference
+//                      (RetroFuturaGradle 1.4.9, Java 8, Forge 10.13.4.1614)
+//   :neoforge-1.21.1 — the 1.21.1 port (NeoForge / ModDevGradle, Java 21)   [scaffolding]
+//
+// The raw CFR decompile baseline (not a Gradle project) lives in reference/decompiled-srg/.
+// The original distributed mod jar is not committed; see mcheli-1.7.10/build.gradle (mcheliJar).
+
+group = 'mcheli'
+version = '1.0.3'

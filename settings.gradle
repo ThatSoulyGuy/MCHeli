@@ -1,5 +1,6 @@
 pluginManagement {
     repositories {
+        // RetroFuturaGradle (for :mcheli-1.7.10) — GTNH nexus
         maven {
             name = 'GTNH Maven'
             url = uri('https://nexus.gtnewhorizons.com/repository/public/')
@@ -8,6 +9,11 @@ pluginManagement {
                 includeGroup 'com.gtnewhorizons'
             }
         }
+        // NeoForge / ModDevGradle (for :neoforge-1.21.1)
+        maven {
+            name = 'NeoForged'
+            url = uri('https://maven.neoforged.net/releases')
+        }
         gradlePluginPortal()
         mavenCentral()
         mavenLocal()
@@ -15,8 +21,11 @@ pluginManagement {
 }
 
 plugins {
-    // Auto-provisions the Java 8 (Azul, arm64) toolchain used to compile 1.7.10.
+    // Auto-provisions JDK toolchains (Java 8 Azul for 1.7.10, Java 21 for 1.21.1).
     id 'org.gradle.toolchains.foojay-resolver-convention' version '0.7.0'
 }
 
-rootProject.name = 'mcheli-1.7.10'
+rootProject.name = 'MCHeli'
+
+include 'mcheli-1.7.10'
+include 'neoforge-1.21.1'

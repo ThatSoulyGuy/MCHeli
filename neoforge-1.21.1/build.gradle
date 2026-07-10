@@ -1,0 +1,42 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.141'
+    id 'idea'
+}
+
+group = 'mcheli'
+version = '1.0.0'
+
+// NeoForge 1.21.1 runs on Java 21. This is independent of the :mcheli-1.7.10 subproject,
+// which keeps its own Java 8 toolchain — Gradle provisions both JDKs per-subproject.
+java.toolchain.languageVersion = JavaLanguageVersion.of(21)
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+// NOTE: do NOT add a repositories { } block here — declaring any repo disables ModDevGradle's
+// centrally-managed NeoForge repositories for this project. Rely on settings.gradle instead.
+
+neoForge {
+    // NeoForge for Minecraft 1.21.1 (verified on maven.neoforged.net).
+    version = '21.1.235'
+
+    // Access Transformers are auto-detected at src/main/resources/META-INF/accesstransformer.cfg.
+
+    runs {
+        client {
+            client()
+        }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+    }
+
+    mods {
+        mcheli {
+            sourceSet sourceSets.main
+        }
+    }
+}

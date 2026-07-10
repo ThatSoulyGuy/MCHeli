@@ -29,12 +29,22 @@ repositories {
     }
 }
 
-// The mod's runtime content (assets + mcmod.info) is NOT duplicated into git — it is
-// extracted on demand from the original distributed jar at the repo root, so runClient/
-// runServer load the real 116 vehicles / 229 weapons / models / textures / sounds while
-// the repo stays lean (output lands in build/, which is gitignored).
+// MCHeli's runtime content (assets + mcmod.info) is extracted on demand from the original
+// distributed jar — that 75 MB binary is NOT committed. By default the build looks for it one
+// dir up (../MC1.7.10_mcheli_1.0.3.zip); override with -PmcheliJar=/path/to/it (or set mcheliJar
+// in gradle.properties). If it is absent, extraction is skipped so compileJava/build still work —
+// runClient/runServer then load no content until you supply the jar.
+def mcheliJar = file(providers.gradleProperty('mcheliJar').getOrElse('../MC1.7.10_mcheli_1.0.3.zip'))
 def extractModResources = tasks.register('extractModResources', Sync) {
-    from(zipTree(file('../../MC1.7.10_mcheli_1.0.3.zip'))) {
+    onlyIf {
+        if (!mcheliJar.exists()) {
+            logger.warn("mcheli: source jar not found at ${mcheliJar} — runtime content will be empty. " +
+                        "Set -PmcheliJar=/path/to/MC1.7.10_mcheli_1.0.3.zip to load vehicles/sounds/etc.")
+            return false
+        }
+        true
+    }
+    from(zipTree(mcheliJar)) {
         include 'mcheli/assets/**', 'mcheli/mcmod.info'
         includeEmptyDirs = false
         eachFile { it.path = it.path.replaceFirst('^mcheli/', '') } // strip the jar's leading mcheli/ folder

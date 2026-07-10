@@ -1,0 +1,26 @@
+modLoader="javafml"
+# FML major version range (NOT the neoforge artifact version).
+loaderVersion="[1,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="mcheli"
+version="1.0.0"
+displayName="MCHeli"
+description='''
+MCHeli ported to NeoForge 1.21.1. Original mod by Minato Tanaka (EMB4).
+'''
+
+[[dependencies.mcheli]]
+    modId="neoforge"
+    type="required"
+    versionRange="[21.1.235,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.mcheli]]
+    modId="minecraft"
+    type="required"
+    versionRange="[1.21.1]"
+    ordering="NONE"
+    side="BOTH"
