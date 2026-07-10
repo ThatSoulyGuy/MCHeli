@@ -1,0 +1,22 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = 'GTNH Maven'
+            url = uri('https://nexus.gtnewhorizons.com/repository/public/')
+            mavenContent {
+                includeGroupByRegex 'com\\.gtnewhorizons\\..+'
+                includeGroup 'com.gtnewhorizons'
+            }
+        }
+        gradlePluginPortal()
+        mavenCentral()
+        mavenLocal()
+    }
+}
+
+plugins {
+    // Auto-provisions the Java 8 (Azul, arm64) toolchain used to compile 1.7.10.
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.7.0'
+}
+
+rootProject.name = 'mcheli-1.7.10'

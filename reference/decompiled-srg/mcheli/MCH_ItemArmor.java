@@ -1,0 +1,54 @@
+/*
+ * Decompiled with CFR 0.152.
+ */
+package mcheli;
+
+import cpw.mods.fml.relauncher.Side;
+import cpw.mods.fml.relauncher.SideOnly;
+import mcheli.MCH_TEST_ModelBiped;
+import mcheli.wrapper.W_ItemArmor;
+import net.minecraft.client.model.ModelBiped;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityLivingBase;
+import net.minecraft.item.ItemStack;
+
+public class MCH_ItemArmor
+extends W_ItemArmor {
+    public static final String HELMET_TEXTURE = "mcheli:textures/helicopters/ah-64.png";
+    public static final String CHESTPLATE_TEXTURE = "mcheli:textures/armor/plate.png";
+    public static final String LEGGINGS_TEXTURE = "mcheli:textures/armor/leg.png";
+    public static final String BOOTS_TEXTURE = "mcheli:textures/armor/boots.png";
+    public static MCH_TEST_ModelBiped model = null;
+
+    public MCH_ItemArmor(int par1, int par3, int par4) {
+        super(par1, par3, par4);
+    }
+
+    public String getArmorTexture(ItemStack stack, Entity entity, int slot, String layer) {
+        if (slot == 0) {
+            return HELMET_TEXTURE;
+        }
+        if (slot == 1) {
+            return CHESTPLATE_TEXTURE;
+        }
+        if (slot == 2) {
+            return LEGGINGS_TEXTURE;
+        }
+        if (slot == 3) {
+            return BOOTS_TEXTURE;
+        }
+        return "none";
+    }
+
+    @SideOnly(value=Side.CLIENT)
+    public ModelBiped getArmorModel(EntityLivingBase entityLiving, ItemStack itemStack, int armorSlot) {
+        if (model == null) {
+            model = new MCH_TEST_ModelBiped();
+        }
+        if (armorSlot == 0) {
+            return model;
+        }
+        return null;
+    }
+}
+

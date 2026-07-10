@@ -1,0 +1,10 @@
+# Gradle
+.gradle/
+build/
+
+# Minecraft dev run directory (generated world, logs, config, eula.txt)
+run/
+
+# IntelliJ IDEA
+.idea/
+*.iml

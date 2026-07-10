@@ -1,0 +1,70 @@
+plugins {
+    id 'java-library'
+    id 'com.gtnewhorizons.retrofuturagradle' version '1.4.9'
+}
+
+group = 'mcheli'
+version = '1.0.3'
+
+// Compile the 1.7.10 sources with a Java 8 toolchain. Azul is the only vendor that
+// ships JDK 8 for macOS arm64; foojay (see settings) downloads it automatically.
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(8))
+        vendor.set(org.gradle.jvm.toolchain.JvmVendorSpec.AZUL)
+    }
+}
+
+// RFG defaults for 1.7.10 already select Forge 10.13.4.1614 and mappings stable_12
+// (the same channel used to remap the decompiled source), so nothing else is needed.
+minecraft {
+    mcVersion.set('1.7.10')
+    username.set('Developer')
+}
+
+repositories {
+    maven {
+        name = 'GTNH Maven'
+        url = uri('https://nexus.gtnewhorizons.com/repository/public/')
+    }
+}
+
+// The mod's runtime content (assets + mcmod.info) is NOT duplicated into git — it is
+// extracted on demand from the original distributed jar at the repo root, so runClient/
+// runServer load the real 116 vehicles / 229 weapons / models / textures / sounds while
+// the repo stays lean (output lands in build/, which is gitignored).
+def extractModResources = tasks.register('extractModResources', Sync) {
+    from(zipTree(file('../../MC1.7.10_mcheli_1.0.3.zip'))) {
+        include 'mcheli/assets/**', 'mcheli/mcmod.info'
+        includeEmptyDirs = false
+        eachFile { it.path = it.path.replaceFirst('^mcheli/', '') } // strip the jar's leading mcheli/ folder
+    }
+    into layout.buildDirectory.dir('mod-resources')
+}
+sourceSets.main.resources.srcDir(layout.buildDirectory.dir('mod-resources'))
+tasks.named('processResources') { dependsOn extractModResources }
+
+// MCHeli is a "folder mod": it reads ALL its content via new File(sourcePath + "/assets/mcheli/..")
+// where sourcePath = its mod-container source, and MCH_FileSearch requires that path to be a real
+// directory. So it must run from EXPLODED output (a directory), never a packaged jar. Co-locate the
+// extracted assets + mcmod.info with the compiled classes, and drop the -dev.jar from the run
+// classpath so FML uses the exploded directory as the mod source.
+def folderModDir = layout.buildDirectory.dir('folder-mod')
+def stageFolderMod = tasks.register('stageFolderMod', Sync) {
+    dependsOn 'classes'
+    from sourceSets.main.output // compiled classes + processed resources (assets/ + mcmod.info)
+    into folderModDir
+}
+afterEvaluate {
+    def modOutputs = sourceSets.main.output.files
+    ['runClient', 'runServer'].each { rn ->
+        tasks.named(rn, JavaExec).configure {
+            dependsOn stageFolderMod
+            // Load the mod from the merged folder-mod directory (never the -dev.jar or the split
+            // classes/resources dirs), so MCHeli's sourcePath is one real directory with assets/.
+            classpath = files(folderModDir) + classpath.filter {
+                !it.name.endsWith('-dev.jar') && !(it in modOutputs)
+            }
+        }
+    }
+}
