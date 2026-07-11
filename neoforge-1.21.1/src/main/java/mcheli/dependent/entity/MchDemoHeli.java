@@ -2,6 +2,7 @@ package mcheli.dependent.entity;
 
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.helicopter.MCH_HeliInfo;
+import mcheli.agnostic.helicopter.MCH_HeliInfoManager;
 import mcheli.agnostic.sim.AircraftFlightController;
 import mcheli.agnostic.sim.AircraftSimState;
 import mcheli.agnostic.sim.ControlInput;
@@ -25,7 +26,7 @@ public class MchDemoHeli extends AbstractMchVehicle {
 
     private static final FlightModel MODEL = new HeliFlightModel();
 
-    private final MCH_HeliInfo info = buildInfo();
+    private final MCH_HeliInfo info = pickInfo(); // real "ah-64" config if loaded, else the hard-coded fallback
     private final HeliState heliState = new DemoHeliState();
     private final AircraftSimState simState = new AircraftSimState(0.07); // heli idles currentSpeed at 0.07
     // Client rotation state + the heli's mouse->rotation mapping (declared last so ref/info/heliState are set).
@@ -42,6 +43,11 @@ public class MchDemoHeli extends AbstractMchVehicle {
     @Override
     protected void tickPhysics(ControlInput in) {
         AircraftFlightController.tickServer(this.ref, this.info, this.simState, in, this.heliState, MODEL);
+    }
+
+    private static MCH_HeliInfo pickInfo() {
+        MCH_HeliInfo real = MCH_HeliInfoManager.get("ah-64");
+        return real != null ? real : buildInfo();
     }
 
     private static MCH_HeliInfo buildInfo() {

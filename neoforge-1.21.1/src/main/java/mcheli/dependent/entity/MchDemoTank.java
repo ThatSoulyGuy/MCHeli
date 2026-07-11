@@ -10,6 +10,7 @@ import mcheli.agnostic.sim.TankControlMapping;
 import mcheli.agnostic.sim.TankFlightModel;
 import mcheli.agnostic.sim.TankState;
 import mcheli.agnostic.tank.MCH_TankInfo;
+import mcheli.agnostic.tank.MCH_TankInfoManager;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
@@ -25,7 +26,9 @@ public class MchDemoTank extends AbstractMchVehicle {
 
     private static final FlightModel MODEL = new TankFlightModel();
 
-    private final MCH_TankInfo info = buildInfo();
+    // Use the REAL "m1a2" config if it loaded; else the hard-coded fallback. (Config load happens at commonSetup,
+    // before any entity is constructed.)
+    private final MCH_TankInfo info = pickInfo();
     private final TankState tankState = new DemoTankState();
     private final AircraftSimState simState = new AircraftSimState(0.07);
     // Server-side hull-yaw mapping (shares the physics sim-state so the pivot-turn logic sees live throttle).
@@ -41,6 +44,11 @@ public class MchDemoTank extends AbstractMchVehicle {
     @Override
     protected void tickPhysics(ControlInput in) {
         AircraftFlightController.tickServer(this.ref, this.info, this.simState, in, this.tankState, MODEL);
+    }
+
+    private static MCH_TankInfo pickInfo() {
+        MCH_TankInfo real = MCH_TankInfoManager.get("m1a2");
+        return real != null ? real : buildInfo();
     }
 
     private static MCH_TankInfo buildInfo() {

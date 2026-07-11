@@ -1,0 +1,10 @@
+{
+  "itemGroup.mcheli.helicopters": "MCHeli: Helicopters",
+  "itemGroup.mcheli.planes": "MCHeli: Planes",
+  "itemGroup.mcheli.tanks": "MCHeli: Tanks",
+  "itemGroup.mcheli.vehicles": "MCHeli: Vehicles",
+  "item.mcheli.demo_heli_spawner": "Helicopter — AH-64 (demo)",
+  "item.mcheli.demo_plane_spawner": "Plane — A-10 (demo)",
+  "item.mcheli.demo_tank_spawner": "Tank — M1A2 (demo)",
+  "item.mcheli.demo_vehicle_spawner": "Vehicle (demo)"
+}

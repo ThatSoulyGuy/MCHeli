@@ -2,6 +2,7 @@ package mcheli.dependent.entity;
 
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.plane.MCP_PlaneInfo;
+import mcheli.agnostic.plane.MCP_PlaneInfoManager;
 import mcheli.agnostic.sim.AircraftFlightController;
 import mcheli.agnostic.sim.AircraftSimState;
 import mcheli.agnostic.sim.ControlInput;
@@ -25,7 +26,7 @@ public class MchDemoPlane extends AbstractMchVehicle {
 
     private static final FlightModel MODEL = new PlaneFlightModel();
 
-    private final MCP_PlaneInfo info = buildInfo();
+    private final MCP_PlaneInfo info = pickInfo(); // real "a-10" config if loaded, else the hard-coded fallback
     private final PlaneState planeState = new DemoPlaneState();
     private final AircraftSimState simState = new AircraftSimState(0.07);
     // Client rotation state + the plane's mouse->rotation mapping (declared last so ref/info/planeState are set).
@@ -42,6 +43,11 @@ public class MchDemoPlane extends AbstractMchVehicle {
     @Override
     protected void tickPhysics(ControlInput in) {
         AircraftFlightController.tickServer(this.ref, this.info, this.simState, in, this.planeState, MODEL);
+    }
+
+    private static MCP_PlaneInfo pickInfo() {
+        MCP_PlaneInfo real = MCP_PlaneInfoManager.get("a-10");
+        return real != null ? real : buildInfo();
     }
 
     private static MCP_PlaneInfo buildInfo() {

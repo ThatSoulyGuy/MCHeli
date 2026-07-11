@@ -11,12 +11,13 @@ import mcheli.dependent.item.PlaneSpawnItem;
 import mcheli.dependent.item.TankSpawnItem;
 import mcheli.dependent.item.VehicleSpawnItem;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
-import net.minecraft.world.item.CreativeModeTabs;
+import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.IEventBus;
-import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
@@ -72,18 +73,43 @@ public final class MchRegistries {
     public static final DeferredItem<TankSpawnItem> DEMO_TANK_ITEM =
         ITEMS.registerItem("demo_tank_spawner", TankSpawnItem::new, new Item.Properties().stacksTo(1));
 
+    // Dedicated MCHeli creative tabs — one per vehicle category, mirroring the loaded config buckets
+    // (helicopters/planes/tanks/vehicles). Each tab's icon is its own spawn item; as real vehicles gain
+    // items these tabs fill out. Replaces the temporary injection into vanilla Tools & Utilities.
+    public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS =
+        DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MCHeli.MODID);
+
+    public static final Supplier<CreativeModeTab> TAB_HELICOPTERS =
+        CREATIVE_TABS.register("helicopters", () -> CreativeModeTab.builder()
+            .title(Component.translatable("itemGroup.mcheli.helicopters"))
+            .icon(() -> new ItemStack(DEMO_HELI_ITEM.get()))
+            .displayItems((params, output) -> output.accept(DEMO_HELI_ITEM.get()))
+            .build());
+
+    public static final Supplier<CreativeModeTab> TAB_PLANES =
+        CREATIVE_TABS.register("planes", () -> CreativeModeTab.builder()
+            .title(Component.translatable("itemGroup.mcheli.planes"))
+            .icon(() -> new ItemStack(DEMO_PLANE_ITEM.get()))
+            .displayItems((params, output) -> output.accept(DEMO_PLANE_ITEM.get()))
+            .build());
+
+    public static final Supplier<CreativeModeTab> TAB_TANKS =
+        CREATIVE_TABS.register("tanks", () -> CreativeModeTab.builder()
+            .title(Component.translatable("itemGroup.mcheli.tanks"))
+            .icon(() -> new ItemStack(DEMO_TANK_ITEM.get()))
+            .displayItems((params, output) -> output.accept(DEMO_TANK_ITEM.get()))
+            .build());
+
+    public static final Supplier<CreativeModeTab> TAB_VEHICLES =
+        CREATIVE_TABS.register("vehicles", () -> CreativeModeTab.builder()
+            .title(Component.translatable("itemGroup.mcheli.vehicles"))
+            .icon(() -> new ItemStack(DEMO_VEHICLE_ITEM.get()))
+            .displayItems((params, output) -> output.accept(DEMO_VEHICLE_ITEM.get()))
+            .build());
+
     public static void register(IEventBus modBus) {
         ENTITY_TYPES.register(modBus);
         ITEMS.register(modBus);
-        modBus.addListener(MchRegistries::addToCreativeTabs);
-    }
-
-    private static void addToCreativeTabs(BuildCreativeModeTabContentsEvent event) {
-        if (event.getTabKey() == CreativeModeTabs.TOOLS_AND_UTILITIES) {
-            event.accept(DEMO_VEHICLE_ITEM.get());
-            event.accept(DEMO_HELI_ITEM.get());
-            event.accept(DEMO_PLANE_ITEM.get());
-            event.accept(DEMO_TANK_ITEM.get());
-        }
+        CREATIVE_TABS.register(modBus);
     }
 }

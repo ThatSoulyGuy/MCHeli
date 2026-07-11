@@ -1,12 +1,21 @@
 package mcheli;
 
 import com.mojang.logging.LogUtils;
+import mcheli.agnostic.helicopter.MCH_HeliInfoManager;
+import mcheli.agnostic.model.MchModel;
+import mcheli.agnostic.plane.MCP_PlaneInfoManager;
+import mcheli.agnostic.spi.ModelHandle;
+import mcheli.agnostic.tank.MCH_TankInfo;
+import mcheli.agnostic.tank.MCH_TankInfoManager;
 import mcheli.agnostic.value.Vec3d;
+import mcheli.agnostic.vehicle.MCH_VehicleInfoManager;
 import mcheli.dependent.DemoForwardVehicleSelfTest;
 import mcheli.dependent.DemoHeliSelfTest;
 import mcheli.dependent.DemoTankSelfTest;
 import mcheli.dependent.DemoVehicleSelfTest;
 import mcheli.dependent.control.MchControlNetwork;
+import mcheli.dependent.port.NeoLogger;
+import mcheli.dependent.port.NeoResourceSource;
 import mcheli.dependent.registry.MchRegistries;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -51,5 +60,40 @@ public class MCHeli {
         // Prove the agnostic layer (pure Java, no Minecraft) is wired in and executing inside the mod.
         Vec3d forward = new Vec3d(0.0, 0.0, 1.0).rotateAroundY(Math.toRadians(90.0));
         LOGGER.info("MCHeli agnostic check: (0,0,1) rotated +90deg yaw -> {}", forward);
+
+        // Load REAL vehicle definitions from the bundled resources (the agnostic DSL parser through the classpath-
+        // backed NeoResourceSource), replacing the demo entities' hard-coded buildInfo().
+        NeoResourceSource res = new NeoResourceSource();
+        NeoLogger log = new NeoLogger(LOGGER);
+        MCH_HeliInfoManager.getInstance().load(res, log, "helicopters");
+        MCP_PlaneInfoManager.getInstance().load(res, log, "planes");
+        MCH_TankInfoManager.getInstance().load(res, log, "tanks");
+        MCH_VehicleInfoManager.getInstance().load(res, log, "vehicles");
+        MCH_TankInfo m1a2 = MCH_TankInfoManager.get("m1a2");
+        if (m1a2 != null) {
+            LOGGER.info("MCHeli config check: m1a2 -> speed={} gravity={} mobilityYawOnGround={} maxHp={}",
+                m1a2.speed, m1a2.gravity, m1a2.mobilityYawOnGround, m1a2.maxHp);
+        }
+
+        // Dev-only pipeline probe: resolve + parse the demo vehicles' REAL models through the agnostic parsers
+        // (models/<category>/<name>.mqo|obj, the reference's MCH_ModelManager convention) and log the geometry.
+        // Models are a CLIENT concern (the renderer loads them via NeoResourceSource, like MCH_ClientProxy did), so
+        // this stays gated off production — a dedicated server never needs to parse 19MB of models.
+        if (!FMLEnvironment.production) {
+            logModel(res, "helicopters/ah-64");
+            logModel(res, "planes/a-10");
+            logModel(res, "tanks/m1a2");
+        }
+    }
+
+    private void logModel(NeoResourceSource res, String name) {
+        ModelHandle h = res.loadModel(name);
+        if (h instanceof MchModel m) {
+            LOGGER.info("MCHeli model check: {} -> {} groups, {} faces; sizeXYZ=[{}, {}, {}], X=[{}..{}] Y=[{}..{}] Z=[{}..{}]",
+                name, m.groups().size(), m.getFaceNum(), m.sizeX, m.sizeY, m.sizeZ,
+                m.minX, m.maxX, m.minY, m.maxY, m.minZ, m.maxZ);
+        } else {
+            LOGGER.warn("MCHeli model check: {} did NOT load", name);
+        }
     }
 }
