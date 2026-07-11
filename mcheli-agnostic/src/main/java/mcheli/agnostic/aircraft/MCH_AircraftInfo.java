@@ -1305,6 +1305,19 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       return s;
    }
 
+   /** Texture (skin) name at {@code index}, wrapping — no side effect, unlike {@link #getTextureName()} which
+    *  advances the internal counter. Index 0 is the default skin (the vehicle name); the rest are {@code AddTexture}. */
+   public String getTextureName(int index) {
+      return this.textureNameList.isEmpty()
+         ? this.name
+         : this.textureNameList.get(Math.floorMod(index, this.textureNameList.size()));
+   }
+
+   /** Number of selectable skins (default + all {@code AddTexture}). */
+   public int getTextureNameCount() {
+      return this.textureNameList.size();
+   }
+
    public String getNextTextureName(String base) {
       if (this.textureNameList.size() >= 2) {
          for (int i = 0; i < this.textureNameList.size(); i++) {

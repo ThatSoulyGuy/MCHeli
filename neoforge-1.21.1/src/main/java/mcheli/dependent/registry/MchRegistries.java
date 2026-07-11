@@ -46,7 +46,10 @@ public final class MchRegistries {
     public static final Supplier<EntityType<MchDemoHeli>> DEMO_HELI =
         ENTITY_TYPES.register("demo_heli", () ->
             EntityType.Builder.<MchDemoHeli>of(MchDemoHeli::new, MobCategory.MISC)
-                .sized(2.0F, 1.0F)
+                // Body-sized footprint (ah-64 fuselage/mast). MC AABBs are square (width x height x width), so this
+                // can't enclose the 15-wide rotor or 19-long tail; the reference used a tiny core AABB + separate
+                // BoundingBox hit-volumes (not yet ported). Tune here.
+                .sized(5.0F, 4.5F)
                 .clientTrackingRange(10)
                 .build("demo_heli"));
 
@@ -56,7 +59,7 @@ public final class MchRegistries {
     public static final Supplier<EntityType<MchDemoPlane>> DEMO_PLANE =
         ENTITY_TYPES.register("demo_plane", () ->
             EntityType.Builder.<MchDemoPlane>of(MchDemoPlane::new, MobCategory.MISC)
-                .sized(2.0F, 1.0F)
+                .sized(6.0F, 4.0F) // a-10 fuselage + inner wings (square footprint; wings/tail extend beyond)
                 .clientTrackingRange(10)
                 .build("demo_plane"));
 
@@ -66,7 +69,7 @@ public final class MchRegistries {
     public static final Supplier<EntityType<MchDemoTank>> DEMO_TANK =
         ENTITY_TYPES.register("demo_tank", () ->
             EntityType.Builder.<MchDemoTank>of(MchDemoTank::new, MobCategory.MISC)
-                .sized(1.75F, 1.0F)
+                .sized(5.0F, 3.5F) // m1a2 hull (4.8 wide) + turret
                 .clientTrackingRange(10)
                 .build("demo_tank"));
 

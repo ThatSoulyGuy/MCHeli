@@ -11,6 +11,11 @@ description='''
 MCHeli ported to NeoForge 1.21.1. Original mod by Minato Tanaka (EMB4).
 '''
 
+# Client-only Mixin: rigidly parents the first-person camera to a vehicle's full orientation (the eye POSITION in
+# Camera.setup adds eyeHeight on world-Y and has no public event hook).
+[[mixins]]
+config="mcheli.mixins.json"
+
 [[dependencies.mcheli]]
     modId="neoforge"
     type="required"

@@ -30,16 +30,31 @@ import org.slf4j.Logger;
 public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> extends EntityRenderer<T> {
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    private final MchModel model;
-    private final ResourceLocation texture;
+    protected final MchModel model;
+    private final ResourceLocation defaultTexture;
+    private final String textureDir; // e.g. "textures/helicopters/" — a selected skin becomes <dir><skin>.png
+    private final java.util.Map<String, ResourceLocation> skinCache = new java.util.HashMap<>();
 
     protected MchModelEntityRenderer(EntityRendererProvider.Context context, String modelName, String texturePath) {
         super(context);
         this.model = load(modelName);
-        this.texture = ResourceLocation.fromNamespaceAndPath("mcheli", texturePath);
+        this.defaultTexture = ResourceLocation.fromNamespaceAndPath("mcheli", texturePath);
+        this.textureDir = texturePath.substring(0, texturePath.lastIndexOf('/') + 1);
         if (this.model == null) {
             LOGGER.warn("MCHeli renderer: model '{}' did not load; entity will be invisible", modelName);
         }
+    }
+
+    /** Resolve the entity's selected paint scheme to a texture ({@code <dir><skin>.png}), else the default. Cached.
+     *  Skin 0 always uses the baked default texture — it is the guaranteed-present file, and the correct fallback if
+     *  the config failed to load (the entity's info name is then a {@code demo_*} placeholder, not a real texture). */
+    private ResourceLocation textureFor(T entity) {
+        String skin = entity.getSkinIndex() == 0 ? null : entity.skinTextureName();
+        if (skin == null || skin.isEmpty()) {
+            return this.defaultTexture;
+        }
+        return this.skinCache.computeIfAbsent(skin,
+            s -> ResourceLocation.fromNamespaceAndPath("mcheli", this.textureDir + s + ".png"));
     }
 
     private static MchModel load(String name) {
@@ -49,7 +64,7 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
 
     @Override
     public ResourceLocation getTextureLocation(T entity) {
-        return this.texture;
+        return textureFor(entity);
     }
 
     @Override
@@ -67,11 +82,31 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             pose.mulPose(Axis.XP.rotationDegrees(pitch));
             pose.mulPose(Axis.ZP.rotationDegrees(roll));
 
-            VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(this.texture));
-            MchModelRenderer.render(this.model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, 255, 255, 255, 255);
+            VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(textureFor(entity)));
+            java.util.Set<String> dynamic = dynamicGroupsLower();
+            if (dynamic.isEmpty()) {
+                MchModelRenderer.render(this.model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, 255, 255, 255, 255);
+            } else {
+                // Static hull (everything but the animated groups), then the moving parts with their own transforms.
+                MchModelRenderer.renderExcept(this.model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
+                    255, 255, 255, 255, dynamic);
+                renderDynamicParts(entity, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, partialTick);
+            }
             pose.popPose();
         }
         super.render(entity, entityYaw, partialTick, pose, buffers, packedLight);
+    }
+
+    /** Lower-cased names of the model groups a subclass animates in {@link #renderDynamicParts} (so they are excluded
+     *  from the static hull pass). Empty by default → the whole model renders statically. */
+    protected java.util.Set<String> dynamicGroupsLower() {
+        return java.util.Collections.emptySet();
+    }
+
+    /** Draw the animated parts (rotor blades, wheels, turret, …). The {@code pose} is already at the entity and
+     *  oriented (yaw/pitch/roll); apply each part's local transform, then {@link MchModelRenderer#renderGroup}. */
+    protected void renderDynamicParts(T entity, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
+                                      float partialTick) {
     }
 
     /**
@@ -79,7 +114,7 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
      * wrapped to [-180,180] ({@link Mth#wrapDegrees} == the reference's {@code wrapAngleTo180_float}); when they
      * straddle the seam, {@code prev} is shifted by ±360 so the interpolation always takes the short way round.
      */
-    private static float calcRot(float rot, float prevRot, float tickTime) {
+    protected static float calcRot(float rot, float prevRot, float tickTime) {
         rot = Mth.wrapDegrees(rot);
         prevRot = Mth.wrapDegrees(prevRot);
         if (rot - prevRot < -180.0F) {

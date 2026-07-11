@@ -9,6 +9,8 @@ import mcheli.agnostic.tank.MCH_TankInfo;
 import mcheli.agnostic.tank.MCH_TankInfoManager;
 import mcheli.agnostic.value.Vec3d;
 import mcheli.agnostic.vehicle.MCH_VehicleInfoManager;
+import mcheli.agnostic.weapon.MCH_WeaponInfo;
+import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
 import mcheli.dependent.DemoForwardVehicleSelfTest;
 import mcheli.dependent.DemoHeliSelfTest;
 import mcheli.dependent.DemoTankSelfTest;
@@ -69,6 +71,12 @@ public class MCHeli {
         MCP_PlaneInfoManager.getInstance().load(res, log, "planes");
         MCH_TankInfoManager.getInstance().load(res, log, "tanks");
         MCH_VehicleInfoManager.getInstance().load(res, log, "vehicles");
+        MCH_WeaponInfoManager.getInstance().load(res, log, "weapons");
+        MCH_WeaponInfo m230 = MCH_WeaponInfoManager.get("m230");
+        if (m230 != null) {
+            LOGGER.info("MCHeli weapon check: m230 -> type={} power={} reloadTime={}",
+                m230.type, m230.power, m230.reloadTime);
+        }
         MCH_TankInfo m1a2 = MCH_TankInfoManager.get("m1a2");
         if (m1a2 != null) {
             LOGGER.info("MCHeli config check: m1a2 -> speed={} gravity={} mobilityYawOnGround={} maxHp={}",

@@ -33,12 +33,38 @@ public class MchDemoHeli extends AbstractMchVehicle {
     private final AircraftSimState rotState = new AircraftSimState();
     private final RotationSolver.ControlMapping mapping = new HeliControlMapping(this.ref, this.info, this.rotState, this.heliState);
 
+    /** Max blade sweep at full engine power (deg/tick, ~150 rpm). */
+    private static final float MAX_ROTOR_DEG_PER_TICK = 45.0F;
+    // Client-side rotor spin, accumulated from the synced engine power so RPM ramps up/down with the throttle.
+    private float rotorAngle;
+    private float prevRotorAngle;
+
     public MchDemoHeli(EntityType<? extends MchDemoHeli> type, Level level) {
         super(type, level);
     }
 
     @Override protected RotationSolver.ControlMapping controlMapping() { return this.mapping; }
     @Override protected MCH_AircraftInfo rotationInfo() { return this.info; }
+
+    @Override
+    public void tick() {
+        super.tick();
+        if (this.level().isClientSide) {
+            this.prevRotorAngle = this.rotorAngle;
+            this.rotorAngle = (this.rotorAngle + getEnginePower() * MAX_ROTOR_DEG_PER_TICK) % 360.0F;
+        }
+    }
+
+    public float getRotorAngle() { return this.rotorAngle; }
+    public float getPrevRotorAngle() { return this.prevRotorAngle; }
+
+    /** ah-64 pilot seat = model (0, 1.5, -0.28); feet = seat - 0.5Y -> eye lands at the reference (0, 2.62, -0.28). */
+    @Override protected net.minecraft.world.phys.Vec3 pilotFeetOffset() {
+        return new net.minecraft.world.phys.Vec3(0.0, 1.0, -0.28);
+    }
+
+    @Override protected int skinCount() { return this.info.getTextureNameCount(); }
+    @Override public String skinTextureName() { return this.info.getTextureName(getSkinIndex()); }
 
     @Override
     protected void tickPhysics(ControlInput in) {

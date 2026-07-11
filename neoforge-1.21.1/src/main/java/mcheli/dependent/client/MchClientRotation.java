@@ -110,6 +110,11 @@ public final class MchClientRotation {
         mc.player.yHeadRotO = yaw;
     }
 
+    // NOTE: the first-person camera is fully parented to the vehicle (position + full yaw/pitch/roll) by the
+    // client-only CameraMixin, NOT here — Camera.setup adds the eye on world-Y with no public hook, so ComputeCameraAngles
+    // (angles only) could not follow a bank/loop. lockCamera above still drives the PLAYER's yaw/pitch for the mouse
+    // delta baseline; the Mixin overrides what the camera actually shows.
+
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
         // Ship the client-authoritative rotation to the server at tick rate (physics reads it; syncs to others).

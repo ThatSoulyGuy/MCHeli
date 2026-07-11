@@ -15,9 +15,11 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Shared base for the demo vehicles. Owns the agnostic {@link EntityRef} view, the rider {@link MchControlState},
@@ -38,6 +40,18 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Synced roll (server -> clients) so non-piloting clients see banking; not a vanilla axis. */
     private static final EntityDataAccessor<Float> DATA_ROLL =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+    /** Spooled engine power 0..1 (server-authored, synced) so clients can drive rotor RPM / sounds. */
+    private static final EntityDataAccessor<Float> DATA_THROTTLE =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+    private float enginePower; // server-side spool accumulator
+    /** Selected paint scheme index (synced) — 0 = default skin, then each {@code AddTexture}. */
+    private static final EntityDataAccessor<Integer> DATA_SKIN =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
+    /** Landing-gear retract angle 0 (deployed, on ground) .. 90 (retracted, airborne), synced + interpolated. */
+    private static final EntityDataAccessor<Float> DATA_GEAR =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+    private float gearAngle;
+    private float prevGearAngle;
 
     /** The agnostic view of this entity, reused every tick so the physics never sees a Minecraft type. */
     protected final EntityRef ref = new NeoEntityRef(this);
@@ -89,7 +103,67 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         }
     }
 
-    @Override protected void defineSynchedData(SynchedEntityData.Builder builder) { builder.define(DATA_ROLL, 0.0F); }
+    /**
+     * Model-space (blocks) offset of the riding pilot's FEET, before the craft's yaw/pitch/roll rotation — or
+     * {@code null} to keep the vanilla "top of hitbox" attachment. A subclass returns its config seat minus 0.5 in Y:
+     * the reference places the pilot eye at {@code seatY + 1.62 - 0.5}, and a 1.21.1 player's eye is {@code feet +
+     * 1.62}, so {@code feet = seat - 0.5}. This lifts the first-person camera into the cockpit (the ridden player's
+     * position IS the camera-entity position).
+     */
+    protected Vec3 pilotFeetOffset() {
+        return null;
+    }
+
+    /** Public view of {@link #pilotFeetOffset()} for the client-only cockpit-camera Mixin (a different package). */
+    public Vec3 cockpitFeetOffset() {
+        return pilotFeetOffset();
+    }
+
+    /**
+     * Seats the pilot at {@link #pilotFeetOffset()} rotated into world space by the craft's FULL orientation
+     * (yaw about -Y, pitch about X, roll about Z — the same {@code Ry(-yaw)·Rx(pitch)·Rz(roll)} as the model
+     * renderer), so the eye stays in the cockpit as the aircraft banks. Vanilla passenger attachments rotate by yaw
+     * only, which is why this override (not {@code EntityType.passengerAttachments}) is required. JOML math is common
+     * to both sides, so this is dist-safe. {@code getPassengerRidingPosition} adds {@code this.position()} on top.
+     */
+    @Override
+    protected Vec3 getPassengerAttachmentPoint(Entity passenger, EntityDimensions dimensions, float partialTick) {
+        Vec3 feet = pilotFeetOffset();
+        if (feet == null) {
+            return super.getPassengerAttachmentPoint(passenger, dimensions, partialTick);
+        }
+        org.joml.Vector3f v = new org.joml.Vector3f((float) feet.x, (float) feet.y, (float) feet.z);
+        v.rotate(new org.joml.Quaternionf()
+            .rotateY((float) Math.toRadians(-this.getYRot()))
+            .rotateX((float) Math.toRadians(this.getXRot()))
+            .rotateZ((float) Math.toRadians(this.getRollAngle())));
+        return new Vec3(v.x, v.y, v.z);
+    }
+
+    @Override protected void defineSynchedData(SynchedEntityData.Builder builder) {
+        builder.define(DATA_ROLL, 0.0F);
+        builder.define(DATA_THROTTLE, 0.0F);
+        builder.define(DATA_SKIN, 0);
+        builder.define(DATA_GEAR, 0.0F);
+    }
+
+    /** Landing-gear retract angle 0..90 (deployed..retracted), synced; the renderer interpolates with the prev. */
+    public float getGearAngle() { return this.gearAngle; }
+    public float getPrevGearAngle() { return this.prevGearAngle; }
+
+    /** Spooled engine power 0..1 (synced). Full when a rider holds throttle-up, idles at 0.5 while ridden, 0 when
+     *  abandoned — clients read it for rotor RPM / sound. */
+    public float getEnginePower() { return this.entityData.get(DATA_THROTTLE); }
+
+    /** Selected paint-scheme index (synced). The renderer resolves it to a texture via {@link #skinTextureName()}. */
+    public int getSkinIndex() { return this.entityData.get(DATA_SKIN); }
+
+    /** Number of selectable skins for this vehicle (subclasses report their config's texture count). */
+    protected int skinCount() { return 1; }
+
+    /** Current skin's texture NAME (e.g. {@code ah-64-us-1}) → {@code textures/<dir>/<name>.png}, or null for the
+     *  renderer's default. Subclasses map {@link #getSkinIndex()} through their config texture list. */
+    public String skinTextureName() { return null; }
     @Override protected void readAdditionalSaveData(CompoundTag tag) { /* nothing to persist yet */ }
     @Override protected void addAdditionalSaveData(CompoundTag tag) { /* nothing to persist yet */ }
 
@@ -99,6 +173,14 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     @Override
     public InteractionResult interact(Player player, InteractionHand hand) {
+        if (player.isSecondaryUseActive()) {
+            // Sneak + use cycles the paint scheme (a demo stand-in for MCHeli's wrench skin-swap).
+            if (!this.level().isClientSide) {
+                int count = Math.max(1, this.skinCount());
+                this.entityData.set(DATA_SKIN, (this.getSkinIndex() + 1) % count);
+            }
+            return InteractionResult.sidedSuccess(this.level().isClientSide);
+        }
         if (this.level().isClientSide) {
             return InteractionResult.SUCCESS; // let the client predict the mount
         }
@@ -161,6 +243,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     public void tick() {
         super.tick();
         this.prevRollAngle = this.rollAngle; // snapshot for render interpolation (both sides)
+        this.prevGearAngle = this.gearAngle;
 
         if (this.level().isClientSide) {
             boolean localRider = this.localRotationOwned;
@@ -175,6 +258,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             if (!localRider) {
                 this.rollAngle = this.entityData.get(DATA_ROLL); // read the synced roll so banking is visible
             }
+            this.gearAngle = this.entityData.get(DATA_GEAR); // read synced gear so the retract animates
             return;
         }
 
@@ -206,6 +290,18 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             this.setXRot(this.pendingPitch);
             this.setRollAngle(this.pendingRoll);
         }
+
+        // Engine power: full while a rider holds throttle-up, idle (0.5) while ridden, spooling to 0 when abandoned.
+        // Gradual so rotor RPM / sound ramp up and down instead of snapping.
+        float target = this.getPassengers().isEmpty() ? 0.0F : (this.controlState.throttleUp ? 1.0F : 0.5F);
+        this.enginePower += (target - this.enginePower) * 0.05F;
+        this.entityData.set(DATA_THROTTLE, this.enginePower);
+
+        // Landing gear: deployed (0) on the ground, retracting toward 90 once airborne. Cosmetic; planes with an
+        // AddPartLG list animate it, others just carry the value.
+        float gearTarget = this.onGround() ? 0.0F : 90.0F;
+        this.gearAngle += (gearTarget - this.gearAngle) * 0.12F;
+        this.entityData.set(DATA_GEAR, this.gearAngle);
     }
 
     /** Run the per-type flight controller for one server tick with the rider's control input. */

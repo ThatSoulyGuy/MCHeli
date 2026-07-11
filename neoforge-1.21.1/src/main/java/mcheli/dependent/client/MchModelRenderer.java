@@ -2,6 +2,8 @@ package mcheli.dependent.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import java.util.Locale;
+import java.util.Set;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.model.ModelFace;
 import mcheli.agnostic.model.ModelGroup;
@@ -30,6 +32,35 @@ public final class MchModelRenderer {
             }
             for (ModelFace face : group.faces) {
                 emitFace(last, consumer, face, packedLight, overlay, r, g, b, a);
+            }
+        }
+    }
+
+    /** Render every group EXCEPT those whose (lower-cased) name is in {@code excludeLower} — used to draw the static
+     *  hull while animated parts (rotor blades, etc.) are drawn separately with their own transforms. */
+    public static void renderExcept(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
+                                    int r, int g, int b, int a, Set<String> excludeLower) {
+        PoseStack.Pose last = pose.last();
+        for (ModelGroup group : model.groups()) {
+            if (group == null || excludeLower.contains(group.name.toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            for (ModelFace face : group.faces) {
+                emitFace(last, consumer, face, packedLight, overlay, r, g, b, a);
+            }
+        }
+    }
+
+    /** Render a single named group (case-insensitive) under the CURRENT pose — the caller applies the part's animation
+     *  transform (translate to hub, rotate about the axis) before calling. */
+    public static void renderGroup(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
+                                   int r, int g, int b, int a, String groupName) {
+        PoseStack.Pose last = pose.last();
+        for (ModelGroup group : model.groups()) {
+            if (group != null && group.name.equalsIgnoreCase(groupName)) {
+                for (ModelFace face : group.faces) {
+                    emitFace(last, consumer, face, packedLight, overlay, r, g, b, a);
+                }
             }
         }
     }
