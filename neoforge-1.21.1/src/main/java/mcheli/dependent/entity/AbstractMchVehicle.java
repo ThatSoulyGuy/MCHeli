@@ -113,6 +113,10 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** The aircraft info fed to {@link RotationSolver}, or null if this vehicle has no mouse rotation. */
     protected MCH_AircraftInfo rotationInfo() { return null; }
 
+    /** SERVER-side rotation mapping (the tank's keyboard hull-yaw runs on the server, not via the mouse hijack), or
+     *  null. Applied before {@link #tickPhysics(ControlInput)} so the physics reads the new heading. */
+    protected RotationSolver.ControlMapping serverRotationMapping() { return null; }
+
     /** True if this vehicle's orientation is driven by the rider's mouse (heli/plane). */
     public boolean supportsMouseRotation() { return controlMapping() != null; }
 
@@ -186,6 +190,12 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             this.riderOwnsRotation = false;     // ... and yields rotation back to the physics
         }
         ControlInput in = this.controlState.snapshot(1.0F); // server tick -> partialTicks = 1.0F
+
+        // Server-side rotation (tank hull yaw) runs BEFORE the physics so the thrust reads the new heading.
+        RotationSolver.ControlMapping serverMap = this.serverRotationMapping();
+        if (serverMap != null) {
+            RotationSolver.applyControl(this.ref, this.rotationInfo(), in, this.rotLowPass, serverMap);
+        }
         this.tickPhysics(in);
 
         if (this.riderOwnsRotation) {

@@ -4,6 +4,7 @@ import com.mojang.logging.LogUtils;
 import mcheli.agnostic.value.Vec3d;
 import mcheli.dependent.DemoForwardVehicleSelfTest;
 import mcheli.dependent.DemoHeliSelfTest;
+import mcheli.dependent.DemoTankSelfTest;
 import mcheli.dependent.DemoVehicleSelfTest;
 import mcheli.dependent.control.MchControlNetwork;
 import mcheli.dependent.registry.MchRegistries;
@@ -39,7 +40,8 @@ public class MCHeli {
             // Forward-thrust proofs: the plane and tank fly/drive forward under rider-gated thrust and stay aloft
             // (vs a pilotless copy that free-falls). Distinct X columns, both at y+90 so the pilotless fall clears.
             NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.DEMO_PLANE, 6.0, 11.0, 90.0, 5.0, 20.0));
-            NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("TANK", MchRegistries.DEMO_TANK, -6.0, -11.0, 90.0, 4.0, 15.0));
+            // The tank is a GROUND vehicle (heavier gravity) -> its own drive-forward-without-flying test.
+            NeoForge.EVENT_BUS.register(new DemoTankSelfTest());
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
     }

@@ -1,9 +1,12 @@
 package mcheli.dependent.entity;
 
+import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.sim.AircraftFlightController;
 import mcheli.agnostic.sim.AircraftSimState;
 import mcheli.agnostic.sim.ControlInput;
 import mcheli.agnostic.sim.FlightModel;
+import mcheli.agnostic.sim.RotationSolver;
+import mcheli.agnostic.sim.TankControlMapping;
 import mcheli.agnostic.sim.TankFlightModel;
 import mcheli.agnostic.sim.TankState;
 import mcheli.agnostic.tank.MCH_TankInfo;
@@ -25,10 +28,15 @@ public class MchDemoTank extends AbstractMchVehicle {
     private final MCH_TankInfo info = buildInfo();
     private final TankState tankState = new DemoTankState();
     private final AircraftSimState simState = new AircraftSimState(0.07);
+    // Server-side hull-yaw mapping (shares the physics sim-state so the pivot-turn logic sees live throttle).
+    private final RotationSolver.ControlMapping mapping = new TankControlMapping(this.ref, this.info, this.simState, this.tankState);
 
     public MchDemoTank(EntityType<? extends MchDemoTank> type, Level level) {
         super(type, level);
     }
+
+    @Override protected RotationSolver.ControlMapping serverRotationMapping() { return this.mapping; }
+    @Override protected MCH_AircraftInfo rotationInfo() { return this.info; }
 
     @Override
     protected void tickPhysics(ControlInput in) {
@@ -37,12 +45,15 @@ public class MchDemoTank extends AbstractMchVehicle {
 
     private static MCH_TankInfo buildInfo() {
         MCH_TankInfo ti = new MCH_TankInfo("demo_tank");
-        ti.speed = 0.2F;            // horizontal speed cap (blocks/tick) — tanks are slow
-        ti.gravity = -0.04F;
-        ti.gravityInWater = -0.04F;
+        ti.speed = 0.35F;           // horizontal speed cap (blocks/tick) — real tanks are 0.45-0.7
+        // Gravity MUST be heavier than the model's +0.04 lift-cancel + throttle/8 lift, or the tank flies. Real
+        // tank configs use -0.06..-0.1 (t-90/m1a2 = -0.1); -0.04 (the base default) left it neutral -> it took off.
+        ti.gravity = -0.1F;
+        ti.gravityInWater = -0.1F;
         ti.motionFactor = 0.96F;
         ti.throttleUpDown = 1.0F;
         ti.onGroundPitch = 0.0F;
+        ti.mobilityYawOnGround = 2.0F; // hull-turn rate (real tanks 2.0-3.0); also a bit faster than the default 1.0
         ti.isFloat = false;
         ti.maxFuel = 0;             // canUseFuel() true (see DemoTankState)
         return ti;
