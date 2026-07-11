@@ -2,6 +2,7 @@ package mcheli.dependent;
 
 import java.util.function.Supplier;
 import com.mojang.logging.LogUtils;
+import mcheli.dependent.control.MchControllable;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
@@ -108,6 +109,12 @@ public final class DemoForwardVehicleSelfTest {
             pilot.setYRot(0.0F);
             level.addFreshEntity(pilot);
             mounted = pilot.startRiding(piloted, true); // ONLY the piloted entity gets a rider
+        }
+
+        // Drive ONLY the piloted entity's control state (throttle up) — the pilotless one gets no input and
+        // free-falls. The demo entities implement MchControllable; bits persist while a passenger is aboard.
+        if (piloted instanceof MchControllable c) {
+            c.getControlState().throttleUp = true;
         }
 
         startPiloted = piloted.position();

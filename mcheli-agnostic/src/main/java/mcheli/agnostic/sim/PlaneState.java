@@ -8,6 +8,8 @@ package mcheli.agnostic.sim;
  */
 public interface PlaneState extends AircraftState {
     boolean isGunnerMode();
+    /** {@code isGunnerMode || isHoveringMode} — gates the mouse rotation ({@code canUpdate*} = base &amp;&amp; !isHovering). */
+    boolean isHovering();
     boolean isTargetDrone();
     boolean canUseFuel();
     boolean canUseWing();

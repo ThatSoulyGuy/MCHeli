@@ -21,6 +21,8 @@ public final class DemoPlaneState implements PlaneState {
 
     @Override public boolean isDestroyed() { return false; }
     @Override public boolean isGunnerMode() { return gunnerMode; }
+    // isHovering = isGunnerMode || isHoveringMode; the demo plane has no hovering mode, so it collapses to gunner.
+    @Override public boolean isHovering() { return gunnerMode; }
     @Override public boolean isTargetDrone() { return false; }
     @Override public boolean canUseFuel() { return true; }       // maxFuel <= 0
     @Override public boolean canUseWing() { return true; }        // partWing == null

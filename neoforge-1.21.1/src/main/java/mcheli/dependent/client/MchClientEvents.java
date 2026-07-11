@@ -8,9 +8,10 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 
 /**
- * Client-only subscriber. The {@code value = Dist.CLIENT} filter means FML never loads this class (or the
- * renderer it references) on a dedicated server, so the server stays free of client-only types. The bus is
- * auto-detected from the event type (RegisterRenderers is a mod-bus event).
+ * Client-only subscriber for renderer registration. The {@code value = Dist.CLIENT} filter means FML never loads
+ * this class (or the renderers it references) on a dedicated server, so the server stays free of client-only types.
+ * The bus is auto-detected per event ({@code RegisterRenderers} is a mod-bus event). The game-bus rider-input
+ * capture lives in {@link MchClientInput}.
  */
 @EventBusSubscriber(modid = MCHeli.MODID, value = Dist.CLIENT)
 public final class MchClientEvents {

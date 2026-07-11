@@ -5,6 +5,7 @@ import mcheli.agnostic.value.Vec3d;
 import mcheli.dependent.DemoForwardVehicleSelfTest;
 import mcheli.dependent.DemoHeliSelfTest;
 import mcheli.dependent.DemoVehicleSelfTest;
+import mcheli.dependent.control.MchControlNetwork;
 import mcheli.dependent.registry.MchRegistries;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -26,6 +27,8 @@ public class MCHeli {
         modEventBus.addListener(this::commonSetup);
         // Register the demo vehicle's EntityType + spawn item (and creative-tab entry) on the mod bus.
         MchRegistries.register(modEventBus);
+        // Register the serverbound player-control payload (client keys -> server ControlInput).
+        modEventBus.addListener(MchControlNetwork::register);
         // Dev-only game-bus listener: the headless self-test that proves agnostic-driven movement at
         // runtime. Gated on !production so a shipped jar never spawns test entities or spams the log — it
         // runs only under runClient/runServer (FMLEnvironment.production is false in the dev workspace).

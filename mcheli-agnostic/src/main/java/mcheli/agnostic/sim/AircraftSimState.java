@@ -12,7 +12,11 @@ public final class AircraftSimState {
     public double prevCurrentThrottle;
     public float throttleBack;   // FLOAT in the reference (MCP_EntityPlane uses `(float)(throttleBack * ...)`)
     public double currentSpeed;
-    public double addkeyRotValue;
+    // FLOAT in the reference (MCP_EntityPlane.addkeyRotValue / MCH_EntityTank.addkeyRotValue) — the flight-sim /
+    // taxi keyboard-yaw accumulator. A double would round differently in `addkeyRotValue*20` and the *0.9 decay.
+    public float addkeyRotValue;
+    // FLOAT in the reference (MCH_EntityHeli.prevRollFactor, default 0) — the heli's roll-factor 2-sample average.
+    public float prevRollFactor;
     // rotationRotor/prevRotationRotor are DOUBLE in the reference (MCH_EntityHeli) — a float accumulator would
     // round the rotor angle every tick and diverge over time (cosmetic, but a real bit-fidelity divergence).
     public double rotationRotor;

@@ -34,8 +34,9 @@ public final class RotationSolver {
         boolean canUpdateYaw();                              // canUpdateYaw(player)
         boolean canUpdatePitch();                            // canUpdatePitch(player)
         boolean canUpdateRoll();                             // canUpdateRoll(player)
-        /** Per-model auto-level applied after the compose (heli bank damping, plane taxi/flightSim, ...). */
-        void onUpdateAngles(EntityRef self, MCH_AircraftInfo info, float partialTicks);
+        /** Per-model auto-level applied after the compose (heli bank damping, plane taxi/flightSim, ...). Reads the
+         *  rider's control bits ({@code in}); the mapping holds its own entity/info/state context. */
+        void onUpdateAngles(ControlInput in, float partialTicks);
     }
 
     public static void applyControl(EntityRef self, MCH_AircraftInfo info, ControlInput in,
@@ -120,13 +121,23 @@ public final class RotationSolver {
         self.setRotation(v.y, v.x); // yaw = v.y, pitch = v.x
         self.setRoll(v.z);
 
-        map.onUpdateAngles(self, info, partialTicks);
+        map.onUpdateAngles(in, partialTicks);
 
         if (info.limitRotation) {
             float px = MchMath.clamp(self.pitch(), info.minRotationPitch, info.maxRotationPitch);
             float rz = MchMath.clamp(self.roll(), info.minRotationRoll, info.maxRotationRoll);
             self.setRotation(self.yaw(), px);
             self.setRoll(rz);
+        }
+
+        // Reference setAngles' FINAL unconditional roll wrap to [-180,180] (MCH_EntityAircraft:1251-1257), applied
+        // after onUpdateAngles (which can push roll past ±180 via the heli air-bank / plane rudder-roll terms) and
+        // the limit re-apply. Keeps the STORED roll() faithful; the composed orientation is already 360-periodic.
+        if (self.roll() > 180.0F) {
+            self.setRoll(self.roll() - 360.0F);
+        }
+        if (self.roll() < -180.0F) {
+            self.setRoll(self.roll() + 360.0F);
         }
     }
 }

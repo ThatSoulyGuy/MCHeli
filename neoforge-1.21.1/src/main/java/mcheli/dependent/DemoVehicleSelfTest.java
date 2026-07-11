@@ -72,6 +72,10 @@ public final class DemoVehicleSelfTest {
             mounted = pilot.startRiding(vehicle, true);  // force-mount to exercise the piloted branch
         }
 
+        // Drive the vehicle's control state directly (the pig rider sends no packets) — equivalent to a player
+        // holding the throttle-up key. Bits persist (a passenger keeps clearMomentary from firing), so set once.
+        vehicle.getControlState().throttleUp = true;
+
         startPos = vehicle.position();
         ticks = 0;
         LOG.info("[SELFTEST] spawned demo_vehicle id={} at ({}, {}, {}); pilot mounted={} passengers={}",

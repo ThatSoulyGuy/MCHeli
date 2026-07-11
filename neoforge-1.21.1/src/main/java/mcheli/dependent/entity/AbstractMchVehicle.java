@@ -1,0 +1,203 @@
+package mcheli.dependent.entity;
+
+import mcheli.agnostic.aircraft.MCH_AircraftInfo;
+import mcheli.agnostic.sim.ControlInput;
+import mcheli.agnostic.sim.RotationSolver;
+import mcheli.agnostic.spi.EntityRef;
+import mcheli.agnostic.util.MCH_LowPassFilterFloat;
+import mcheli.dependent.control.MchControlState;
+import mcheli.dependent.control.MchControllable;
+import mcheli.dependent.port.NeoEntityRef;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+
+/**
+ * Shared base for the demo vehicles. Owns the agnostic {@link EntityRef} view, the rider {@link MchControlState},
+ * MCHeli's custom roll axis, client-side position/rotation interpolation, and — for aircraft — the client-authoritative
+ * mouse rotation hooks. Subclasses supply the per-type flight model / info / sim-state via
+ * {@link #tickPhysics(ControlInput)}, and (for mouse-steerable types) a {@link #controlMapping()} +
+ * {@link #rotationInfo()}.
+ *
+ * <p><b>Authority split (matches the reference).</b> POSITION is server-authoritative (physics runs on the server;
+ * clients interpolate). ROTATION is CLIENT-authoritative for the local rider: their client runs the ported
+ * {@link RotationSolver} from the mouse and ships the result via {@code ServerboundRotationPayload}; the server stores
+ * it (physics reads it) and syncs it to OTHER clients (yaw/pitch via the entity tracker, roll via {@link #DATA_ROLL}).
+ * So the local rider's rotation is NOT lerped from the server round-trip (that would fight their own computation) —
+ * only their position lerps.
+ */
+public abstract class AbstractMchVehicle extends Entity implements MchControllable, RollHolder {
+
+    /** Synced roll (server -> clients) so non-piloting clients see banking; not a vanilla axis. */
+    private static final EntityDataAccessor<Float> DATA_ROLL =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+
+    /** The agnostic view of this entity, reused every tick so the physics never sees a Minecraft type. */
+    protected final EntityRef ref = new NeoEntityRef(this);
+    private final MchControlState controlState = new MchControlState();
+
+    // MCHeli custom roll axis. The authoritative local value; the server also publishes it to DATA_ROLL for others.
+    private float rollAngle;
+    private float prevRollAngle;
+
+    // Client-side interpolation state (vanilla minecart pattern).
+    private int lerpSteps;
+    private double lerpX;
+    private double lerpY;
+    private double lerpZ;
+    private float lerpYRot;
+    private float lerpXRot;
+
+    // Client rotation state (only used on the local rider's client): the setAngles partial-ticks low-pass buffer.
+    private final MCH_LowPassFilterFloat rotLowPass = new MCH_LowPassFilterFloat(10);
+    // Set by the CLIENT-only MchClientRotation handler when THIS is the local player's ridden aircraft (so the
+    // client-authoritative rotation is not lerped back from the server). Never referenced on the dedicated server,
+    // and — crucially — this class references NO client-only types (NeoForge's RuntimeDistCleaner forbids that).
+    private boolean localRotationOwned;
+
+    /** CLIENT: called by MchClientRotation to mark/unmark this as the local rider's mouse-controlled aircraft. */
+    public void setLocalRotationOwned(boolean owned) { this.localRotationOwned = owned; }
+
+    // SERVER: the rider's last-sent client-authoritative rotation, re-asserted after each physics tick (see tick())
+    // so the flight model's on-ground/water attitude damping — which the pilot's client never applies — cannot
+    // desync observers from the pilot. Cleared when the aircraft loses its rider (rotation reverts to the physics).
+    private float pendingYaw;
+    private float pendingPitch;
+    private float pendingRoll;
+    private boolean riderOwnsRotation;
+
+    protected AbstractMchVehicle(EntityType<?> type, Level level) {
+        super(type, level);
+    }
+
+    @Override public MchControlState getControlState() { return this.controlState; }
+    @Override public float getRollAngle() { return this.rollAngle; }
+    @Override public float getPrevRollAngle() { return this.prevRollAngle; }
+
+    @Override
+    public void setRollAngle(float roll) {
+        this.rollAngle = roll;
+        if (!this.level().isClientSide) {
+            this.entityData.set(DATA_ROLL, roll); // publish to non-piloting clients
+        }
+    }
+
+    @Override protected void defineSynchedData(SynchedEntityData.Builder builder) { builder.define(DATA_ROLL, 0.0F); }
+    @Override protected void readAdditionalSaveData(CompoundTag tag) { /* nothing to persist yet */ }
+    @Override protected void addAdditionalSaveData(CompoundTag tag) { /* nothing to persist yet */ }
+
+    @Override public boolean isPickable() { return !this.isRemoved(); }
+    @Override public boolean isPushable() { return false; }
+    @Override public boolean canBeCollidedWith() { return true; }
+
+    @Override
+    public InteractionResult interact(Player player, InteractionHand hand) {
+        if (this.level().isClientSide) {
+            return InteractionResult.SUCCESS; // let the client predict the mount
+        }
+        return player.startRiding(this) ? InteractionResult.SUCCESS : InteractionResult.PASS;
+    }
+
+    // ---- mouse rotation seams (aircraft override these; ground vehicle/tank leave them null) ----
+
+    /** The per-vehicle mouse->rotation mapping, or null if this vehicle has no mouse rotation. */
+    protected RotationSolver.ControlMapping controlMapping() { return null; }
+
+    /** The aircraft info fed to {@link RotationSolver}, or null if this vehicle has no mouse rotation. */
+    protected MCH_AircraftInfo rotationInfo() { return null; }
+
+    /** True if this vehicle's orientation is driven by the rider's mouse (heli/plane). */
+    public boolean supportsMouseRotation() { return controlMapping() != null; }
+
+    /**
+     * CLIENT: run the ported setAngles pipeline from the rider's virtual-stick {@link ControlInput}, updating this
+     * entity's yaw/pitch/roll locally. Called only on the local rider's client (see {@code MchClientRotation}).
+     */
+    public void applyClientRotation(ControlInput in) {
+        RotationSolver.applyControl(this.ref, rotationInfo(), in, this.rotLowPass, controlMapping());
+    }
+
+    /** SERVER: apply the rider's client-computed rotation (from {@code ServerboundRotationPayload}). */
+    public void applyServerRotation(float yaw, float pitch, float roll) {
+        this.pendingYaw = yaw;
+        this.pendingPitch = pitch;
+        this.pendingRoll = roll;
+        this.riderOwnsRotation = true;
+        this.setYRot(yaw);
+        this.setXRot(pitch);
+        this.setRollAngle(roll); // -> DATA_ROLL sync to other clients
+    }
+
+    // ---- client interpolation ----
+
+    @Override
+    public void lerpTo(double x, double y, double z, float yaw, float pitch, int steps) {
+        this.lerpX = x;
+        this.lerpY = y;
+        this.lerpZ = z;
+        this.lerpYRot = yaw;
+        this.lerpXRot = pitch;
+        this.lerpSteps = steps + 2;
+    }
+
+    @Override public double lerpTargetX() { return this.lerpSteps > 0 ? this.lerpX : this.getX(); }
+    @Override public double lerpTargetY() { return this.lerpSteps > 0 ? this.lerpY : this.getY(); }
+    @Override public double lerpTargetZ() { return this.lerpSteps > 0 ? this.lerpZ : this.getZ(); }
+    @Override public float lerpTargetXRot() { return this.lerpSteps > 0 ? this.lerpXRot : this.getXRot(); }
+    @Override public float lerpTargetYRot() { return this.lerpSteps > 0 ? this.lerpYRot : this.getYRot(); }
+
+    @Override
+    public void tick() {
+        super.tick();
+        this.prevRollAngle = this.rollAngle; // snapshot for render interpolation (both sides)
+
+        if (this.level().isClientSide) {
+            boolean localRider = this.localRotationOwned;
+            if (this.lerpSteps > 0) {
+                // Local rider owns rotation -> lerp POSITION only (rotation target = current, so it is unchanged).
+                // Others lerp position + the synced server rotation.
+                float tYaw = localRider ? this.getYRot() : this.lerpYRot;
+                float tPitch = localRider ? this.getXRot() : this.lerpXRot;
+                this.lerpPositionAndRotationStep(this.lerpSteps, this.lerpX, this.lerpY, this.lerpZ, tYaw, tPitch);
+                this.lerpSteps--;
+            }
+            if (!localRider) {
+                this.rollAngle = this.entityData.get(DATA_ROLL); // read the synced roll so banking is visible
+            }
+            return;
+        }
+
+        // Server-authoritative physics. Snapshot prev pos/rot before moving.
+        this.xo = this.getX();
+        this.yo = this.getY();
+        this.zo = this.getZ();
+        this.yRotO = this.getYRot();
+        this.xRotO = this.getXRot();
+
+        if (this.getPassengers().isEmpty()) {
+            this.controlState.clearMomentary(); // an abandoned vehicle holds no keys and coasts
+            this.riderOwnsRotation = false;     // ... and yields rotation back to the physics
+        }
+        ControlInput in = this.controlState.snapshot(1.0F); // server tick -> partialTicks = 1.0F
+        this.tickPhysics(in);
+
+        if (this.riderOwnsRotation) {
+            // Client-authoritative rotation wins: re-assert the rider's angles over the flight model's on-ground/
+            // water attitude damping (the physics still USED the rotation for thrust this tick; only its WRITES are
+            // overridden). Keeps observers in sync with the pilot, whose client ignores the server rotation.
+            this.setYRot(this.pendingYaw);
+            this.setXRot(this.pendingPitch);
+            this.setRollAngle(this.pendingRoll);
+        }
+    }
+
+    /** Run the per-type flight controller for one server tick with the rider's control input. */
+    protected abstract void tickPhysics(ControlInput in);
+}

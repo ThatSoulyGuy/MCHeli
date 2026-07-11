@@ -50,6 +50,7 @@ class PlaneFlightModelTraceTest {
         boolean gunner, drone, destroyed;
         public boolean isDestroyed() { return destroyed; }
         public boolean isGunnerMode() { return gunner; }
+        public boolean isHovering() { return gunner; }
         public boolean isTargetDrone() { return drone; }
         public boolean canUseFuel() { return true; }
         public boolean canUseWing() { return true; }

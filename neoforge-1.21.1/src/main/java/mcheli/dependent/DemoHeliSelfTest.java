@@ -88,6 +88,10 @@ public final class DemoHeliSelfTest {
             mounted = pilot.startRiding(piloted, true); // ONLY the piloted heli gets a rider -> only it spools/climbs
         }
 
+        // Drive ONLY the piloted heli's control state (collective up) — the pilotless one is left with no input, so
+        // it free-falls. Equivalent to a player holding throttle-up. Bits persist while a passenger is aboard.
+        piloted.getControlState().throttleUp = true;
+
         startPiloted = piloted.position();
         startPilotless = pilotless.position();
         ticks = 0;

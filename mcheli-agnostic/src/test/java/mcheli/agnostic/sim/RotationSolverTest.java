@@ -72,7 +72,7 @@ class RotationSolverTest {
             public boolean canUpdateYaw() { return true; }
             public boolean canUpdatePitch() { return true; }
             public boolean canUpdateRoll() { return true; }
-            public void onUpdateAngles(EntityRef self, MCH_AircraftInfo info, float pt) { }
+            public void onUpdateAngles(ControlInput in, float pt) { }
         };
     }
 
@@ -89,7 +89,7 @@ class RotationSolverTest {
             public boolean canUpdateYaw() { return true; }
             public boolean canUpdatePitch() { return true; }
             public boolean canUpdateRoll() { return true; }
-            public void onUpdateAngles(EntityRef self, MCH_AircraftInfo info, float pt) { }
+            public void onUpdateAngles(ControlInput in, float pt) { }
         };
     }
 
