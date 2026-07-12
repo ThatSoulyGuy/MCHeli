@@ -108,4 +108,27 @@ public final class WeaponSlot {
     public boolean reloading() {
         return this.reloadWait > 0;
     }
+
+    /**
+     * Fraction 0..1 of the fire interval still to wait before the next shot — the reference {@code reload_time} that
+     * drives the HUD cooldown bar. Faithful to {@code MCH_HudItem.updateVarMap_Weapon}: a slow weapon whose per-shot
+     * {@code delay} exceeds its {@code reloadTime} shows the per-shot cooldown ({@code countWait/delay}); a fast weapon
+     * with a longer magazine reload shows the reload ({@code reloadWait/reloadTime}). 0 == ready to fire.
+     */
+    public float reloadFraction() {
+        float t;
+        if (this.info.delay > this.info.reloadTime) {
+            t = (float) this.countWait / (this.info.delay > 0 ? this.info.delay : 1);
+        } else {
+            t = (float) this.reloadWait / (this.info.reloadTime > 0 ? this.info.reloadTime : 1);
+        }
+        t = Math.abs(t);
+        return t > 1.0F ? 1.0F : t;
+    }
+
+    /** The larger of the per-shot cooldown / reload interval in ticks — the denominator behind {@link #reloadFraction},
+     *  so the client can turn the synced fraction back into a "%.2fsec" countdown. */
+    public int reloadIntervalTicks() {
+        return Math.max(this.info.delay, this.info.reloadTime);
+    }
 }

@@ -34,6 +34,10 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
     private final ResourceLocation defaultTexture;
     private final String textureDir; // e.g. "textures/helicopters/" — a selected skin becomes <dir><skin>.png
     private final java.util.Map<String, ResourceLocation> skinCache = new java.util.HashMap<>();
+    /** Groups NEVER drawn — the cockpit glass/canopy. Its texture is fully opaque, so it renders as a solid (dark)
+     *  wall that blocks the pilot's view; the heli has no glass mesh (open cockpit, see-through), so dropping the
+     *  plane's glass matches it — the pilot sees out, and the rest of the airframe still renders. */
+    private final java.util.Set<String> hiddenGroups;
 
     protected MchModelEntityRenderer(EntityRendererProvider.Context context, String modelName, String texturePath) {
         super(context);
@@ -43,6 +47,18 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
         if (this.model == null) {
             LOGGER.warn("MCHeli renderer: model '{}' did not load; entity will be invisible", modelName);
         }
+        java.util.Set<String> hidden = new java.util.HashSet<>();
+        if (this.model != null) {
+            for (mcheli.agnostic.model.ModelGroup g : this.model.groups()) {
+                if (g != null) {
+                    String n = g.name.toLowerCase(java.util.Locale.ROOT);
+                    if (n.contains("glass") || n.contains("canopy")) {
+                        hidden.add(n);
+                    }
+                }
+            }
+        }
+        this.hiddenGroups = hidden;
     }
 
     /** Resolve the entity's selected paint scheme to a texture ({@code <dir><skin>.png}), else the default. Cached.
@@ -84,13 +100,20 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
 
             VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(textureFor(entity)));
             java.util.Set<String> dynamic = dynamicGroupsLower();
-            if (dynamic.isEmpty()) {
+            if (dynamic.isEmpty() && this.hiddenGroups.isEmpty()) {
                 MchModelRenderer.render(this.model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, 255, 255, 255, 255);
             } else {
-                // Static hull (everything but the animated groups), then the moving parts with their own transforms.
+                // Static hull minus the animated groups AND the hidden glass/canopy, then the moving parts.
+                java.util.Set<String> exclude = dynamic;
+                if (!this.hiddenGroups.isEmpty()) {
+                    exclude = new java.util.HashSet<>(dynamic);
+                    exclude.addAll(this.hiddenGroups);
+                }
                 MchModelRenderer.renderExcept(this.model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
-                    255, 255, 255, 255, dynamic);
-                renderDynamicParts(entity, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, partialTick);
+                    255, 255, 255, 255, exclude);
+                if (!dynamic.isEmpty()) {
+                    renderDynamicParts(entity, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, partialTick);
+                }
             }
             pose.popPose();
         }

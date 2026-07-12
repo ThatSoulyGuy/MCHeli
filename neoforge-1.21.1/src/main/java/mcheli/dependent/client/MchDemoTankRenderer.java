@@ -3,6 +3,7 @@ package mcheli.dependent.client;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -20,26 +21,26 @@ import net.minecraft.world.entity.Entity;
 /**
  * Renders the demo tank ({@code tanks/m1a2.mqo}) with an AIMING turret — the 1.21.1 port of the reference
  * {@code MCH_RenderAircraft} turret block. The hull draws statically through the base class; the whole turret assembly
- * (armour, hatch, guns) is redrawn rotated by the gunner's yaw about {@code info.turretPosition}, and the main gun
- * barrel additionally pitches (elevates) about its config mount, driven by the gunner's look pitch (clamped to the
- * weapon's {@code AddTurretWeapon} pitch limits).
+ * (armour, hatch, every gun) is redrawn rotated by the gunner's yaw about {@code info.turretPosition}, and EACH gun
+ * part whose config marks it pitchable elevates about its own {@code AddPart[Turret]Weapon}/{@code AddPartWeaponChild}
+ * mount, clamped to that weapon's {@code AddTurretWeapon} pitch limits — the main gun barrel and the secondary guns.
  *
- * <p>The {@code .mqo} is a flattened tree: a {@code $}-part is followed by its child mesh at greater depth. The hull
- * ({@code $body}) and tracks come first, then everything from the first {@code $weapon*} onward is the turret — that
- * whole tail yaws. Within it, the main gun barrel groups ({@code $weapon0_0}/{@code $weapon0_1} + their children) also
- * pitch. The gunner's aim is the rider's free look, already replicated to every client, so no extra sync is needed.
+ * <p>Config-driven from the parsed {@code partWeapon} list: each {@code partWeapon[i]} has {@code modelName="weapon"+i}
+ * (→ the {@code $weapon{i}} group) and a {@code pitch} flag + a mount {@code pos}; its children map to
+ * {@code $weapon{i}_{j}}. Any part/child with {@code pitch} becomes a pitch group; everything else in the turret is
+ * yaw-only. The gunner's aim is the rider's free look, already replicated to every client, so no extra sync is needed.
  */
 public class MchDemoTankRenderer extends MchModelEntityRenderer<MchDemoTank> {
 
     private static final org.slf4j.Logger LOG = com.mojang.logging.LogUtils.getLogger();
 
+    /** A gun group that elevates: its model subtree, its mount pivot, and its config pitch clamp. */
+    private record PitchPart(Set<String> groups, Vec3d pivot, float min, float max) {}
+
     private final Set<String> turretGroups;   // whole turret (yaws): dynamicGroupsLower excludes these from the hull
-    private final Set<String> yawOnlyGroups;  // turret minus the barrel (rendered with yaw only)
-    private final Set<String> barrelGroups;   // main gun barrel (rendered with yaw + pitch)
+    private final Set<String> yawOnlyGroups;  // turret minus every pitching gun (rendered with yaw only)
+    private final List<PitchPart> pitchParts; // each gun that elevates (main barrel + secondaries)
     private final Vec3d turretPos;            // turret ring pivot (yaw)
-    private final Vec3d barrelPivot;          // gun mount pivot (pitch)
-    private final float pitchMin;
-    private final float pitchMax;
 
     public MchDemoTankRenderer(EntityRendererProvider.Context context) {
         super(context, "tanks/m1a2", "textures/tanks/m1a2.png");
@@ -47,7 +48,9 @@ public class MchDemoTankRenderer extends MchModelEntityRenderer<MchDemoTank> {
         this.turretPos = info != null ? info.turretPosition : Vec3d.ZERO;
 
         Set<String> turret = new HashSet<>();
-        Set<String> barrel = new HashSet<>();
+        List<PitchPart> pitches = new ArrayList<>();
+        Set<String> pitchGroups = new HashSet<>();
+
         if (this.model != null) {
             List<ModelGroup> all = this.model.groups();
             int firstWeapon = -1;
@@ -59,73 +62,101 @@ public class MchDemoTankRenderer extends MchModelEntityRenderer<MchDemoTank> {
                 }
             }
             if (firstWeapon >= 0) {
-                // The turret is the whole tail after the hull+tracks: everything from the first $weapon onward
-                // (armour, guns, hatches). This yaws as one.
+                // The turret = the whole tail after the hull+tracks (armour, guns, hatches). This yaws as one.
                 for (int i = firstWeapon; i < all.size(); i++) {
                     if (all.get(i) != null) {
                         turret.add(all.get(i).name.toLowerCase(Locale.ROOT));
                     }
                 }
-                // The main gun barrel that ALSO pitches: the $weapon0_0 (mantlet) and $weapon0_1 (barrel) subtrees.
+                // Config-driven pitch: which $weapon{i}/$weapon{i}_{j} groups elevate, around which mount, clamped how.
+                var pitchInfo = pitchGroups(info);
                 for (int i = firstWeapon; i < all.size(); i++) {
                     ModelGroup g = all.get(i);
                     if (g == null) {
                         continue;
                     }
-                    String n = g.name.toLowerCase(Locale.ROOT);
-                    if (n.equals("$weapon0_0") || n.equals("$weapon0_1")) {
-                        barrel.add(n);
-                        for (int j = i + 1; j < all.size(); j++) {
-                            ModelGroup c = all.get(j);
-                            if (c == null) {
-                                continue;
-                            }
-                            if (c.depth <= g.depth) {
-                                break;
-                            }
-                            barrel.add(c.name.toLowerCase(Locale.ROOT));
-                        }
+                    float[] pi = pitchInfo.get(g.name.toLowerCase(Locale.ROOT));
+                    if (pi == null) {
+                        continue;
                     }
+                    Set<String> sub = subtree(all, i, g.depth); // this gun's mesh
+                    pitches.add(new PitchPart(sub, new Vec3d(pi[0], pi[1], pi[2]), pi[3], pi[4]));
+                    pitchGroups.addAll(sub);
                 }
             }
         }
         this.turretGroups = turret;
-        this.barrelGroups = barrel;
+        this.pitchParts = pitches;
         Set<String> yawOnly = new HashSet<>(turret);
-        yawOnly.removeAll(barrel);
+        yawOnly.removeAll(pitchGroups);
         this.yawOnlyGroups = yawOnly;
+        LOG.info("[TURRET] m1a2 renderer: {} turret group(s), {} pitching gun(s), yaw pivot={}",
+            turret.size(), pitches.size(), this.turretPos);
+    }
 
-        // Barrel pitch pivot + limits from the first TURRET weapon's config (AddTurretWeapon). m1a2: pos (0,2.10,2.02),
-        // pitch clamp -50..7. Falls back to the turret ring / no clamp if the config is absent.
-        Vec3d pivot = this.turretPos;
-        float pmin = -90.0F;
-        float pmax = 90.0F;
-        if (info != null && info.weaponSetList != null) {
-            outer:
-            for (MCH_AircraftInfo.WeaponSet ws : info.weaponSetList) {
-                if (ws == null || ws.weapons == null) {
-                    continue;
-                }
-                for (MCH_AircraftInfo.Weapon w : ws.weapons) {
-                    if (w != null && w.turret) {
-                        pivot = w.pos;
-                        pmin = w.minPitch;
-                        pmax = w.maxPitch;
-                        break outer;
+    /** Map each pitchable weapon-part model group ($weapon{i}/{_j}) to {pivotX,Y,Z, pitchMin, pitchMax} from the config. */
+    private static java.util.Map<String, float[]> pitchGroups(MCH_TankInfo info) {
+        java.util.Map<String, float[]> out = new java.util.HashMap<>();
+        if (info == null || info.partWeapon == null) {
+            return out;
+        }
+        for (MCH_AircraftInfo.PartWeapon p : info.partWeapon) {
+            if (p == null) {
+                continue;
+            }
+            float[] lim = pitchLimits(info, p.name);
+            if (p.pitch) {
+                out.put(("$" + p.modelName).toLowerCase(Locale.ROOT),
+                    new float[]{(float) p.pos.x(), (float) p.pos.y(), (float) p.pos.z(), lim[0], lim[1]});
+            }
+            if (p.child != null) {
+                for (MCH_AircraftInfo.PartWeaponChild c : p.child) {
+                    if (c != null && c.pitch) {
+                        out.put(("$" + c.modelName).toLowerCase(Locale.ROOT),
+                            new float[]{(float) c.pos.x(), (float) c.pos.y(), (float) c.pos.z(), lim[0], lim[1]});
                     }
                 }
             }
         }
-        this.barrelPivot = pivot;
-        this.pitchMin = pmin;
-        this.pitchMax = pmax;
-        LOG.info("[TURRET] m1a2 renderer: {} turret group(s), {} barrel group(s); yaw pivot={} barrel pivot={} pitch[{}..{}]",
-            turret.size(), barrel.size(), this.turretPos, this.barrelPivot, pmin, pmax);
+        return out;
+    }
+
+    /** The pitch clamp for a part = its weapon's AddTurretWeapon min/max pitch (matched by name), or unclamped. */
+    private static float[] pitchLimits(MCH_TankInfo info, String[] names) {
+        if (info.weaponSetList != null && names != null) {
+            for (String nm : names) {
+                for (MCH_AircraftInfo.WeaponSet ws : info.weaponSetList) {
+                    if (ws != null && ws.type != null && ws.type.equalsIgnoreCase(nm)
+                        && ws.weapons != null && !ws.weapons.isEmpty()) {
+                        MCH_AircraftInfo.Weapon w = ws.weapons.get(0);
+                        return new float[]{w.minPitch, w.maxPitch};
+                    }
+                }
+            }
+        }
+        return new float[]{-90.0F, 90.0F};
+    }
+
+    /** The group at {@code start} plus its child mesh (following groups deeper than {@code depth}), lower-cased. */
+    private static Set<String> subtree(List<ModelGroup> all, int start, int depth) {
+        Set<String> sub = new HashSet<>();
+        sub.add(all.get(start).name.toLowerCase(Locale.ROOT));
+        for (int j = start + 1; j < all.size(); j++) {
+            ModelGroup c = all.get(j);
+            if (c == null) {
+                continue;
+            }
+            if (c.depth <= depth) {
+                break;
+            }
+            sub.add(c.name.toLowerCase(Locale.ROOT));
+        }
+        return sub;
     }
 
     @Override
     protected Set<String> dynamicGroupsLower() {
-        return this.turretGroups; // exclude the whole turret from the static hull; redrawn (yaw + barrel pitch) below
+        return this.turretGroups; // exclude the whole turret from the static hull; redrawn (yaw + per-gun pitch) below
     }
 
     @Override
@@ -135,7 +166,7 @@ public class MchDemoTankRenderer extends MchModelEntityRenderer<MchDemoTank> {
             return;
         }
         float turretYaw = 0.0F;
-        float barrelPitch = 0.0F;
+        float lookPitch = 0.0F;
         Entity rider = entity.getFirstPassenger();
         if (rider != null) {
             // Aim = the rider's free LOOK (head yaw / look pitch), already replicated to every client.
@@ -143,8 +174,7 @@ public class MchDemoTankRenderer extends MchModelEntityRenderer<MchDemoTank> {
             float headYawO = rider instanceof net.minecraft.world.entity.LivingEntity le ? le.yHeadRotO : headYaw;
             turretYaw = calcRot(Mth.wrapDegrees(headYaw - entity.getYRot()),
                 Mth.wrapDegrees(headYawO - entity.yRotO), partialTick);
-            float lookPitch = Mth.lerp(partialTick, rider.xRotO, rider.getXRot());
-            barrelPitch = Mth.clamp(lookPitch, this.pitchMin, this.pitchMax); // reference clamps to the weapon's range
+            lookPitch = Mth.lerp(partialTick, rider.xRotO, rider.getXRot());
         }
 
         pose.pushPose();
@@ -153,15 +183,17 @@ public class MchDemoTankRenderer extends MchModelEntityRenderer<MchDemoTank> {
         pose.mulPose(Axis.YP.rotationDegrees(-turretYaw));
         pose.translate(-this.turretPos.x(), -this.turretPos.y(), -this.turretPos.z());
 
-        renderGroups(this.yawOnlyGroups, pose, consumer, packedLight, overlay); // armour, hatch, secondary guns
+        renderGroups(this.yawOnlyGroups, pose, consumer, packedLight, overlay); // armour, hatch, non-pitch parts
 
-        // Main gun barrel: additionally pitch about the gun mount (nested in the turret yaw).
-        pose.pushPose();
-        pose.translate(this.barrelPivot.x(), this.barrelPivot.y(), this.barrelPivot.z());
-        pose.mulPose(Axis.XP.rotationDegrees(barrelPitch));
-        pose.translate(-this.barrelPivot.x(), -this.barrelPivot.y(), -this.barrelPivot.z());
-        renderGroups(this.barrelGroups, pose, consumer, packedLight, overlay);
-        pose.popPose();
+        for (PitchPart pp : this.pitchParts) {
+            float pitch = Mth.clamp(lookPitch, pp.min(), pp.max()); // per-gun elevation, clamped to its config limits
+            pose.pushPose();
+            pose.translate(pp.pivot().x(), pp.pivot().y(), pp.pivot().z());
+            pose.mulPose(Axis.XP.rotationDegrees(pitch));
+            pose.translate(-pp.pivot().x(), -pp.pivot().y(), -pp.pivot().z());
+            renderGroups(pp.groups(), pose, consumer, packedLight, overlay);
+            pose.popPose();
+        }
 
         pose.popPose();
     }

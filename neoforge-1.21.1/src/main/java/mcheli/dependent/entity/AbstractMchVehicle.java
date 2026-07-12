@@ -69,6 +69,9 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Rounds left in the selected weapon's current magazine (synced for the HUD ammo counter); -1 == none/infinite. */
     private static final EntityDataAccessor<Integer> DATA_AMMO =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
+    /** Reload/cooldown progress 0..1 of the selected weapon (synced for the HUD cooldown bar); 0 == ready to fire. */
+    private static final EntityDataAccessor<Float> DATA_RELOAD =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
 
     // Config-driven weapon loadout (server-authoritative), built lazily from weaponHostInfo(). Net pending weapon-cycle
     // steps: each one-shot switch payload adds ±1, and the whole accumulator is drained on the next server tick, so two
@@ -170,6 +173,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_GEAR, 0.0F);
         builder.define(DATA_WEAPON, -1);
         builder.define(DATA_AMMO, -1);
+        builder.define(DATA_RELOAD, 0.0F);
     }
 
     /** The parsed config whose {@code weaponSetList} drives this vehicle's weapon loadout, or null if it has none.
@@ -210,6 +214,17 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     public int getSelectedMaxAmmo() {
         WeaponSlot slot = selectedHudSlot();
         return slot != null ? slot.info.maxAmmo : -1;
+    }
+
+    /** The selected weapon's reload/cooldown progress 0..1 (synced), for the HUD {@code reload_time}/{@code reloading}
+     *  bar; 0 == ready to fire. */
+    public float getSelectedReload() { return this.entityData.get(DATA_RELOAD); }
+
+    /** The selected weapon's remaining cooldown in SECONDS — the synced fraction × the config interval (delay/reload)
+     *  ÷ 20 tps — for the HUD's {@code RELOAD_SEC} readout. Computed client-side from the config interval. */
+    public float getSelectedReloadSeconds() {
+        WeaponSlot slot = selectedHudSlot();
+        return slot != null ? getSelectedReload() * slot.reloadIntervalTicks() / 20.0F : 0.0F;
     }
 
     /** The HUD config name for a seat (0 = pilot), from this vehicle's {@code HUD =} config list, or null. */
@@ -436,6 +451,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         // Publish the selected weapon's current magazine for the HUD ammo counter.
         WeaponSlot sel = this.weapons.selected();
         this.entityData.set(DATA_AMMO, sel != null ? sel.magazine() : -1);
+        this.entityData.set(DATA_RELOAD, sel != null ? sel.reloadFraction() : 0.0F);
     }
 
     /**

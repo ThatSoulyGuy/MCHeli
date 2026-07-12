@@ -81,6 +81,9 @@ public final class MchHudVarState implements HudState {
             // and decays it to centre when the mouse is still; the HUD dot tracks the mouse and eases back on release.
             case "stick_x" -> mcheli.dependent.client.MchClientRotation.hudStickX();
             case "stick_y" -> mcheli.dependent.client.MchClientRotation.hudStickY();
+            // Weapon cooldown bar: reload_time 0..1 drives the depleting bar, reloading 0/1 its colour (yellow->red).
+            case "reload_time" -> this.vehicle.getSelectedReload();
+            case "reloading" -> this.vehicle.getSelectedReload() > 0.0F ? 1.0 : 0.0;
             case "center_x" -> this.width / 2.0;
             case "center_y" -> this.height / 2.0;
             case "width" -> this.width;
@@ -113,6 +116,8 @@ public final class MchHudVarState implements HudState {
             case "WPN_NAME": return this.vehicle.selectedWeaponName();
             case "WPN_AMMO": return ammoStr(this.vehicle.getSelectedAmmo());     // current magazine (synced)
             case "WPN_RM_AMMO": return ammoStr(this.vehicle.getSelectedMaxAmmo()); // config reserve (full economy = #37)
+            case "RELOAD_SEC": return (double) this.vehicle.getSelectedReloadSeconds(); // cooldown countdown text
+            case "RELOAD_PER": return (double) (this.vehicle.getSelectedReload() * 100.0F);
             case "HP": case "MAX_HP": case "INVENTORY": return 0;
             case "HP_PER": return 0.0;
             case "KEY_GUI": return "G";
