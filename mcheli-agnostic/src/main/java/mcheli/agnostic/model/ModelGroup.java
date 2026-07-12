@@ -11,6 +11,7 @@ public class ModelGroup {
     public String name;
     public ArrayList<ModelFace> faces = new ArrayList<>();
     public int glDrawingMode;
+    public int depth; // MQO nesting depth: a part's children are the following groups with a greater depth
 
     public ModelGroup() {
         this("");

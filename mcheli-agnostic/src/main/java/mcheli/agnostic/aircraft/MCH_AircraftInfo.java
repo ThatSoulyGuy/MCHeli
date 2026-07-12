@@ -304,7 +304,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       return 0.0F;
    }
 
-   private float getDefaultStepHeight() {
+   protected float getDefaultStepHeight() {
       return 0.0F;
    }
 

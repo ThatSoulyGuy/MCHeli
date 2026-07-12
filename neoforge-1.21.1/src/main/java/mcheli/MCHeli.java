@@ -63,6 +63,8 @@ public class MCHeli {
             NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoWeaponSelfTest());
             // Config-driven VISUALS proof: the muzzle-flash colour, cartridge model/scale + trail all come from config.
             NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoParticleSelfTest());
+            // Config-driven HUD proof: the eval engine, the hud/* configs, and the draw pipeline.
+            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHudSelfTest());
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
     }
@@ -82,6 +84,7 @@ public class MCHeli {
         MCH_TankInfoManager.getInstance().load(res, log, "tanks");
         MCH_VehicleInfoManager.getInstance().load(res, log, "vehicles");
         MCH_WeaponInfoManager.getInstance().load(res, log, "weapons");
+        mcheli.agnostic.hud.MCH_HudManager.getInstance().load(res, log);
         MCH_WeaponInfo m230 = MCH_WeaponInfoManager.get("m230");
         if (m230 != null) {
             LOGGER.info("MCHeli weapon check: m230 -> type={} power={} reloadTime={}",

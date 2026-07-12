@@ -45,8 +45,9 @@ public abstract class CameraMixin {
         if (detached || cam == null) {
             return; // third-person / no camera entity -> leave the vanilla camera
         }
-        if (!(cam.getVehicle() instanceof AbstractMchVehicle v) || !v.supportsMouseRotation()) {
-            return;
+        if (!(cam.getVehicle() instanceof AbstractMchVehicle v) || !v.supportsMouseRotation()
+            || !v.locksViewToVehicle()) {
+            return; // ground vehicles (tank) keep the free vanilla mouse-look camera
         }
         Vec3 feet = v.cockpitFeetOffset();
         if (feet == null) {

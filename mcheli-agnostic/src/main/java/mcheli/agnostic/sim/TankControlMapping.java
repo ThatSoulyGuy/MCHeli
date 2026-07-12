@@ -12,11 +12,11 @@ import mcheli.agnostic.tank.MCH_TankInfo;
  * {@code onUpdateAngles}: the A/D hull yaw (scaled by ground-mobility and the pivot-turn factor) and a suspension
  * lerp of pitch/roll toward the wheel targets.
  *
- * <p>Runs SERVER-side (the demo tank's hull yaw is server-authoritative, like the ground vehicle's), so it holds the
- * tank's live physics {@link AircraftSimState} (throttle/throttleBack feed the pivot-turn logic). One consequence:
- * the reference runs this on the client RENDER frame (accumulating per-frame), while the port runs it once per SERVER
- * tick with the {@code RotationSolver} low-pass partialTicks at its steady-state ~0.6 — so the hull turns somewhat
- * slower than the reference. Tunable via {@code mobilityYawOnGround} if the feel is off.
+ * <p>Runs CLIENT-side per render frame via {@code controlMapping()} + {@code MchClientRotation} (the rider's client is
+ * rotation-authoritative and ships the result to the server), matching the reference, which also runs the tank's
+ * {@code onUpdateAngles} on the client render frame. It holds an {@link AircraftSimState} (throttle/throttleBack feed
+ * the pivot-turn logic); the pivot gate short-circuits when {@code pivotTurnThrottle<=0}, so the client copy's idle
+ * throttle is harmless. Turn rate is tunable via {@code mobilityYawOnGround} if the feel is off.
  *
  * <p>Deferred (TODO): {@code WheelMng} suspension — the reference lerps pitch/roll toward {@code WheelMng.targetPitch/
  * targetRoll} (host wheel-entity terrain contact); here the targets are 0, so the hull stays level. The turret/camera
@@ -62,13 +62,22 @@ public final class TankControlMapping implements RotationSolver.ControlMapping {
         }
 
         // updateRecoil(partialTicks): deferred (no weapons yet).
-        // WheelMng suspension: lerp pitch/roll toward the wheel targets (0 here -> toward level).
-        float targetPitch = 0.0F; // TODO(wheel-terrain): WheelMng.targetPitch
-        float targetRoll = 0.0F;  // TODO(wheel-terrain): WheelMng.targetRoll
+        // WheelMng suspension: sample the terrain under the wheels and lerp pitch/roll toward the slope. This is what
+        // lets the tank climb — the pitched hull's forward thrust (rot2Vec3(yaw, pitch-10) in TankFlightModel) gains
+        // an upward component and drives up the grade. Null (no wheels configured) -> hull stays level.
+        WheelTerrainSolver.TerrainTilt tilt = WheelTerrainSampler.sample(self, info, info.weightedCenterZ);
+        float targetPitch = tilt != null ? tilt.targetPitch() : 0.0F;
+        float targetRoll = tilt != null ? tilt.targetRoll() : 0.0F;
         self.setRotation(self.yaw(), self.pitch() + (targetPitch - self.pitch()) * partialTicks);
         self.setRoll(self.roll() + (targetRoll - self.roll()) * partialTicks);
 
-        boolean isFly = GroundProbe.blockIdInColumn(self, 3, -3) == 0;
+        // "Airborne" gates the whole A/D hull-turn off. The reference used only the column block-probe, but that is
+        // fragile for the port's demo tank — its result depends on the exact rest Y / hitbox vs the terrain column, and
+        // it was returning air (isFly=true) for a tank that was demonstrably resting on the ground (onGround()==true),
+        // silently killing the turn in some worlds. Use the reliable, server-synced onGround() as the primary signal
+        // and keep the probe only as the airborne fallback (so a tank hovering just above ground still counts as
+        // grounded, matching the reference).
+        boolean isFly = !self.onGround() && GroundProbe.blockIdInColumn(self, 3, -3) == 0;
         double waterDepth = info.isFloat ? Buoyancy.waterDepth(self, info) : 0.0;
         if (!isFly || (info.isFloat && waterDepth > 0.0)) {
             float gmy = 1.0F;

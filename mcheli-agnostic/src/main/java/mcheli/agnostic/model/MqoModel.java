@@ -84,6 +84,9 @@ public class MqoModel extends MchModel {
                             }
 
                             String[] s = currentLine.split(" ");
+                            if (s.length == 2 && s[0].equalsIgnoreCase("depth")) {
+                                group.depth = Integer.parseInt(s[1]); // MQO part nesting depth (for child grouping)
+                            }
                             if (s.length == 2 && s[0].equalsIgnoreCase("facet")) {
                                 facet = Math.cos(Double.parseDouble(s[1]) * 3.1415926535 / 180.0);
                             }

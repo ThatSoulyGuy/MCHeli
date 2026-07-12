@@ -66,6 +66,9 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Index of the selected weapon in {@link #weapons} (synced for HUD/feedback); -1 == vehicle has no weapons. */
     private static final EntityDataAccessor<Integer> DATA_WEAPON =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
+    /** Rounds left in the selected weapon's current magazine (synced for the HUD ammo counter); -1 == none/infinite. */
+    private static final EntityDataAccessor<Integer> DATA_AMMO =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
 
     // Config-driven weapon loadout (server-authoritative), built lazily from weaponHostInfo(). Net pending weapon-cycle
     // steps: each one-shot switch payload adds ±1, and the whole accumulator is drained on the next server tick, so two
@@ -166,6 +169,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_SKIN, 0);
         builder.define(DATA_GEAR, 0.0F);
         builder.define(DATA_WEAPON, -1);
+        builder.define(DATA_AMMO, -1);
     }
 
     /** The parsed config whose {@code weaponSetList} drives this vehicle's weapon loadout, or null if it has none.
@@ -174,6 +178,48 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     /** Index of the selected weapon (synced), or -1 if this vehicle has no fireable weapons. */
     public int getSelectedWeaponIndex() { return this.entityData.get(DATA_WEAPON); }
+
+    // Client-side lazy weapon list, used only to resolve the synced selected index to a display NAME for the HUD.
+    private VehicleWeapons hudWeapons;
+
+    /** The selected weapon's slot (from the synced index), for HUD name/ammo display; null if none. */
+    private WeaponSlot selectedHudSlot() {
+        if (weaponHostInfo() == null) {
+            return null;
+        }
+        if (this.hudWeapons == null) {
+            this.hudWeapons = VehicleWeapons.build(weaponHostInfo(), MCH_WeaponInfoManager::get);
+        }
+        int idx = getSelectedWeaponIndex();
+        return idx >= 0 && idx < this.hudWeapons.size() ? this.hudWeapons.get(idx) : null;
+    }
+
+    /** The selected weapon's display name (for the HUD), resolved from the synced index; "" if none. */
+    public String selectedWeaponName() {
+        WeaponSlot slot = selectedHudSlot();
+        if (slot == null) {
+            return "";
+        }
+        return slot.info.displayName != null && !slot.info.displayName.isEmpty() ? slot.info.displayName : slot.weaponName;
+    }
+
+    /** Rounds in the selected weapon's current magazine (synced); -1 == no weapon or infinite ammo. */
+    public int getSelectedAmmo() { return this.entityData.get(DATA_AMMO); }
+
+    /** The selected weapon's reserve capacity ({@code MaxAmmo}) from config, for the HUD's "mag / reserve"; -1 none. */
+    public int getSelectedMaxAmmo() {
+        WeaponSlot slot = selectedHudSlot();
+        return slot != null ? slot.info.maxAmmo : -1;
+    }
+
+    /** The HUD config name for a seat (0 = pilot), from this vehicle's {@code HUD =} config list, or null. */
+    public String hudName(int seat) {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null || info.hudList == null || seat < 0 || seat >= info.hudList.size()) {
+            return null;
+        }
+        return info.hudList.get(seat);
+    }
 
     /** SERVER: queue a weapon cycle (+1 next / -1 previous), applied on the next tick. Called by the switch payload;
      *  accumulates so multiple presses in one tick window each register. */
@@ -229,12 +275,19 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** The aircraft info fed to {@link RotationSolver}, or null if this vehicle has no mouse rotation. */
     protected MCH_AircraftInfo rotationInfo() { return null; }
 
-    /** SERVER-side rotation mapping (the tank's keyboard hull-yaw runs on the server, not via the mouse hijack), or
-     *  null. Applied before {@link #tickPhysics(ControlInput)} so the physics reads the new heading. */
+    /** Optional SERVER-side rotation mapping applied before {@link #tickPhysics(ControlInput)} (so the physics reads
+     *  the new heading), or null. Currently unused — the tank's hull-yaw moved to the CLIENT ({@link #controlMapping()}
+     *  + {@code locksViewToVehicle()==false}) to match the reference and so the turn reaches the driver's own client;
+     *  kept as a hook for any future purely server-authoritative rotation. */
     protected RotationSolver.ControlMapping serverRotationMapping() { return null; }
 
     /** True if this vehicle's orientation is driven by the rider's mouse (heli/plane). */
     public boolean supportsMouseRotation() { return controlMapping() != null; }
+
+    /** True if the rider's VIEW is locked to the vehicle heading (the mouse-hijack aircraft). Ground vehicles (tank)
+     *  return false: they steer with A/D but keep the free vanilla mouse-look (the reference aims the turret/camera
+     *  independently of the hull), so the client turns the hull WITHOUT the camera lock / cockpit-parent Mixin. */
+    public boolean locksViewToVehicle() { return true; }
 
     /**
      * CLIENT: run the ported setAngles pipeline from the rider's virtual-stick {@link ControlInput}, updating this
@@ -281,6 +334,17 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
         if (this.level().isClientSide) {
             boolean localRider = this.localRotationOwned;
+            if (localRider) {
+                // Owned rotation is advanced LIVE by MchClientRotation on the render frame. Snapshot the previous
+                // yaw/pitch each tick so the renderer's interpolation tracks the turn — the model yaw comes from
+                // vanilla's rotLerp(yRotO, getYRot()) and the pitch from lerp(xRotO, getXRot()); those "old" values
+                // were only snapshotted server-side (below), so on the client they stayed pinned at the spawn value.
+                // (Roll already snapshots prevRollAngle above for both sides.) A first-person aircraft hides this
+                // because its cockpit camera never shows the model's own yaw; a free-look tank does not, so its hull
+                // looked like it never turned even though getYRot() was changing.
+                this.yRotO = this.getYRot();
+                this.xRotO = this.getXRot();
+            }
             if (this.lerpSteps > 0) {
                 // Local rider owns rotation -> lerp POSITION only (rotation target = current, so it is unchanged).
                 // Others lerp position + the synced server rotation.
@@ -368,6 +432,10 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         if (this.controlState.fire && !this.getPassengers().isEmpty()) {
             fireSelectedWeapon();
         }
+
+        // Publish the selected weapon's current magazine for the HUD ammo counter.
+        WeaponSlot sel = this.weapons.selected();
+        this.entityData.set(DATA_AMMO, sel != null ? sel.magazine() : -1);
     }
 
     /**
@@ -389,7 +457,18 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         float pitch = this.getXRot();
         float roll = this.getRollAngle();
 
-        // Muzzle world position = vehiclePos + R(vehicle) · mountLocalOffset.
+        // Turret vehicles (the tank: free mouse-look, hull steered separately) aim the gun where the RIDER LOOKS, not
+        // where the hull points — the reference fires turret weapons along getLastRiderYaw()/Pitch(). Aircraft keep the
+        // hull angles (the mouse already aims the whole airframe). getYHeadRot() is the rider's free look yaw.
+        if (!this.locksViewToVehicle()) {
+            net.minecraft.world.entity.Entity gunner = this.getFirstPassenger();
+            if (gunner != null) {
+                yaw = gunner.getYHeadRot();
+                pitch = gunner.getXRot();
+            }
+        }
+
+        // Muzzle world position = vehiclePos + R(aim) · mountLocalOffset (turret-mounted muzzle follows the aim).
         org.joml.Quaternionf qBody = new org.joml.Quaternionf()
             .rotateY((float) Math.toRadians(-yaw))
             .rotateX((float) Math.toRadians(pitch))

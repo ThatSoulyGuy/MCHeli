@@ -60,6 +60,23 @@ public final class MchClientRotation {
         v.setLocalRotationOwned(true);
         owned = v;
 
+        float pt = event.getPartialTick().getGameTimeDeltaTicks();
+
+        // GROUND vehicle (tank): steer the hull with A/D but keep the free vanilla mouse-look — no stick accumulation,
+        // no camera lock. The rotation mapping ignores the (zero) stick and turns the hull in onUpdateAngles; the yaw
+        // is shipped to the server by onClientTick (below) exactly like the aircraft.
+        if (!v.locksViewToVehicle()) {
+            lastVehicleId = vehicle.getId();
+            stickX = 0.0;
+            stickY = 0.0;
+            // Pass W/S (throttle up/down) too: TankControlMapping.onUpdateAngles flips the A/D steer direction while
+            // reversing (throttleDown) so the hull turns intuitively in reverse — hardcoding them false lost that.
+            v.applyClientRotation(new ControlInput(0, 0, 0, 0,
+                mc.options.keyUp.isDown(), mc.options.keyDown.isDown(),
+                mc.options.keyLeft.isDown(), mc.options.keyRight.isDown(), false, false, false, false, false, pt));
+            return;
+        }
+
         // Just mounted / switched: seed the camera-follow baseline, skip this frame's delta.
         if (vehicle.getId() != lastVehicleId) {
             lastVehicleId = vehicle.getId();
@@ -84,7 +101,6 @@ public final class MchClientRotation {
 
         // Run the ported setAngles: stick -> aircraft yaw/pitch/roll. A/D feed onUpdateAngles (heli air-bank /
         // plane rudder-roll). partialTicks = this frame's tick fraction (clamped + low-passed inside RotationSolver).
-        float pt = event.getPartialTick().getGameTimeDeltaTicks();
         ControlInput in = new ControlInput(stickX, stickY, 0, 0,
             false, false, mc.options.keyLeft.isDown(), mc.options.keyRight.isDown(), false,
             false, false, false, false, pt);
@@ -132,5 +148,26 @@ public final class MchClientRotation {
         lastVehicleId = -1;
         stickX = 0.0;
         stickY = 0.0;
+    }
+
+    // ---- HUD control-stick indicator ----
+    // The accumulated virtual stick (mouse position, clamp 40, decay 0.95) IS what the reference's stick_x/stick_y HUD
+    // variables show: MCH_HudItem.updateStick() = getCurrentStickX/Y() / getMaxStickLength(). Normalized to [-1,1] here;
+    // it decays to centre when the mouse is still. Sign: mouse-right -> +X (dot right); mouse-up lowers the player pitch
+    // so stickY goes negative -> -Y, which the config draws as the dot moving UP. 0 when not mouse-rotating a vehicle.
+
+    /** Control-stick indicator X in [-1,1] for the HUD (reference {@code stick_x}). */
+    public static double hudStickX() {
+        return clampUnit(stickX / MAX_STICK);
+    }
+
+    /** Control-stick indicator Y in [-1,1] for the HUD (reference {@code stick_y}); mouse-up gives a negative value so
+     *  the configured indicator dot rises. */
+    public static double hudStickY() {
+        return clampUnit(stickY / MAX_STICK);
+    }
+
+    private static double clampUnit(double v) {
+        return v < -1.0 ? -1.0 : (v > 1.0 ? 1.0 : v);
     }
 }

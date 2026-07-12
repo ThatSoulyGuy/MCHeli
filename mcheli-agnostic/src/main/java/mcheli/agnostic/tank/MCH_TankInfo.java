@@ -38,7 +38,7 @@ public class MCH_TankInfo extends MCH_AircraftInfo {
       return 47.94F;
    }
 
-   private float getDefaultStepHeight() {
+   protected float getDefaultStepHeight() {
       return 0.6F;
    }
 

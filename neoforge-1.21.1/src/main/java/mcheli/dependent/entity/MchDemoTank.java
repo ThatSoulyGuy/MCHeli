@@ -19,8 +19,14 @@ import net.minecraft.world.level.Level;
  * Demo tank: a rideable {@link Entity} driven by the ported {@code TankFlightModel} through
  * {@link AbstractMchVehicle}. The tank shares the plane's forward model ({@code rot2Vec3} thrust) with weaker
  * {@code throttle/8} lift and no VTOL/sweep, and preserves the tank-specific trap: {@code applyOnGroundPitch} is a
- * no-op (the reference tank overrides it). Holding throttle-up (W) drives forward. Keyboard hull YAW needs
- * RotationSolver wired server-side — a later increment; the {@code WheelMng} terrain-follow is likewise deferred.
+ * no-op (the reference tank overrides it). Holding throttle-up (W) drives forward, and A/D turn the hull.
+ *
+ * <p><b>Rotation is CLIENT-authoritative</b> (via {@link #controlMapping()}), exactly like the heli/plane and — for the
+ * tank specifically — matching the reference, whose {@code onUpdateAngles} hull-yaw runs on the client render frame,
+ * not the server tick. The earlier server-side wiring turned the hull authoritatively but the yaw never reached the
+ * driver's own client (vanilla does not echo a ridden entity's rotation back to its rider), so A/D appeared dead. The
+ * client now runs the turn (immediately visible, {@code localRotationOwned}) and ships the result via
+ * {@code ServerboundRotationPayload}; the {@code WheelMng} terrain-follow is still deferred.
  */
 public class MchDemoTank extends AbstractMchVehicle {
 
@@ -38,7 +44,14 @@ public class MchDemoTank extends AbstractMchVehicle {
         super(type, level);
     }
 
-    @Override protected RotationSolver.ControlMapping serverRotationMapping() { return this.mapping; }
+    @Override protected RotationSolver.ControlMapping controlMapping() { return this.mapping; }
+
+    /** Steer with A/D, but keep free mouse-look (no camera lock / cockpit-parent) — the hull turns under the view. */
+    @Override public boolean locksViewToVehicle() { return false; }
+
+    /** Config-driven climb: the vanilla move/collide step-up uses maxUpStep(); the entity default is 0 (can't climb
+     *  any rise), so feed the tank config's {@code StepHeight} (m1a2 = 1.5) — this is what lets the tank crest hills. */
+    @Override public float maxUpStep() { return this.info.stepHeight; }
     @Override protected MCH_AircraftInfo rotationInfo() { return this.info; }
     @Override protected MCH_AircraftInfo weaponHostInfo() { return this.info; }
 
