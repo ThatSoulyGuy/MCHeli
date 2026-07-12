@@ -39,6 +39,7 @@ public class MchDemoPlane extends AbstractMchVehicle {
 
     @Override protected RotationSolver.ControlMapping controlMapping() { return this.mapping; }
     @Override protected MCH_AircraftInfo rotationInfo() { return this.info; }
+    @Override protected MCH_AircraftInfo weaponHostInfo() { return this.info; }
 
     /** a-10 pilot seat = model (0, 2.8, 0.0); feet = seat - 0.5Y so the eye sits in the cockpit. */
     @Override protected net.minecraft.world.phys.Vec3 pilotFeetOffset() {

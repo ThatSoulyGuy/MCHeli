@@ -29,6 +29,7 @@ public record ServerboundControlPayload(int vehicleId, int bits) implements Cust
     public static final int MOVE_RIGHT    = 1 << 3;
     public static final int BRAKE         = 1 << 4;
     public static final int FREE_LOOK     = 1 << 5;
+    public static final int FIRE          = 1 << 6;
 
     public static final Type<ServerboundControlPayload> TYPE =
         new Type<>(ResourceLocation.fromNamespaceAndPath(MCHeli.MODID, "control"));
@@ -66,6 +67,7 @@ public record ServerboundControlPayload(int vehicleId, int bits) implements Cust
                 s.moveRight    = (b & MOVE_RIGHT)    != 0;
                 s.brake        = (b & BRAKE)         != 0;
                 s.freeLook     = (b & FREE_LOOK)     != 0;
+                s.fire         = (b & FIRE)          != 0;
             }
         });
     }

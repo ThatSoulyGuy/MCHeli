@@ -1,7 +1,10 @@
 package mcheli.dependent.registry;
 
+import com.mojang.serialization.MapCodec;
 import java.util.function.Supplier;
 import mcheli.MCHeli;
+import mcheli.dependent.entity.MchBullet;
+import mcheli.dependent.entity.MchCartridge;
 import mcheli.dependent.entity.MchDemoHeli;
 import mcheli.dependent.entity.MchDemoPlane;
 import mcheli.dependent.entity.MchDemoTank;
@@ -10,8 +13,12 @@ import mcheli.dependent.item.HeliSpawnItem;
 import mcheli.dependent.item.PlaneSpawnItem;
 import mcheli.dependent.item.TankSpawnItem;
 import mcheli.dependent.item.VehicleSpawnItem;
+import mcheli.dependent.particle.MuzzleFxOptions;
+import net.minecraft.core.particles.ParticleType;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobCategory;
 import net.minecraft.world.item.CreativeModeTab;
@@ -76,6 +83,42 @@ public final class MchRegistries {
     public static final DeferredItem<TankSpawnItem> DEMO_TANK_ITEM =
         ITEMS.registerItem("demo_tank_spawner", TankSpawnItem::new, new Item.Properties().stacksTo(1));
 
+    // Projectile fired by the demo vehicles. Small hitbox, short client tracking range, per-tick position sync
+    // (it's fast + short-lived).
+    public static final Supplier<EntityType<MchBullet>> DEMO_BULLET =
+        ENTITY_TYPES.register("demo_bullet", () ->
+            EntityType.Builder.<MchBullet>of(MchBullet::new, MobCategory.MISC)
+                .sized(0.2F, 0.2F)
+                .clientTrackingRange(6)
+                .updateInterval(1)
+                .build("demo_bullet"));
+
+    // Ejected shell casing (a client-cosmetic 3D model that inherits vehicle motion, bounces, tumbles, and despawns).
+    public static final Supplier<EntityType<MchCartridge>> CARTRIDGE =
+        ENTITY_TYPES.register("cartridge", () ->
+            EntityType.Builder.<MchCartridge>of(MchCartridge::new, MobCategory.MISC)
+                .sized(0.15F, 0.15F)
+                .clientTrackingRange(4)
+                .updateInterval(3)
+                .noSave()      // purely cosmetic — never persist to disk (its 10s despawn timer isn't saved)
+                .noSummon()
+                .build("cartridge"));
+
+    // Custom weapon "fx" particle (muzzle flash / muzzle smoke / projectile trail) — a soft billboard whose colour,
+    // size and lifetime all come from the weapon config (see MuzzleFxOptions).
+    public static final DeferredRegister<ParticleType<?>> PARTICLES =
+        DeferredRegister.create(Registries.PARTICLE_TYPE, MCHeli.MODID);
+
+    public static final Supplier<ParticleType<MuzzleFxOptions>> WEAPON_FX =
+        PARTICLES.register("weapon_fx", () -> new ParticleType<MuzzleFxOptions>(false) {
+            @Override public MapCodec<MuzzleFxOptions> codec() {
+                return MuzzleFxOptions.CODEC;
+            }
+            @Override public StreamCodec<? super RegistryFriendlyByteBuf, MuzzleFxOptions> streamCodec() {
+                return MuzzleFxOptions.STREAM_CODEC;
+            }
+        });
+
     // Dedicated MCHeli creative tabs — one per vehicle category, mirroring the loaded config buckets
     // (helicopters/planes/tanks/vehicles). Each tab's icon is its own spawn item; as real vehicles gain
     // items these tabs fill out. Replaces the temporary injection into vanilla Tools & Utilities.
@@ -114,5 +157,6 @@ public final class MchRegistries {
         ENTITY_TYPES.register(modBus);
         ITEMS.register(modBus);
         CREATIVE_TABS.register(modBus);
+        PARTICLES.register(modBus);
     }
 }

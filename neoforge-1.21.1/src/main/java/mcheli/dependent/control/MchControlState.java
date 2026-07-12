@@ -47,6 +47,8 @@ public final class MchControlState {
     public boolean moveRight;
     /** Rider is holding the brake this tick (reference {@code useBrake}). */
     public boolean brake;
+    /** Rider is holding the fire trigger this tick (dependent-side combat input; not part of the flight snapshot). */
+    public boolean fire;
 
     // --- mouse delta (per-frame averaged pointer motion) ---
     /** Averaged horizontal mouse delta for this frame (yaw, or roll outside flight-sim mode). */
@@ -99,7 +101,7 @@ public final class MchControlState {
      * the vehicle should coast rather than keep the last held keys.
      */
     public void clearMomentary() {
-        throttleUp = throttleDown = moveLeft = moveRight = brake = false;
+        throttleUp = throttleDown = moveLeft = moveRight = brake = fire = false;
         deltaX = 0.0;
         deltaY = 0.0;
     }

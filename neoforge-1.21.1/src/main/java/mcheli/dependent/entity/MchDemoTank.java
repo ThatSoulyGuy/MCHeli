@@ -40,6 +40,7 @@ public class MchDemoTank extends AbstractMchVehicle {
 
     @Override protected RotationSolver.ControlMapping serverRotationMapping() { return this.mapping; }
     @Override protected MCH_AircraftInfo rotationInfo() { return this.info; }
+    @Override protected MCH_AircraftInfo weaponHostInfo() { return this.info; }
 
     /** m1a2 has no AddSeat directive; seat the commander at the turret hatch (model ~y2.5) so the eye clears the hull. */
     @Override protected net.minecraft.world.phys.Vec3 pilotFeetOffset() {

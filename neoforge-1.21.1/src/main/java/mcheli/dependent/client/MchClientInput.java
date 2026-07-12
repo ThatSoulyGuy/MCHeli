@@ -3,6 +3,7 @@ package mcheli.dependent.client;
 import mcheli.MCHeli;
 import mcheli.dependent.control.MchControllable;
 import mcheli.dependent.control.ServerboundControlPayload;
+import mcheli.dependent.control.ServerboundWeaponSwitchPayload;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.world.entity.Entity;
@@ -32,6 +33,8 @@ public final class MchClientInput {
     private static int lastBits = -1;
     private static int lastVehicleId = -1;
     private static int keepalive;
+    // Weapon-switch is edge-triggered: remember the switch key's last state so we send ONE cycle per press.
+    private static boolean switchKeyWasDown;
 
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
@@ -41,6 +44,14 @@ public final class MchClientInput {
         // We are actively driving only when a player exists, no GUI is capturing input, and the ridden entity is
         // controllable. ANY other state (GUI open, dismounted, no player) means "release the controls".
         boolean controlling = mc.player != null && mc.screen == null && vehicle instanceof MchControllable;
+
+        // Weapon cycle (edge-triggered): the vanilla swap-offhand key (default F) is unused while piloting, so reuse
+        // it for "next weapon". Only fires on the rising edge and only while actively controlling.
+        boolean switchDown = controlling && mc.options.keySwapOffhand.isDown();
+        if (switchDown && !switchKeyWasDown && vehicle != null) {
+            PacketDistributor.sendToServer(new ServerboundWeaponSwitchPayload(vehicle.getId(), 1));
+        }
+        switchKeyWasDown = switchDown;
 
         if (!controlling) {
             // Release: if we were driving something, send ONE all-clear so the server stops applying the last-held
@@ -62,10 +73,16 @@ public final class MchClientInput {
 
         Options o = mc.options;
         int bits = 0;
-        if (o.keyUp.isDown())    bits |= ServerboundControlPayload.THROTTLE_UP;
-        if (o.keyDown.isDown())  bits |= ServerboundControlPayload.THROTTLE_DOWN;
-        if (o.keyLeft.isDown())  bits |= ServerboundControlPayload.MOVE_LEFT;
-        if (o.keyRight.isDown()) bits |= ServerboundControlPayload.MOVE_RIGHT;
+        if (o.keyUp.isDown())     bits |= ServerboundControlPayload.THROTTLE_UP;
+        if (o.keyDown.isDown())   bits |= ServerboundControlPayload.THROTTLE_DOWN;
+        if (o.keyLeft.isDown())   bits |= ServerboundControlPayload.MOVE_LEFT;
+        if (o.keyRight.isDown())  bits |= ServerboundControlPayload.MOVE_RIGHT;
+        // Raw left-mouse-button state — reliable while riding (vanilla attack handling can consume keyAttack). Gated
+        // by 'controlling' above (no GUI, mouse grabbed), so it only reads while actually piloting.
+        if (org.lwjgl.glfw.GLFW.glfwGetMouseButton(
+                mc.getWindow().getWindow(), org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+            bits |= ServerboundControlPayload.FIRE;
+        }
 
         int vid = vehicle.getId();
         keepalive++;

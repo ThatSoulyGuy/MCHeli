@@ -11,6 +11,7 @@ import mcheli.agnostic.value.Vec3d;
 import mcheli.agnostic.vehicle.MCH_VehicleInfoManager;
 import mcheli.agnostic.weapon.MCH_WeaponInfo;
 import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
+import mcheli.dependent.DemoBulletSelfTest;
 import mcheli.dependent.DemoForwardVehicleSelfTest;
 import mcheli.dependent.DemoHeliSelfTest;
 import mcheli.dependent.DemoTankSelfTest;
@@ -19,6 +20,7 @@ import mcheli.dependent.control.MchControlNetwork;
 import mcheli.dependent.port.NeoLogger;
 import mcheli.dependent.port.NeoResourceSource;
 import mcheli.dependent.registry.MchRegistries;
+import mcheli.dependent.registry.MchSounds;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
@@ -39,6 +41,7 @@ public class MCHeli {
         modEventBus.addListener(this::commonSetup);
         // Register the demo vehicle's EntityType + spawn item (and creative-tab entry) on the mod bus.
         MchRegistries.register(modEventBus);
+        MchSounds.register(modEventBus);
         // Register the serverbound player-control payload (client keys -> server ControlInput).
         modEventBus.addListener(MchControlNetwork::register);
         // Dev-only game-bus listener: the headless self-test that proves agnostic-driven movement at
@@ -53,6 +56,13 @@ public class MCHeli {
             NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.DEMO_PLANE, 6.0, 11.0, 90.0, 5.0, 20.0));
             // The tank is a GROUND vehicle (heavier gravity) -> its own drive-forward-without-flying test.
             NeoForge.EVENT_BUS.register(new DemoTankSelfTest());
+            // Projectile proof: a fired bullet flies downrange, hits a target and damages it, then despawns.
+            NeoForge.EVENT_BUS.register(new DemoBulletSelfTest());
+            // Config-driven weapon proof: the AH-64's real selectable weapons build from its config, carry their
+            // real stats/ballistics, switch, and fire (direct + from the vehicle's own mounts).
+            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoWeaponSelfTest());
+            // Config-driven VISUALS proof: the muzzle-flash colour, cartridge model/scale + trail all come from config.
+            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoParticleSelfTest());
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
     }

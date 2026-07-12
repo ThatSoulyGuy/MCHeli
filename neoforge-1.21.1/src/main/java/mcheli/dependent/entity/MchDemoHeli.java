@@ -45,6 +45,7 @@ public class MchDemoHeli extends AbstractMchVehicle {
 
     @Override protected RotationSolver.ControlMapping controlMapping() { return this.mapping; }
     @Override protected MCH_AircraftInfo rotationInfo() { return this.info; }
+    @Override protected MCH_AircraftInfo weaponHostInfo() { return this.info; }
 
     @Override
     public void tick() {

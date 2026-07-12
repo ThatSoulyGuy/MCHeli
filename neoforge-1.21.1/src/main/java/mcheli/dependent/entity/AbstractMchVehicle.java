@@ -5,10 +5,21 @@ import mcheli.agnostic.sim.ControlInput;
 import mcheli.agnostic.sim.RotationSolver;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.util.MCH_LowPassFilterFloat;
+import mcheli.agnostic.weapon.MCH_WeaponBallistics;
+import mcheli.agnostic.weapon.MCH_WeaponInfo;
+import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
+import mcheli.agnostic.weapon.VehicleWeapons;
+import mcheli.agnostic.weapon.WeaponSlot;
 import mcheli.dependent.control.MchControlState;
 import mcheli.dependent.control.MchControllable;
+import mcheli.dependent.particle.MuzzleFxOptions;
 import mcheli.dependent.port.NeoEntityRef;
+import mcheli.dependent.registry.MchSounds;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundEvent;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
@@ -52,6 +63,15 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
     private float gearAngle;
     private float prevGearAngle;
+    /** Index of the selected weapon in {@link #weapons} (synced for HUD/feedback); -1 == vehicle has no weapons. */
+    private static final EntityDataAccessor<Integer> DATA_WEAPON =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
+
+    // Config-driven weapon loadout (server-authoritative), built lazily from weaponHostInfo(). Net pending weapon-cycle
+    // steps: each one-shot switch payload adds ±1, and the whole accumulator is drained on the next server tick, so two
+    // presses that batch into a single tick both count instead of coalescing to one.
+    private VehicleWeapons weapons;
+    private int switchAccum;
 
     /** The agnostic view of this entity, reused every tick so the physics never sees a Minecraft type. */
     protected final EntityRef ref = new NeoEntityRef(this);
@@ -145,6 +165,20 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_THROTTLE, 0.0F);
         builder.define(DATA_SKIN, 0);
         builder.define(DATA_GEAR, 0.0F);
+        builder.define(DATA_WEAPON, -1);
+    }
+
+    /** The parsed config whose {@code weaponSetList} drives this vehicle's weapon loadout, or null if it has none.
+     *  Each demo vehicle returns its loaded {@link MCH_AircraftInfo} (the same one it flies with). */
+    protected MCH_AircraftInfo weaponHostInfo() { return null; }
+
+    /** Index of the selected weapon (synced), or -1 if this vehicle has no fireable weapons. */
+    public int getSelectedWeaponIndex() { return this.entityData.get(DATA_WEAPON); }
+
+    /** SERVER: queue a weapon cycle (+1 next / -1 previous), applied on the next tick. Called by the switch payload;
+     *  accumulates so multiple presses in one tick window each register. */
+    public void queueWeaponSwitch(int direction) {
+        this.switchAccum += direction >= 0 ? 1 : -1;
     }
 
     /** Landing-gear retract angle 0..90 (deployed..retracted), synced; the renderer interpolates with the prev. */
@@ -302,6 +336,173 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         float gearTarget = this.onGround() ? 0.0F : 90.0F;
         this.gearAngle += (gearTarget - this.gearAngle) * 0.12F;
         this.entityData.set(DATA_GEAR, this.gearAngle);
+
+        // Weapons: config-driven loadout (built lazily), cycled by the switch payload and fired while held.
+        tickWeapons();
+    }
+
+    // ---- config-driven weapons ----
+
+    /** Server tick for the weapon system: build the loadout once, advance fire-control counters, apply a queued
+     *  switch, and fire the selected weapon while the trigger is held. */
+    private void tickWeapons() {
+        if (this.weapons == null) {
+            this.weapons = VehicleWeapons.build(weaponHostInfo(), MCH_WeaponInfoManager::get);
+            this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex());
+        }
+        this.weapons.tick();
+
+        if (this.switchAccum != 0) {
+            int pending = this.switchAccum;
+            this.switchAccum = 0;
+            if (!this.weapons.isEmpty()) {
+                int dir = pending > 0 ? 1 : -1;
+                for (int i = 0; i < Math.abs(pending); i++) {
+                    this.weapons.cycle(dir);
+                }
+                this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex());
+                notifyPilotWeapon();
+            }
+        }
+
+        if (this.controlState.fire && !this.getPassengers().isEmpty()) {
+            fireSelectedWeapon();
+        }
+    }
+
+    /**
+     * Fire ONE shot of the selected weapon this tick, if its fire-control allows. Picks the next mount round-robin,
+     * places the muzzle and aims it in world space with the port's orientation convention
+     * ({@code Ry(-yaw)·Rx(pitch)·Rz(roll)}, forward = model +Z — the same transform that seats the pilot and renders
+     * the model, so muzzles line up with the guns), then spawns a {@link MchBullet} carrying the weapon's real stats
+     * and plays the weapon's own report.
+     */
+    private void fireSelectedWeapon() {
+        WeaponSlot slot = this.weapons.selected();
+        if (slot == null || !slot.canFire()) {
+            return;
+        }
+        MCH_AircraftInfo.Weapon mount = slot.fireOneShot();
+        MCH_WeaponInfo wi = slot.info;
+
+        float yaw = this.getYRot();
+        float pitch = this.getXRot();
+        float roll = this.getRollAngle();
+
+        // Muzzle world position = vehiclePos + R(vehicle) · mountLocalOffset.
+        org.joml.Quaternionf qBody = new org.joml.Quaternionf()
+            .rotateY((float) Math.toRadians(-yaw))
+            .rotateX((float) Math.toRadians(pitch))
+            .rotateZ((float) Math.toRadians(roll));
+        org.joml.Vector3f mpos = new org.joml.Vector3f((float) mount.pos.x(), (float) mount.pos.y(), (float) mount.pos.z());
+        qBody.transform(mpos);
+        Vec3 muzzle = this.position().add(mpos.x, mpos.y, mpos.z);
+
+        // Per-shot dispersion: the reference perturbs the firing yaw AND pitch by (rand-0.5)*accuracy degrees on each
+        // shot (MCH_WeaponSet.use), so sustained fire scatters over a cone instead of a perfect laser.
+        float accuracy = wi.accuracy;
+        float spreadYaw = accuracy > 0.0F ? (this.random.nextFloat() - 0.5F) * accuracy : 0.0F;
+        float spreadPitch = accuracy > 0.0F ? (this.random.nextFloat() - 0.5F) * accuracy : 0.0F;
+
+        // Direction = R(vehicle yaw+mountYaw+spread, pitch+mountPitch+spread, roll) · forward(+Z). The mount's fixed aim
+        // offset (from AddWeapon) plus the dispersion are summed onto the body angles as the reference does before
+        // RotVec3(0,0,1,...).
+        org.joml.Vector3f fwd = new org.joml.Vector3f(0.0F, 0.0F, 1.0F);
+        new org.joml.Quaternionf()
+            .rotateY((float) Math.toRadians(-(yaw + mount.yaw + spreadYaw)))
+            .rotateX((float) Math.toRadians(pitch + mount.pitch + spreadPitch))
+            .rotateZ((float) Math.toRadians(roll))
+            .transform(fwd);
+        Vec3 dir = new Vec3(fwd.x, fwd.y, fwd.z);
+
+        // Ballistics + model, all from config.
+        boolean bulletOrRocket = MCH_WeaponBallistics.isBulletOrRocket(wi.type);
+        float speed = MCH_WeaponBallistics.initialSpeed(wi.acceleration);
+        float accFactor = MCH_WeaponBallistics.accelerationFactor(wi.acceleration, bulletOrRocket);
+        float gravity = wi.gravity; // 0 for guns/rockets; negative for bombs
+        String model = (wi.bulletModelName != null && !wi.bulletModelName.isEmpty())
+            ? wi.bulletModelName : MCH_WeaponBallistics.defaultBulletModel(wi.type);
+        int color = packColor(wi.color);
+
+        MchBullet.spawnWeapon(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600, this, model, color, wi);
+
+        // Report: the weapon's own sound at its configured volume, with the reference pitch jitter.
+        SoundEvent report = MchSounds.byName(wi.soundFileName);
+        if (report != null) {
+            float pitchR = wi.soundPitch * (1.0F - wi.soundPitchRandom) + this.random.nextFloat() * wi.soundPitchRandom;
+            this.level().playSound(null, muzzle.x, muzzle.y, muzzle.z, report, SoundSource.NEUTRAL,
+                wi.soundVolume, pitchR);
+        }
+
+        spawnFireCosmetics(muzzle, dir, wi, yaw + mount.yaw, pitch + mount.pitch);
+    }
+
+    /**
+     * Config-driven fire cosmetics at the barrel — nothing hardcoded per weapon:
+     * <ul>
+     *   <li><b>Muzzle flash</b>: one {@link MuzzleFxOptions} particle per {@code AddMuzzleFlash} entry, at that entry's
+     *       distance, in its exact colour, sized {@code 2·flash.size}, living {@code 1+flash.age} (so the M230's orange
+     *       {@code 254,159,84} shows). A weapon with no flash config shows none.</li>
+     *   <li><b>Muzzle smoke</b>: {@code num} particles per {@code AddMuzzleFlashSmoke} entry, colour/size/age/count all
+     *       from the entry, jittered by its {@code range}.</li>
+     *   <li><b>Cartridge</b>: the {@code SetCartridge} model shell, ejected per its config direction/speed.</li>
+     * </ul>
+     * The reference spawns these client-side; here the server broadcasts them ({@link ServerLevel#sendParticles} /
+     * a normal entity) so every nearby player sees them.
+     */
+    private void spawnFireCosmetics(Vec3 muzzle, Vec3 dir, MCH_WeaponInfo wi, float gunYaw, float gunPitch) {
+        if (this.level() instanceof ServerLevel sl) {
+            if (wi.listMuzzleFlash != null) {
+                for (MCH_WeaponInfo.MuzzleFlash mf : wi.listMuzzleFlash) {
+                    Vec3 p = muzzle.add(dir.scale(mf.dist));
+                    MuzzleFxOptions fx = new MuzzleFxOptions(packArgb(mf.a, mf.r, mf.g, mf.b), 2.0F * mf.size, 1 + mf.age);
+                    sl.sendParticles(fx, p.x, p.y, p.z, 1, 0.0, 0.0, 0.0, 0.0);
+                }
+            }
+            if (wi.listMuzzleFlashSmoke != null) {
+                for (MCH_WeaponInfo.MuzzleFlash mf : wi.listMuzzleFlashSmoke) {
+                    Vec3 p = muzzle.add(dir.scale(mf.dist));
+                    double spread = mf.range * 0.5;
+                    MuzzleFxOptions fx = new MuzzleFxOptions(packArgb(mf.a, mf.r, mf.g, mf.b), 0.1F * mf.size,
+                        Math.max(1, mf.age));
+                    // Outward drift ~0.2 (reference motionX/Z = rand*±0.2) so the smoke billows instead of sitting.
+                    sl.sendParticles(fx, p.x, p.y, p.z, Math.max(1, mf.num), spread, spread * 0.15, spread, 0.2);
+                }
+            }
+        }
+        // Cartridge shell — every parameter from the weapon's SetCartridge config.
+        if (wi.cartridge != null) {
+            MchCartridge.spawn(this.level(), wi.cartridge, muzzle, gunYaw, gunPitch, this.getDeltaMovement());
+        }
+    }
+
+    /** Pack four 0..1 colour channels into 0xAARRGGBB (config muzzle-flash colours are already normalized). */
+    private static int packArgb(float a, float r, float g, float b) {
+        return ((Math.round(a * 255.0F) & 0xFF) << 24) | ((Math.round(r * 255.0F) & 0xFF) << 16)
+            | ((Math.round(g * 255.0F) & 0xFF) << 8) | (Math.round(b * 255.0F) & 0xFF);
+    }
+
+    /** Pack an {@link mcheli.agnostic.math.MCH_Color} (0..1 floats) into 0xAARRGGBB for the bullet tint. */
+    private static int packColor(mcheli.agnostic.math.MCH_Color c) {
+        int a = Math.round(c.a * 255.0F) & 0xFF;
+        int r = Math.round(c.r * 255.0F) & 0xFF;
+        int g = Math.round(c.g * 255.0F) & 0xFF;
+        int b = Math.round(c.b * 255.0F) & 0xFF;
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+
+    /** Tell the pilot (action-bar) which weapon is now selected. */
+    private void notifyPilotWeapon() {
+        WeaponSlot slot = this.weapons.selected();
+        if (slot == null || this.getPassengers().isEmpty()) {
+            return;
+        }
+        String label = slot.info.displayName != null && !slot.info.displayName.isEmpty()
+            ? slot.info.displayName : slot.weaponName;
+        Entity rider = this.getPassengers().get(0);
+        if (rider instanceof Player p) {
+            p.displayClientMessage(Component.literal("Weapon: " + label), true);
+        }
     }
 
     /** Run the per-type flight controller for one server tick with the rider's control input. */

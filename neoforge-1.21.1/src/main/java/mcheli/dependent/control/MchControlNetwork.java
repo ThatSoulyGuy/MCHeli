@@ -20,5 +20,9 @@ public final class MchControlNetwork {
             ServerboundRotationPayload.TYPE,
             ServerboundRotationPayload.STREAM_CODEC,
             ServerboundRotationPayload::handle);
+        registrar.playToServer(
+            ServerboundWeaponSwitchPayload.TYPE,
+            ServerboundWeaponSwitchPayload.STREAM_CODEC,
+            ServerboundWeaponSwitchPayload::handle);
     }
 }
