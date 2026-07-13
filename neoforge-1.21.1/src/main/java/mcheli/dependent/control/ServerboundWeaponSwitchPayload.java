@@ -42,8 +42,9 @@ public record ServerboundWeaponSwitchPayload(int vehicleId, int direction) imple
         ctx.enqueueWork(() -> {
             Player player = ctx.player();
             Entity e = player.level().getEntity(p.vehicleId());
-            if (e instanceof AbstractMchVehicle v && e.hasPassenger(player)) {
-                v.queueWeaponSwitch(p.direction() >= 0 ? 1 : -1);
+            // Weapon switching is blocked while the pilot is in the resupply GUI (reference isPilotReloading gate).
+            if (e instanceof AbstractMchVehicle v && e.hasPassenger(player) && !v.isPilotReloading()) {
+                v.queueWeaponSwitch(player, p.direction() >= 0 ? 1 : -1);
             }
         });
     }

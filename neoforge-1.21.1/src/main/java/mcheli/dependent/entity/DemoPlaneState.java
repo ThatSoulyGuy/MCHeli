@@ -22,14 +22,15 @@ public final class DemoPlaneState implements PlaneState {
     private final java.util.function.BooleanSupplier destroyed;
     private boolean gunnerMode;
 
-    public DemoPlaneState(java.util.function.BooleanSupplier destroyed) { this.destroyed = destroyed; }
+    private final AbstractMchVehicle owner;
+    public DemoPlaneState(AbstractMchVehicle owner) { this.owner = owner; this.destroyed = owner::isDestroyed; }
 
     @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
     @Override public boolean isGunnerMode() { return gunnerMode; }
     // isHovering = isGunnerMode || isHoveringMode; the demo plane has no hovering mode, so it collapses to gunner.
     @Override public boolean isHovering() { return gunnerMode; }
     @Override public boolean isTargetDrone() { return false; }
-    @Override public boolean canUseFuel() { return true; }       // maxFuel <= 0
+    @Override public boolean canUseFuel() { return this.owner.canUseFuel(false); }       // maxFuel <= 0
     @Override public boolean canUseWing() { return true; }        // partWing == null
     @Override public boolean isCanopyClose() { return true; }     // partCanopy == null
     @Override public void switchGunnerMode(boolean on) { this.gunnerMode = on; }

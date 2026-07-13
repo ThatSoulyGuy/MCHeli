@@ -38,6 +38,10 @@ public class MchGroundVehicle extends AbstractMchVehicle {
 
     @Override protected String modelDir() { return "vehicles"; }
 
+
+    /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
+     *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
+    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
     /** Free the rider's look so an emplacement (Phalanx / VADS / 46cm / SAM) can be AIMED with the mouse: the gun renders
      *  toward {@code getYHeadRot()/getXRot()} and {@code fireSelectedWeapon} launches along that same free look — the
      *  reference {@code MCH_EntityVehicle} rider aims a static mount exactly as the tank rider aims the turret. */

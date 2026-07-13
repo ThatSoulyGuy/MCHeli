@@ -26,7 +26,7 @@ public class MchTank extends AbstractMchVehicle {
     private static final FlightModel MODEL = new TankFlightModel();
     private static final MCH_TankInfo FALLBACK = buildFallback();
 
-    private final TankState tankState = new DemoTankState(this::isDestroyed);
+    private final TankState tankState = new DemoTankState(this);
     private final AircraftSimState simState = new AircraftSimState(0.07);
     private RotationSolver.ControlMapping mapping; // lazy — needs the resolved concrete MCH_TankInfo
 
@@ -41,6 +41,10 @@ public class MchTank extends AbstractMchVehicle {
 
     @Override protected String modelDir() { return "tanks"; }
 
+
+    /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
+     *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
+    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
     /** Reference {@code MCH_EntityTank.setAngles:1119-1126}: the FIRST-PERSON rider's look pitch is clamped every frame
      *  to the hull-projected pitch + the config {@code MinRotationPitch/MaxRotationPitch}. */
     @Override public float[] riderPitchClampNow() {

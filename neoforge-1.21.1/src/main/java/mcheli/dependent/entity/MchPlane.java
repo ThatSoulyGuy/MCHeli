@@ -25,7 +25,7 @@ public class MchPlane extends AbstractMchVehicle {
     private static final FlightModel MODEL = new PlaneFlightModel();
     private static final MCP_PlaneInfo FALLBACK = buildFallback();
 
-    private final PlaneState planeState = new DemoPlaneState(this::isDestroyed);
+    private final PlaneState planeState = new DemoPlaneState(this);
     private final AircraftSimState simState = new AircraftSimState(0.07);
     private final AircraftSimState rotState = new AircraftSimState();
     private RotationSolver.ControlMapping mapping; // lazy — needs the resolved concrete MCP_PlaneInfo
@@ -41,6 +41,10 @@ public class MchPlane extends AbstractMchVehicle {
 
     @Override protected String modelDir() { return "planes"; }
 
+
+    /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
+     *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
+    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
     @Override protected RotationSolver.ControlMapping controlMapping() {
         if (this.mapping == null) {
             this.mapping = new PlaneControlMapping(this.ref, (MCP_PlaneInfo) weaponHostInfo(), this.rotState, this.planeState);

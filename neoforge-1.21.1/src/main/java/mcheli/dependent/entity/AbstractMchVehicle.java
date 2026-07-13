@@ -33,7 +33,9 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageTypes;
+import java.util.UUID;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -88,6 +90,26 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
      *  every client (the port of the reference {@code useWeaponStat}/{@code MCH_WeaponSet.isUsed} bit). */
     private static final EntityDataAccessor<Boolean> DATA_FIRING =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.BOOLEAN);
+    /** Fuel in the tank (synced for the HUD gauge). A vehicle with {@code MaxFuel = 0} never burns fuel. */
+    private static final EntityDataAccessor<Integer> DATA_FUEL =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
+    /** True while the PILOT has the resupply GUI open (plus the reference's 20-tick tail) — the port of
+     *  {@code isPilotReloading}. The HUD blanks the weapon name/ammo while it is set, and the reference kills pilot
+     *  control input for the same window. */
+    private static final EntityDataAccessor<Boolean> DATA_RELOADING =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.BOOLEAN);
+    /** Ticks left of the post-close tail (reference {@code supplyAmmoWait}, set to 20 while the GUI is open). */
+    private int supplyAmmoWait;
+
+    /** weaponIndex → TOTAL ammo (magazine + reserve) for every weapon, so the riding GUI can show the reserve of a
+     *  weapon that is not the one selected. The HUD's {@link #DATA_AMMO} carries only the SELECTED weapon's magazine. */
+    private static final EntityDataAccessor<CompoundTag> DATA_AMMO_ALL =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.COMPOUND_TAG);
+    /** seatIndex → passenger ENTITY ID. The client mirror of the server's seat map — the same information the reference
+     *  shipped in {@code MCH_PacketSeatListResponse}, but auto-resynced. {@code getPassengers()} order is mount order
+     *  and compacts on dismount, so it can NEVER be used as a seat map. */
+    private static final EntityDataAccessor<CompoundTag> DATA_SEATS =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.COMPOUND_TAG);
     /** Accumulated damage (reference {@code damageTaken}); HP = maxHp - this. The single health value that must sync
      *  (the HUD renders client-side and derives hp/hp_rto/HP_PER from it); maxHp is config the client already holds. */
     private static final EntityDataAccessor<Integer> DATA_DAMAGE_TAKEN =
@@ -163,24 +185,70 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** True (synced) while a weapon fired within the last few ticks — drives the gatling barrel spin on every client. */
     public boolean isFiringRecently() { return this.entityData.get(DATA_FIRING); }
 
-    // CLIENT-only aim latch (reference isUsedPlayer/lastRiderYaw/lastRiderPitch, MCH_RenderVehicle:28-35): while ridden
-    // the renderer stores the aim here; after dismount the turret/guns HOLD this pose instead of snapping to default.
-    private float latchedAimYaw, latchedAimPitch;
+    // Aim latch — the reference lastRiderYaw/lastRiderPitch (MCH_EntityAircraft:1486-1497, NBT "AcLastRYaw"): the
+    // PILOT's look, refreshed only while a live pilot is aboard and the craft is intact, and HELD after dismount so
+    // the turret/guns/crew-seats keep their last pose instead of snapping to hull-forward.
+    private float lastRiderYaw, prevLastRiderYaw;
+    private float lastRiderPitch, prevLastRiderPitch;
     private boolean aimLatched;
-    public void latchAim(float yaw, float pitch) { this.latchedAimYaw = yaw; this.latchedAimPitch = pitch; this.aimLatched = true; }
+
+    /** Refresh the pilot-aim latch once per tick (call from the entity tick, both sides). */
+    private void updateAimLatch() {
+        Entity p = pilot();
+        if (p != null && p.isAlive() && !isDestroyed()) {
+            this.prevLastRiderYaw = this.aimLatched ? this.lastRiderYaw : p.getYHeadRot();
+            this.prevLastRiderPitch = this.aimLatched ? this.lastRiderPitch : p.getXRot();
+            this.lastRiderYaw = p.getYHeadRot();
+            this.lastRiderPitch = p.getXRot();
+            this.aimLatched = true;
+        } else {
+            this.prevLastRiderYaw = this.lastRiderYaw;   // no pilot: HOLD the last aim (reference latch)
+            this.prevLastRiderPitch = this.lastRiderPitch;
+        }
+    }
+
     public boolean hasAimLatch() { return this.aimLatched; }
-    public float latchedAimYaw() { return this.latchedAimYaw; }
-    public float latchedAimPitch() { return this.latchedAimPitch; }
+
+    /**
+     * The TURRET yaw, relative to the hull — the ONE source shared by the rotSeat seat orbit, the weapon-ring in
+     * {@code renderWeaponParts}, and the emplacement's VPart turret. All three must read this (textually equivalent)
+     * or a crewed tank shears: seat, turret mesh and camera would each follow a different angle.
+     */
+    public float turretOrbitYaw(float partialTick) {
+        Entity p = pilot();
+        if (p != null) {
+            // LIVE, render-time sample — the same clock the weapons' own aim uses (op.getYHeadRot()), so the ring, the
+            // rotSeat crew seats and each gun all agree within a frame. Sampling the ring from the TICK latch while the
+            // guns read the live head detached the guns from the turret they ride.
+            float hy = p.getYHeadRot();
+            float hyO = p instanceof LivingEntity le ? le.yHeadRotO : hy;
+            return shortLerpDeg(Mth.wrapDegrees(hy - this.getYRot()),
+                Mth.wrapDegrees(hyO - this.yRotO), partialTick);
+        }
+        if (!this.aimLatched) {
+            return 0.0F;
+        }
+        return shortLerpDeg(Mth.wrapDegrees(this.lastRiderYaw - this.getYRot()),
+            Mth.wrapDegrees(this.prevLastRiderYaw - this.yRotO), partialTick); // no pilot: HOLD the last aim
+    }
+
+    /** The pilot's look PITCH (absolute) — live while piloted, latched after dismount. The emplacement/turret elevation. */
+    public float turretAimPitch(float partialTick) {
+        Entity p = pilot();
+        if (p != null) {
+            return Mth.lerp(partialTick, p.xRotO, p.getXRot());
+        }
+        return this.aimLatched ? Mth.lerp(partialTick, this.prevLastRiderPitch, this.lastRiderPitch) : 0.0F;
+    }
 
     // Config-driven weapon loadout (server-authoritative), built lazily from weaponHostInfo(). Net pending weapon-cycle
     // steps: each one-shot switch payload adds ±1, and the whole accumulator is drained on the next server tick, so two
     // presses that batch into a single tick both count instead of coalescing to one.
     private VehicleWeapons weapons;
-    private int switchAccum;
+    private final java.util.Map<Integer, Integer> switchBySeat = new java.util.HashMap<>();
 
     /** The agnostic view of this entity, reused every tick so the physics never sees a Minecraft type. */
     protected final EntityRef ref = new NeoEntityRef(this);
-    private final MchControlState controlState = new MchControlState();
 
     // MCHeli custom roll axis. The authoritative local value; the server also publishes it to DATA_ROLL for others.
     private float rollAngle;
@@ -216,7 +284,21 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         super(type, level);
     }
 
-    @Override public MchControlState getControlState() { return this.controlState; }
+    /** The PILOT's control state — what the physics reads. Gunners have their own (see {@link #controlState(int)}). */
+    @Override public MchControlState getControlState() { return controlState(0); }
+
+    /** Per-seat control state: every seat owns its own FIRE/free-look bits, but only seat 0's drive bits are honored
+     *  (a gunner must not steer — the reference routes movement from the pilot packet alone). */
+    private final java.util.Map<Integer, MchControlState> controlBySeat = new java.util.HashMap<>();
+
+    public MchControlState controlState(int seat) {
+        return this.controlBySeat.computeIfAbsent(seat, s -> new MchControlState());
+    }
+
+    /** Drop a seat's held keys when its occupant leaves (else the vehicle keeps firing/driving on the last packet). */
+    public void clearSeatControls(int seat) {
+        this.controlBySeat.remove(seat);
+    }
     @Override public float getRollAngle() { return this.rollAngle; }
     @Override public float getPrevRollAngle() { return this.prevRollAngle; }
 
@@ -268,18 +350,35 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         if (info == null || info.seatList == null || info.seatList.isEmpty()) {
             return super.getPassengerAttachmentPoint(passenger, dimensions, partialTick);
         }
-        MCH_SeatInfo seat = info.seatList.get(0);
+        int sid = seatIndexOf(passenger);
+        if (sid < 0) {
+            sid = getPassengers().isEmpty() || getPassengers().get(0) == passenger ? 0 : -1;
+        }
+        if (sid < 0 || sid >= info.seatList.size()) {
+            return super.getPassengerAttachmentPoint(passenger, dimensions, partialTick); // seat not resolved yet
+        }
+        MCH_SeatInfo seat = info.seatList.get(sid);
+        // The reference genuinely uses DIFFERENT y conventions per path — do not unify. Pilot (updateRiderPosition
+        // :3201): feet at seat.y − 0.5. Crew seats (updateSeatsPosition :3142-3148): the client player is offset +1.0
+        // (eye convention → feet at seat.y − 0.62); a tall mob sits at seat.y + (1 − height); a small mob at seat.y.
+        double sy;
+        if (sid == 0) {
+            sy = seat.pos.y() - 0.5;
+        } else if (passenger instanceof Player) {
+            sy = seat.pos.y() - 0.62;
+        } else if (passenger.getBbHeight() >= 1.0F) {
+            sy = seat.pos.y() + (1.0 - passenger.getBbHeight());
+        } else {
+            sy = seat.pos.y();
+        }
         org.joml.Vector3f p = new org.joml.Vector3f(
-            (float) seat.pos.x(), (float) (seat.pos.y() - 0.5), (float) seat.pos.z());
+            (float) seat.pos.x(), (float) sy, (float) seat.pos.z());
 
-        // (1) rotSeat: orbit the seat about turretPosition by the turret yaw, keeping Y (Ry never touches Y). The turret
-        // yaw comes from the rider's HEAD yaw (getYHeadRot), exactly as MchTankRenderer/MchGroundVehicleRenderer drive
-        // the turret mesh, so seat and turret rotate together.
+        // (1) rotSeat: orbit the seat about turretPosition by the TURRET yaw, keeping Y (Ry never touches Y). The yaw is
+        // turretOrbitYaw() — the latched PILOT's look (reference lastRiderYaw), NOT this passenger's own head: a tank
+        // crew seat rides the turret the PILOT is slewing. Same expression as the renderers' ring => no shear.
         if (seat.rotSeat) {
-            float headYaw = passenger.getYHeadRot();
-            float headYawO = passenger instanceof net.minecraft.world.entity.LivingEntity le ? le.yHeadRotO : headYaw;
-            float turretYaw = shortLerpDeg(Mth.wrapDegrees(headYaw - this.getYRot()),
-                Mth.wrapDegrees(headYawO - this.yRotO), partialTick);
+            float turretYaw = turretOrbitYaw(partialTick);
             org.joml.Vector3f tp = new org.joml.Vector3f(
                 (float) info.turretPosition.x(), (float) info.turretPosition.y(), (float) info.turretPosition.z());
             // DELIBERATE divergence: the reference (getTransformedPosition:3335-3337) re-adds turretPosition.xCoord to
@@ -511,6 +610,10 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_AMMO, -1);
         builder.define(DATA_RELOAD, 0.0F);
         builder.define(DATA_FIRING, false);
+        builder.define(DATA_FUEL, 0);
+        builder.define(DATA_SEATS, new CompoundTag());
+        builder.define(DATA_AMMO_ALL, new CompoundTag());
+        builder.define(DATA_RELOADING, false);
         builder.define(DATA_DAMAGE_TAKEN, 0);
         builder.define(DATA_DESTROYED, false);
         builder.define(DATA_CONFIG, "");
@@ -622,8 +725,12 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     /** SERVER: queue a weapon cycle (+1 next / -1 previous), applied on the next tick. Called by the switch payload;
      *  accumulates so multiple presses in one tick window each register. */
-    public void queueWeaponSwitch(int direction) {
-        this.switchAccum += direction >= 0 ? 1 : -1;
+    public void queueWeaponSwitch(Entity sender, int direction) {
+        int seat = seatIndexOf(sender);
+        if (seat < 0) {
+            return;
+        }
+        this.switchBySeat.merge(seat, direction >= 0 ? 1 : -1, Integer::sum);
     }
 
     /** Landing-gear retract angle 0..90 (deployed..retracted), synced; the renderer interpolates with the prev. */
@@ -655,13 +762,44 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         setDamageTaken(tag.getInt("AcDamage"));
         this.entityData.set(DATA_DESTROYED, tag.getBoolean("Destroyed"));
         this.despawnCount = tag.getInt("Despawn");
+        this.entityData.set(DATA_FUEL, tag.getInt("AcFuel"));
+        if (tag.contains("FuelSlots")) {
+            this.fuelInventory.fromTag(tag.getList("FuelSlots", net.minecraft.nbt.Tag.TAG_COMPOUND), this.registryAccess());
+        }
+        // Riders re-board AFTER load, so remember each one's seat by UUID and hand it back in addPassenger.
+        this.restoredSeats.clear();
+        for (net.minecraft.nbt.Tag e : tag.getList("Seats", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+            CompoundTag s = (CompoundTag) e;
+            this.restoredSeats.put(s.getUUID("Id"), s.getInt("Seat"));
+        }
+        this.savedAmmo = tag.contains("AcWeaponsAmmo") ? tag.getIntArray("AcWeaponsAmmo") : null;
     }
     @Override protected void addAdditionalSaveData(CompoundTag tag) {
         tag.putString("Config", configName());
         tag.putInt("AcDamage", getDamageTaken());
         tag.putBoolean("Destroyed", isDestroyed());
         tag.putInt("Despawn", this.despawnCount);
+        tag.putInt("AcFuel", getFuel());
+        tag.put("FuelSlots", this.fuelInventory.createTag(this.registryAccess()));
+        net.minecraft.nbt.ListTag seats = new net.minecraft.nbt.ListTag();
+        for (java.util.Map.Entry<UUID, Integer> e : this.seatByUuid.entrySet()) {
+            CompoundTag s = new CompoundTag();
+            s.putUUID("Id", e.getKey());
+            s.putInt("Seat", e.getValue());
+            seats.add(s);
+        }
+        tag.put("Seats", seats);
+        if (this.weapons != null) {
+            int[] ammo = new int[this.weapons.size()];
+            for (int i = 0; i < ammo.length; i++) {
+                ammo[i] = this.weapons.get(i).totalAmmo(); // magazine + reserve; -1 for a weapon with no economy
+            }
+            tag.putIntArray("AcWeaponsAmmo", ammo);
+        }
     }
+
+    /** Ammo totals read from NBT, applied once the weapon list exists (it is built lazily on the first weapon tick). */
+    private int[] savedAmmo;
 
     /** The AABB used for frustum culling. The collision box is a small faithful 2.0×0.7 core, but the MODEL spans the
      *  full rotor/wing (up to ~19 blocks), so inflate generously — else the vehicle pops out of view whenever its tiny
@@ -692,6 +830,64 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             return InteractionResult.SUCCESS; // let the client predict the mount
         }
         return player.startRiding(this) ? InteractionResult.SUCCESS : InteractionResult.PASS;
+    }
+
+    /**
+     * Click a SPECIFIC seat to board it (the reference lets you right-click a seat's own 1×1 box, so a gunner can take
+     * their station even on a pilotless craft). The nearest allowed free seat within 1 block of the hit point wins;
+     * otherwise this falls through to {@link #interact} and the normal first-free-seat rule.
+     */
+    @Override
+    public InteractionResult interactAt(Player player, Vec3 hit, InteractionHand hand) {
+        if (isDestroyed() || player.isSecondaryUseActive()) {
+            return InteractionResult.PASS;
+        }
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null || info.seatList == null) {
+            return InteractionResult.PASS;
+        }
+        if (!this.level().isClientSide) {
+            int best = -1;
+            double bestD = 1.0; // the reference seat box is 1×1
+            Vec3 hitWorld = position().add(hit);
+            for (int i = 0; i < seatCount() && i < info.seatList.size(); i++) {
+                if (i == 0 && !info.canRide) {
+                    continue; // config CanRide=false (the fuel truck, the ammo box): the pilot seat is NOT boardable —
+                              // firstFreeSeatFor honours this, but a clicked seat is taken as PREFERRED and would skip it
+                }
+                if (!canOccupySeat(i)) {
+                    continue;
+                }
+                double d = position().add(seatOffsetWorld(i, player, 1.0F)).distanceTo(hitWorld);
+                if (d < bestD) {
+                    bestD = d;
+                    best = i;
+                }
+            }
+            if (best >= 0) {
+                this.pendingSeat.put(player.getUUID(), best);
+                if (!player.startRiding(this)) {
+                    this.pendingSeat.remove(player.getUUID());
+                    return InteractionResult.PASS;
+                }
+                return InteractionResult.SUCCESS;
+            }
+        }
+        return InteractionResult.PASS;
+    }
+
+    /** World-space offset of seat {@code i} (the same transform the attachment uses) — for seat picking. */
+    private Vec3 seatOffsetWorld(int seat, Entity rider, float partialTick) {
+        MCH_AircraftInfo info = weaponHostInfo();
+        MCH_SeatInfo si = info.seatList.get(seat);
+        org.joml.Vector3f p = new org.joml.Vector3f((float) si.pos.x(), (float) si.pos.y(), (float) si.pos.z());
+        if (si.rotSeat) {
+            org.joml.Vector3f tp = new org.joml.Vector3f(
+                (float) info.turretPosition.x(), (float) info.turretPosition.y(), (float) info.turretPosition.z());
+            p.sub(tp).rotateY((float) Math.toRadians(-turretOrbitYaw(partialTick))).add(tp);
+        }
+        p.rotate(bodyRotation(partialTick));
+        return new Vec3(p.x, (double) p.y - modelMinY(), p.z);
     }
 
     // ---- mouse rotation seams (aircraft override these; ground vehicle/tank leave them null) ----
@@ -758,6 +954,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         super.tick();
         this.prevRollAngle = this.rollAngle; // snapshot for render interpolation (both sides)
         this.prevGearAngle = this.gearAngle;
+        updateAimLatch(); // the pilot-aim latch feeding the turret ring / rotSeat crew seats (both sides)
 
         if (this.level().isClientSide) {
             boolean localRider = this.localRotationOwned;
@@ -802,11 +999,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         if (this.mchTimeSinceHit > 0) this.mchTimeSinceHit--;   // MCHeli's own damage cooldown (reference :2121)
         updateExtraBoxes();                                     // refresh the part hitboxes to the current pose
 
-        if (this.getPassengers().isEmpty()) {
-            this.controlState.clearMomentary(); // an abandoned vehicle holds no keys and coasts
-            this.riderOwnsRotation = false;     // ... and yields rotation back to the physics
+        if (pilot() == null) {
+            getControlState().clearMomentary(); // no PILOT: the vehicle holds no drive keys and coasts (a lone gunner
+            this.riderOwnsRotation = false;     // may still aim + fire, but never drives)
         }
-        ControlInput in = this.controlState.snapshot(1.0F); // server tick -> partialTicks = 1.0F
+        ControlInput in = getControlState().snapshot(1.0F); // the PILOT's keys; server tick -> partialTicks = 1.0F
 
         // Server-side rotation (tank hull yaw) runs BEFORE the physics so the thrust reads the new heading.
         RotationSolver.ControlMapping serverMap = this.serverRotationMapping();
@@ -857,7 +1054,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
         // Engine power: full while a rider holds throttle-up, idle (0.5) while ridden, spooling to 0 when abandoned.
         // Gradual so rotor RPM / sound ramp up and down instead of snapping.
-        float target = this.getPassengers().isEmpty() ? 0.0F : (this.controlState.throttleUp ? 1.0F : 0.5F);
+        float target = pilot() == null ? 0.0F : (getControlState().throttleUp ? 1.0F : 0.5F);
         this.enginePower += (target - this.enginePower) * 0.05F;
         this.entityData.set(DATA_THROTTLE, this.enginePower);
 
@@ -867,47 +1064,611 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         this.gearAngle += (gearTarget - this.gearAngle) * 0.12F;
         this.entityData.set(DATA_GEAR, this.gearAngle);
 
+        // Fuel economy: burn with the sim throttle, and run any supply aura this config declares (reference order —
+        // supply/fuel run alongside the weapon tick).
+        updateFuel();
+        siphonFuelSlots();   // fuel cans in the GUI slots -> the tank
+        updateSupply();
+
         // Weapons: config-driven loadout (built lazily), cycled by the switch payload and fired while held.
         tickWeapons();
     }
 
     // ---- config-driven weapons ----
 
+    // ---- SEAT MAP (#36) — 1.21.1 multi-passenger replaces the reference's per-seat MCH_EntitySeat entities. Seat 0 is
+    //      the pilot; the map is server truth, mirrored to clients via DATA_SEATS and persisted by rider UUID. ----
+
+    private final java.util.Map<UUID, Integer> seatByUuid = new java.util.HashMap<>();   // server truth
+    private final java.util.Map<UUID, Integer> pendingSeat = new java.util.HashMap<>();  // interactAt -> addPassenger
+    private final java.util.Map<UUID, Integer> restoredSeats = new java.util.HashMap<>();// NBT -> addPassenger
+
+    /** How many seats this config declares (rack slots are reserved in the index space but never boardable). */
+    public int seatCount() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null ? Math.max(1, info.getNumSeat()) : 1;
+    }
+
+    /** The seat {@code p} occupies, or -1. Server reads its own map; the client reads the synced mirror. A -1 on the
+     *  client is a tolerated DATA_SEATS-vs-SetPassengers packet race — callers SKIP that rider for the frame. */
+    public int seatIndexOf(Entity p) {
+        if (p == null || !hasPassenger(p)) {
+            return -1;
+        }
+        if (!this.level().isClientSide) {
+            Integer s = this.seatByUuid.get(p.getUUID());
+            return s != null ? s : -1;
+        }
+        CompoundTag t = this.entityData.get(DATA_SEATS);
+        for (String k : t.getAllKeys()) {
+            if (t.getInt(k) == p.getId()) {
+                try {
+                    return Integer.parseInt(k);
+                } catch (NumberFormatException ignored) {
+                    break;
+                }
+            }
+        }
+        // The synced map has not arrived for this rider yet (it lags the passenger list by a packet). Fall back to
+        // MOUNT ORDER, which is exactly how seats are assigned anyway — so control and rendering never stall waiting
+        // on a packet. The SERVER is authoritative (it checks its own map before honouring any drive bits), so a brief
+        // client-side guess can only ever be cosmetic, and it self-corrects the instant DATA_SEATS lands.
+        return getPassengers().indexOf(p);
+    }
+
+    /**
+     * The PLAYER operating {@code w} right now, or null — the port of {@code getWeaponUserByWeaponName}
+     * ({@code MCH_EntityAircraft:3061-3076}): the occupant of the weapon's own seat, else the pilot but ONLY when the
+     * weapon is {@code canUsePilot}. This is what decides whether a gun aims (and whose look it follows), whether it
+     * can be selected/fired, and — for the local player — whether {@code HideGM} hides it.
+     */
+    public Entity weaponOperator(MCH_AircraftInfo.Weapon w) {
+        if (w == null) {
+            return null;
+        }
+        Entity e = seatPassenger(w.seatID);
+        if (!(e instanceof Player) && w.canUsePilot) {
+            e = pilot();
+        }
+        return e instanceof Player ? e : null;
+    }
+
+    /** Who is sitting in {@code seat}, or null. */
+    public Entity seatPassenger(int seat) {
+        for (Entity p : getPassengers()) {
+            if (seatIndexOf(p) == seat) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    /** The PILOT (seat 0) — the ONLY rider who drives. Never use {@code getFirstPassenger()} for this: a gunner may
+     *  legitimately board a pilotless craft, and passenger order is mount order. */
+    public Entity pilot() {
+        return seatPassenger(0);
+    }
+
+    // DELIBERATELY NOT overriding getControllingPassenger(): returning the pilot would flip this entity into vanilla's
+    // client-authoritative boat/minecart regime — isControlledByLocalInstance() becomes true on the pilot's client, which
+    // then ships ServerboundMoveVehiclePacket every tick and the server absMoveTo()s the vehicle onto it, OVERWRITING the
+    // server physics (and arming the "flying a vehicle" kick on a dedicated server with allow-flight=false). This port is
+    // server-authoritative for POSITION (see the class doc); pilot() is our own concept and must stay out of vanilla's.
+
+    /** May {@code seat} be boarded right now? Honors the config's {@code ExclusionSeat} groups (at most ONE occupant
+     *  across each group) and excludes rack slots (reference {@code canRideMob}: racks take neither players nor mobs). */
+    public boolean canOccupySeat(int seat) {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null || seat < 0 || seat >= seatCount()) {
+            return false;
+        }
+        if (seatPassenger(seat) != null) {
+            return false;
+        }
+        if (info.exclusionSeatList != null) {
+            for (Integer[] group : info.exclusionSeatList) {
+                boolean member = false;
+                for (Integer id : group) {
+                    if (id != null && id == seat) {
+                        member = true;
+                        break;
+                    }
+                }
+                if (!member) {
+                    continue;
+                }
+                for (Integer id : group) {
+                    if (id != null && id != seat && seatPassenger(id) != null) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    /** Seat choice for a boarding rider: an explicitly-clicked seat if free, else the pilot seat (players only, and only
+     *  when the config allows riding), else the first free crew seat. -1 == the vehicle is full. */
+    private int firstFreeSeatFor(Entity rider, int preferred) {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (preferred >= 0 && canOccupySeat(preferred)) {
+            return preferred;
+        }
+        if (rider instanceof Player && info != null && info.canRide && canOccupySeat(0)) {
+            return 0;
+        }
+        for (int i = 1; i < seatCount(); i++) {
+            if (canOccupySeat(i)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    @Override
+    protected boolean canAddPassenger(Entity p) {
+        return firstFreeSeatFor(p, this.pendingSeat.getOrDefault(p.getUUID(), -1)) >= 0;
+    }
+
+    @Override
+    protected void addPassenger(Entity p) {
+        super.addPassenger(p);
+        if (this.level().isClientSide) {
+            return;
+        }
+        Integer saved = this.restoredSeats.remove(p.getUUID());
+        int seat = (saved != null && canOccupySeat(saved))
+            ? saved
+            : firstFreeSeatFor(p, this.pendingSeat.getOrDefault(p.getUUID(), -1));
+        this.pendingSeat.remove(p.getUUID());
+        if (seat < 0) {
+            return;
+        }
+        this.seatByUuid.put(p.getUUID(), seat);
+        syncSeatTag();
+        // A creative rider tops every magazine; the arriving crew member may also bump the pilot off a weapon he was
+        // only borrowing while this seat was empty (reference onMountPlayerSeat:3443-3453).
+        if (this.weapons != null) {
+            this.weapons.onMount(p instanceof Player pl && pl.getAbilities().instabuild);
+            this.weapons.refreshEligibility(s -> seatPassenger(s) instanceof Player);
+            // The auto-bump may have moved the PILOT off a weapon he was only borrowing — republish, or his HUD keeps
+            // naming a weapon he is no longer firing.
+            this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex(0));
+        }
+    }
+
+    @Override
+    protected void removePassenger(Entity p) {
+        super.removePassenger(p);
+        if (this.level().isClientSide) {
+            return;
+        }
+        Integer seat = this.seatByUuid.remove(p.getUUID());
+        syncSeatTag();
+        if (seat != null) {
+            clearSeatControls(seat);
+        }
+        if (this.weapons != null) {
+            this.weapons.refreshEligibility(s -> seatPassenger(s) instanceof Player);
+            this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex(0)); // a departing gunner frees his weapon
+        }
+    }
+
+    /** Publish the seat map (seatIndex -> passenger entity id) to every tracking client. */
+    private void syncSeatTag() {
+        CompoundTag t = new CompoundTag();
+        for (Entity p : getPassengers()) {
+            Integer seat = this.seatByUuid.get(p.getUUID());
+            if (seat != null) {
+                t.putInt(Integer.toString(seat), p.getId());
+            }
+        }
+        this.entityData.set(DATA_SEATS, t);
+    }
+
+    // ---- fuel & supply economy (#37) — reference MCH_EntityAircraft:2223-2308 (fuel), :2264-2451 (supply auras) ----
+
+    private double fuelConsumptionAcc; // fractional carry, so a <1/sec burn rate still drains over time
+    private int fuelSuppliedCount;     // ticks of consumption PAUSE granted by a nearby supplier (reference sets 40)
+
+    /** The vehicle's 3 FUEL SLOTS (reference {@code MCH_AircraftInventory} SLOT_FUEL0..2). Drop a fuel can in and the
+     *  tank siphons it. Persisted in NBT and dropped when the wreck despawns. */
+    public static final int FUEL_SLOTS = 3;
+    private final net.minecraft.world.SimpleContainer fuelInventory = new net.minecraft.world.SimpleContainer(FUEL_SLOTS);
+
+    public net.minecraft.world.SimpleContainer fuelInventory() {
+        return this.fuelInventory;
+    }
+
+    /**
+     * Siphon the fuel slots into the tank — the port of {@code MCH_EntityAircraft.updateSupplyFuel} (:2310-2335): every
+     * 10 ticks, while the vehicle {@link #canSupply() is on the ground} and the tank is not full, each can gives up to
+     * {@code 100} units (capped by what the tank needs and what the can still holds).
+     */
+    private void siphonFuelSlots() {
+        if (this.level().isClientSide || getMaxFuel() <= 0 || this.tickCount % 10 != 0) {
+            return;
+        }
+        // The reference wraps BOTH the burn and this siphon in !isDestroyed() (MCH_EntityAircraft:2295): a wreck lies
+        // grounded for ~25 s before it despawns, and without this gate canSupply() would stay true and drain the cans
+        // it is about to drop.
+        if (isDestroyed() || getFuel() >= getMaxFuel() || !canSupply()) {
+            return;
+        }
+        int fuel = getFuel();
+        for (int i = 0; i < FUEL_SLOTS && fuel < getMaxFuel(); i++) {
+            ItemStack can = this.fuelInventory.getItem(i);
+            if (can.getItem() instanceof mcheli.dependent.item.MchFuelItem) {
+                int want = Math.min(100, getMaxFuel() - fuel);
+                fuel += mcheli.dependent.item.MchFuelItem.drain(can, want);
+            }
+        }
+        setFuel(fuel);
+    }
+
+    /**
+     * Rearm ONE weapon by index from the riding GUI — the port of {@code supplyAmmo} / {@code canPlayerSupplyAmmo}: the
+     * vehicle must be grounded ({@link #canSupply()}) and the weapon must have a finite reserve that is not already
+     * full; the config's ammo items ({@code Item = count, name} — most bundled weapons need iron ingots + gunpowder)
+     * are consumed from the player's main inventory first, regardless of game mode, as in the reference
+     * ({@code canPlayerSupplyAmmo}/{@code supplyAmmo} have no creative bypass). A water/lava-bucket round hands back an
+     * empty bucket. The index is the weapon the GUI is SHOWING, so it is bounds-checked here — a modified client
+     * cannot address a weapon that does not exist. Returns true if a supply pulse was granted.
+     */
+    public boolean supplyAmmoFromPlayer(Player player, int weaponIndex) {
+        if (this.level().isClientSide || this.weapons == null || !canSupply()) {
+            return false;
+        }
+        if (weaponIndex < 0 || weaponIndex >= this.weapons.size()) {
+            return false;
+        }
+        WeaponSlot slot = this.weapons.get(weaponIndex);
+        if (!slot.hasEconomy() || slot.totalAmmo() >= slot.maxAmmo()) {
+            return false;
+        }
+        java.util.List<mcheli.agnostic.weapon.MCH_WeaponInfo.RoundItem> cost = slot.info.roundItems;
+        if (cost != null && !cost.isEmpty()) {
+            for (mcheli.agnostic.weapon.MCH_WeaponInfo.RoundItem ri : cost) {
+                if (countItem(player, ri) < ri.num) {
+                    return false; // cannot afford this weapon's round item (no creative bypass — reference has none)
+                }
+            }
+            for (mcheli.agnostic.weapon.MCH_WeaponInfo.RoundItem ri : cost) {
+                takeItem(player, ri, ri.num);
+            }
+        }
+        slot.supplyRestAllAmmo();
+        if (slot.magazine() <= 0) {
+            slot.reloadMag();
+        }
+        return true;
+    }
+
+    // The reference scans mainInventory only (indices 0..35): hotbar + main grid, never armor (36..39) or offhand (40).
+    private static final int MAIN_INVENTORY_SIZE = 36;
+
+    private static int countItem(Player player, mcheli.agnostic.weapon.MCH_WeaponInfo.RoundItem ri) {
+        int n = 0;
+        int size = Math.min(MAIN_INVENTORY_SIZE, player.getInventory().getContainerSize());
+        for (int i = 0; i < size; i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (matches(s, ri)) {
+                n += s.getCount();
+            }
+        }
+        return n;
+    }
+
+    private static void takeItem(Player player, mcheli.agnostic.weapon.MCH_WeaponInfo.RoundItem ri, int num) {
+        int size = Math.min(MAIN_INVENTORY_SIZE, player.getInventory().getContainerSize());
+        for (int i = 0; i < size && num > 0; i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (!matches(s, ri)) {
+                continue;
+            }
+            // A water/lava-bucket round hands back an EMPTY bucket rather than destroying the stack (reference
+            // MCH_EntityAircraft:2400-2402); those items are max-stack 1, so one slot yields one round.
+            if (s.is(net.minecraft.world.item.Items.WATER_BUCKET) || s.is(net.minecraft.world.item.Items.LAVA_BUCKET)) {
+                player.getInventory().setItem(i, new ItemStack(net.minecraft.world.item.Items.BUCKET));
+                num--;
+            } else {
+                int take = Math.min(num, s.getCount());
+                s.shrink(take);
+                num -= take;
+            }
+        }
+    }
+
+    private static boolean matches(ItemStack s, mcheli.agnostic.weapon.MCH_WeaponInfo.RoundItem ri) {
+        if (s.isEmpty() || ri.itemName == null) {
+            return false;
+        }
+        return net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(s.getItem()).getPath()
+            .equalsIgnoreCase(ri.itemName);
+    }
+
+    /**
+     * Track the pilot's resupply GUI — the port of {@code updateSupplyAmmo}:2345-2370. While the PILOT has the vehicle
+     * menu open the vehicle is "reloading" (the HUD blanks its weapon readout), and the flag persists for a 20-tick
+     * tail after the GUI closes so the readout does not flicker back mid-reload.
+     */
+    private void updateReloadingState() {
+        boolean open = pilot() instanceof Player p && p.isAlive()
+            && p.containerMenu instanceof mcheli.dependent.menu.MchVehicleMenu m && m.vehicle() == this;
+        if (open) {
+            this.supplyAmmoWait = 20;
+        } else if (this.supplyAmmoWait > 0) {
+            this.supplyAmmoWait--;
+        }
+        this.entityData.set(DATA_RELOADING, open || this.supplyAmmoWait > 0);
+    }
+
+    /** True while the pilot is in the resupply GUI (or within its 20-tick tail) — reference {@code isPilotReloading}. */
+    public boolean isPilotReloading() { return this.entityData.get(DATA_RELOADING); }
+
+    /** The selected weapon's RESERVE (reference {@code getRestAllAmmoNum}) = its total minus the magazine in the gun.
+     *  -1 when the weapon has no finite reserve. CLIENT-readable (both halves are synced). */
+    public int getSelectedRestAmmo() {
+        int total = ammoOf(getSelectedWeaponIndex());
+        return total < 0 ? -1 : Math.max(0, total - Math.max(0, getSelectedAmmo()));
+    }
+
+    /** Publish every weapon's TOTAL ammo (magazine + reserve) for the riding GUI. SynchedEntityData compares before it
+     *  marks dirty, so an unchanged map costs no packets. */
+    private void publishAllAmmo() {
+        CompoundTag t = new CompoundTag();
+        for (int i = 0; i < this.weapons.size(); i++) {
+            WeaponSlot w = this.weapons.get(i);
+            if (w.hasEconomy()) {
+                t.putInt(Integer.toString(i), w.totalAmmo());
+            }
+        }
+        this.entityData.set(DATA_AMMO_ALL, t);
+    }
+
+    /** Total ammo (magazine + reserve) of weapon {@code i} — CLIENT-readable, for the riding GUI. -1 == infinite. */
+    public int ammoOf(int i) {
+        CompoundTag t = this.entityData.get(DATA_AMMO_ALL);
+        String k = Integer.toString(i);
+        return t.contains(k) ? t.getInt(k) : -1;
+    }
+
+    /** The number of weapons this vehicle has (CLIENT-readable, from the config). */
+    public int weaponCount() {
+        return hudWeaponList() != null ? hudWeaponList().size() : 0;
+    }
+
+    /** Weapon {@code i}'s slot, resolved from the config — CLIENT-safe (ammo lives in {@link #ammoOf}). */
+    public WeaponSlot weaponAt(int i) {
+        VehicleWeapons list = hudWeaponList();
+        return list != null && i >= 0 && i < list.size() ? list.get(i) : null;
+    }
+
+    private VehicleWeapons hudWeaponList() {
+        if (weaponHostInfo() == null) {
+            return null;
+        }
+        if (this.hudWeapons == null) {
+            this.hudWeapons = VehicleWeapons.build(weaponHostInfo(), MCH_WeaponInfoManager::get);
+        }
+        return this.hudWeapons;
+    }
+
+    /**
+     * Spill the fuel slots when the vehicle leaves the world for good — the port of {@code MCH_AircraftInventory.setDead}
+     * (:63-75), which drops the inventory contents on death. Gated on the removal REASON so a chunk unload or a
+     * dimension change (which also remove the entity) can never duplicate the cans.
+     */
+    @Override
+    public void remove(RemovalReason reason) {
+        if (!this.level().isClientSide
+            && (reason == RemovalReason.KILLED || reason == RemovalReason.DISCARDED)) {
+            net.minecraft.world.Containers.dropContents(this.level(), this, this.fuelInventory);
+        }
+        super.remove(reason);
+    }
+
+    /** Pull every weapon's reserve into its magazine — the reference reloads all weapons on the GUI-CLOSE edge, and
+     *  only while the vehicle is intact ({@code updateSupplyAmmo}:2355 gates on {@code !isDestroyed()}). */
+    public void reloadAllWeapons() {
+        if (this.weapons != null && !isDestroyed()) {
+            this.weapons.reloadAll();
+        }
+    }
+
+    public int getFuel() { return this.entityData.get(DATA_FUEL); }
+
+    public void setFuel(int f) {
+        if (!this.level().isClientSide) {
+            this.entityData.set(DATA_FUEL, Math.max(0, Math.min(f, getMaxFuel())));
+        }
+    }
+
+    public int getMaxFuel() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null ? info.maxFuel : 0;
+    }
+
+    /** Fuel fraction 0..1 for the HUD gauge — faithfully 0 when the config declares no tank (reference
+     *  {@code getFuelP}:2247-2250; the HUD's low-fuel warning gates on {@code maxFuel>0} so nothing false-alarms). */
+    public float getFuelP() {
+        int max = getMaxFuel();
+        return max <= 0 ? 0.0F : getFuel() / (float) max;
+    }
+
+    /** A creative occupant (or a fuel-less config) makes fuel free — reference {@code isInfinityFuel}:402-416.
+     *  {@code anySeat}: scan EVERY rider (the heli's hover gate uses this variant), else only the pilot. */
+    public boolean isInfinityFuel(boolean anySeat) {
+        if (anySeat) {
+            for (Entity p : getPassengers()) {
+                if (p instanceof Player pl && pl.getAbilities().instabuild) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        Entity p = pilot();
+        return p instanceof Player pl && pl.getAbilities().instabuild;
+    }
+
+    /** Can the engine still run? Reference {@code canUseFuel}:2252-2258 — note the floor is fuel {@code > 1}, not 0. */
+    public boolean canUseFuel(boolean anySeat) {
+        return getMaxFuel() <= 0 || getFuel() > 1 || isInfinityFuel(anySeat);
+    }
+
+    /** The flight-sim throttle actually driving the engine — NOT the display {@code enginePower} (which idles at 0.5
+     *  while merely ridden and would burn fuel at rest). Overridden by the categories that own a sim state. */
+    protected double simThrottle() {
+        return 0.0;
+    }
+
+    /** Receivers must be on solid ground to take on fuel/ammo (reference {@code canSupply}:2223-2225) — a floating
+     *  vehicle is exempt from the water rule. */
+    public boolean canSupply() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        boolean floats = info != null && info.isFloat;
+        if (!floats && this.isInWater()) {
+            return false;
+        }
+        // Reference MCH_Lib.getBlockIdY(this, 1, -3): start at (int)(posY + 0.5) and scan 3 blocks down for a
+        // COLLIDABLE block (a plant/torch does not count as ground, and the probe is not shifted a block low).
+        BlockPos from = BlockPos.containing(getX(), getY() + 0.5, getZ());
+        for (int i = 0; i < 3; i++) {
+            BlockPos at = from.below(i);
+            if (!this.level().getBlockState(at).getCollisionShape(this.level(), at).isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Burn fuel with the throttle (reference {@code updateFuel}:2289-2308): once a second, while actually under power
+     *  and not currently being resupplied; the {@code >1} floor mirrors the reference exactly. */
+    private void updateFuel() {
+        if (getMaxFuel() == 0) {
+            return;
+        }
+        if (this.fuelSuppliedCount > 0) {
+            this.fuelSuppliedCount--;
+        }
+        if (isDestroyed()) {
+            return;
+        }
+        MCH_AircraftInfo info = weaponHostInfo();
+        double throttle = simThrottle();
+        if (this.tickCount % 20 == 0 && getFuel() > 1 && throttle > 0.0 && this.fuelSuppliedCount <= 0 && info != null) {
+            this.fuelConsumptionAcc += Math.min(throttle * 1.4, 1.0) * info.fuelConsumption;
+            if (this.fuelConsumptionAcc > 1.0) {
+                int burn = (int) this.fuelConsumptionAcc;
+                this.fuelConsumptionAcc -= burn;
+                setFuel(getFuel() - burn);
+            }
+        }
+    }
+
+    /** Fuel/ammo supply auras — a config with {@code FuelSupplyRange}/{@code AmmoSupplyRange} (the fuel truck, the
+     *  ammo box) tops up nearby vehicles. The supplier is an infinite source (the reference never decrements it), and
+     *  the {@code !onGround} term is SUPPLIER-side: an airborne tanker refuels flying receivers, a grounded one
+     *  requires the receiver to be landed. Reference :2264-2287 / :2418-2451. */
+    private void updateSupply() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null || this.level().isClientSide) {
+            return; // NOTE: no isDestroyed gate — the reference keeps a wrecked truck/box supplying (only BURN stops)
+        }
+        if (info.fuelSupplyRange > 0.0F && this.tickCount % 10 == 0) {
+            for (AbstractMchVehicle o : nearby(info.fuelSupplyRange)) {
+                if ((!this.onGround() || o.canSupply()) && o.getFuel() < o.getMaxFuel()) {
+                    o.setFuel(o.getFuel() + Math.min(30, o.getMaxFuel() - o.getFuel()));
+                }
+                o.fuelSuppliedCount = 40; // unconditional: even a full tank pauses its burn while in the aura
+            }
+        }
+        if (info.ammoSupplyRange > 0.0F && this.tickCount % 40 == 0) {
+            for (AbstractMchVehicle o : nearby(info.ammoSupplyRange)) {
+                if (!o.canSupply() || o.weapons == null) {
+                    continue;
+                }
+                for (WeaponSlot s : o.weapons.economySlots()) {
+                    if (s.totalAmmo() < s.maxAmmo()) {
+                        s.setRestAllAmmo(s.totalAmmo() + Math.max(1, s.maxAmmo() / 10));
+                        if (s.magazine() <= 0) {
+                            s.reloadMag();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private java.util.List<AbstractMchVehicle> nearby(float range) {
+        java.util.List<AbstractMchVehicle> out = this.level().getEntitiesOfClass(
+            AbstractMchVehicle.class, getBoundingBox().inflate(range));
+        out.remove(this);
+        return out;
+    }
+
     /** Server tick for the weapon system: build the loadout once, advance fire-control counters, apply a queued
      *  switch, and fire the selected weapon while the trigger is held. */
     private void tickWeapons() {
         if (this.weapons == null) {
-            this.weapons = VehicleWeapons.build(weaponHostInfo(), MCH_WeaponInfoManager::get);
+            this.weapons = VehicleWeapons.build(weaponHostInfo(), MCH_WeaponInfoManager::get, seatCount());
+            this.weapons.initSelection(seat -> seatPassenger(seat) instanceof Player);
             this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex());
+            // Restore the saved reserves now the slots exist (reference :795-801: set the total, then fill the mag).
+            if (this.savedAmmo != null) {
+                for (int i = 0; i < Math.min(this.savedAmmo.length, this.weapons.size()); i++) {
+                    if (this.savedAmmo[i] >= 0) {
+                        this.weapons.get(i).setRestAllAmmo(this.savedAmmo[i]);
+                        this.weapons.get(i).reloadMag();
+                    }
+                }
+                this.savedAmmo = null;
+            }
         }
         this.weapons.tick();
         if (this.firedCooldownTicks > 0) {
             this.firedCooldownTicks--;
         }
 
-        if (this.switchAccum != 0) {
-            int pending = this.switchAccum;
-            this.switchAccum = 0;
-            if (!this.weapons.isEmpty()) {
-                int dir = pending > 0 ? 1 : -1;
-                for (int i = 0; i < Math.abs(pending); i++) {
-                    this.weapons.cycle(dir);
-                }
-                this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex());
-                notifyPilotWeapon();
+        java.util.function.IntPredicate manned = s -> seatPassenger(s) instanceof Player;
+
+        // Per-seat weapon switching: each seat cycles only through the weapons IT may use.
+        for (java.util.Map.Entry<Integer, Integer> e : new java.util.HashMap<>(this.switchBySeat).entrySet()) {
+            int seat = e.getKey();
+            int pending = e.getValue();
+            this.switchBySeat.remove(seat);
+            if (pending == 0 || this.weapons.isEmpty() || !(seatPassenger(seat) instanceof Player)) {
+                continue;
+            }
+            int dir = pending > 0 ? 1 : -1;
+            for (int i = 0; i < Math.abs(pending); i++) {
+                this.weapons.cycle(seat, dir, manned);
+            }
+            if (seat == 0) {
+                this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex(0));
+            }
+            notifySeatWeapon(seat);
+        }
+
+        // Every seat fires ITS OWN weapon while ITS trigger is held.
+        for (Entity p : getPassengers()) {
+            int seat = seatIndexOf(p);
+            // No weapon may fire while the pilot is in the resupply GUI (or its 20-tick tail) — the reference gates
+            // weapon use and weapon switching on isPilotReloading (MCH_AircraftClientTickHandler:212). Enforced on the
+            // SERVER, which owns the ammo, so a client that keeps sending FIRE cannot shoot through a reload.
+            if (seat >= 0 && controlState(seat).fire && !isPilotReloading()) {
+                fireSelectedWeapon(seat);
             }
         }
 
-        if (this.controlState.fire && !this.getPassengers().isEmpty()) {
-            fireSelectedWeapon();
-        }
-
-        // Publish the selected weapon's current magazine for the HUD ammo counter.
-        WeaponSlot sel = this.weapons.selected();
+        // Publish the PILOT's selected weapon for the HUD ammo counter (per-seat HUD lands with the gunner GUI).
+        WeaponSlot sel = this.weapons.selected(0);
         this.entityData.set(DATA_AMMO, sel != null ? sel.magazine() : -1);
         this.entityData.set(DATA_RELOAD, sel != null ? sel.reloadFraction() : 0.0F);
         // Publish the "recently fired" bit (the reference useWeaponStat) so the gatling barrel spins on every client.
         this.entityData.set(DATA_FIRING, this.firedCooldownTicks > 0);
+        publishAllAmmo();
+        updateReloadingState();
     }
 
     /**
@@ -917,39 +1678,66 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
      * the model, so muzzles line up with the guns), then spawns a {@link MchBullet} carrying the weapon's real stats
      * and plays the weapon's own report.
      */
-    private void fireSelectedWeapon() {
-        WeaponSlot slot = this.weapons.selected();
-        if (slot == null || !slot.canFire()) {
+    private void fireSelectedWeapon(int seat) {
+        WeaponSlot slot = this.weapons.selected(seat);
+        Entity shooter = seatPassenger(seat);
+        if (slot == null || shooter == null || !slot.canFire()) {
             return;
         }
-        MCH_AircraftInfo.Weapon mount = slot.fireOneShot();
+        // A seat may only fire a weapon it actually operates (its own, or — for the pilot — a canUsePilot weapon whose
+        // gunner seat is empty). Eligibility already enforces this, but re-check: crew may have boarded mid-trigger.
+        if (this.weapons.eligible(slot, seat, s -> seatPassenger(s) instanceof Player)) {
+            // ok
+        } else {
+            return;
+        }
+        boolean creative = shooter instanceof Player pl && pl.getAbilities().instabuild;
+        MCH_AircraftInfo.Weapon mount = slot.fireOneShot(creative);
         MCH_WeaponInfo wi = slot.info;
         if (firesRotBarrel(slot)) {
             this.firedCooldownTicks = 4; // reference MCH_WeaponSet.WAIT_CLEAR_USED_COUNT — barrel stays "used" ~4 ticks
         }
 
-        float yaw = this.getYRot();
-        float pitch = this.getXRot();
+        float hullYaw = this.getYRot();
+        float hullPitch = this.getXRot();
         float roll = this.getRollAngle();
+        float yaw = hullYaw;
+        float pitch = hullPitch;
 
-        // Turret vehicles (the tank: free mouse-look, hull steered separately) aim the gun where the RIDER LOOKS, not
-        // where the hull points — the reference fires turret weapons along getLastRiderYaw()/Pitch(). Aircraft keep the
-        // hull angles (the mouse already aims the whole airframe). getYHeadRot() is the rider's free look yaw.
-        if (!this.locksViewToVehicle()) {
-            net.minecraft.world.entity.Entity gunner = this.getFirstPassenger();
-            if (gunner != null) {
-                yaw = gunner.getYHeadRot();
-                pitch = gunner.getXRot();
+        // Turret vehicles (free mouse-look, hull steered separately) aim along the OPERATOR's look — a gunner's gun
+        // follows the gunner, not the pilot. Aircraft keep the hull angles (the mouse already aims the airframe).
+        // The look is CLAMPED to the mount's config traverse/elevation limits, exactly as the renderer clamps the gun:
+        // without this the bullet leaves along the raw crosshair while the barrel is pinned at its limit, so a gun that
+        // physically cannot point behind you still shoots behind you.
+        if (!this.locksViewToVehicle() || seat > 0) {
+            float relYaw = Mth.wrapDegrees(shooter.getYHeadRot() - hullYaw);
+            float relPitch = Mth.wrapDegrees(shooter.getXRot() - hullPitch);
+            boolean finiteYaw = Math.abs((int) mount.minYaw) < 360 && Math.abs((int) mount.maxYaw) < 360;
+            if (finiteYaw) {
+                relYaw = Mth.clamp(Mth.wrapDegrees(relYaw - mount.defaultYaw), mount.minYaw, mount.maxYaw)
+                    + mount.defaultYaw;
             }
+            relPitch = Mth.clamp(relPitch, mount.minPitch, mount.maxPitch);
+            yaw = hullYaw + relYaw;
+            pitch = hullPitch + relPitch;
         }
 
-        // Muzzle world position = vehiclePos + R(aim) · mountLocalOffset (turret-mounted muzzle follows the aim).
-        org.joml.Quaternionf qBody = new org.joml.Quaternionf()
-            .rotateY((float) Math.toRadians(-yaw))
-            .rotateX((float) Math.toRadians(pitch))
+        // Muzzle world position = vehiclePos + R(HULL) · mountLocalOffset. The mount offset is authored in MODEL space,
+        // so it must be rotated by the hull (plus the turret ring for a ring-mounted gun) — NOT by the operator's look:
+        // rotating it by the aim made the muzzle swing around (and outside) the vehicle whenever a gunner turned his head.
+        org.joml.Quaternionf qHull = new org.joml.Quaternionf()
+            .rotateY((float) Math.toRadians(-hullYaw))
+            .rotateX((float) Math.toRadians(hullPitch))
             .rotateZ((float) Math.toRadians(roll));
         org.joml.Vector3f mpos = new org.joml.Vector3f((float) mount.pos.x(), (float) mount.pos.y(), (float) mount.pos.z());
-        qBody.transform(mpos);
+        if (mount.turret) {
+            // A ring-mounted gun orbits turretPosition with the turret before the hull transform (matches the renderer).
+            MCH_AircraftInfo info = weaponHostInfo();
+            org.joml.Vector3f tp = new org.joml.Vector3f(
+                (float) info.turretPosition.x(), (float) info.turretPosition.y(), (float) info.turretPosition.z());
+            mpos.sub(tp).rotateY((float) Math.toRadians(-turretOrbitYaw(1.0F))).add(tp);
+        }
+        qHull.transform(mpos);
         Vec3 muzzle = this.position().add(mpos.x, mpos.y, mpos.z);
 
         // Per-shot dispersion: the reference perturbs the firing yaw AND pitch by (rand-0.5)*accuracy degrees on each
@@ -1046,23 +1834,27 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     }
 
     /** Tell the pilot (action-bar) which weapon is now selected. */
-    private void notifyPilotWeapon() {
-        WeaponSlot slot = this.weapons.selected();
-        if (slot == null || this.getPassengers().isEmpty()) {
+    private void notifySeatWeapon(int seat) {
+        WeaponSlot slot = this.weapons.selected(seat);
+        Entity rider = seatPassenger(seat);
+        if (slot == null || !(rider instanceof Player p)) {
             return;
         }
         String label = slot.info.displayName != null && !slot.info.displayName.isEmpty()
             ? slot.info.displayName : slot.weaponName;
-        Entity rider = this.getPassengers().get(0);
-        if (rider instanceof Player p) {
-            p.displayClientMessage(Component.literal("Weapon: " + label), true);
-        }
+        p.displayClientMessage(Component.literal("Weapon: " + label), true);
     }
 
     // ==== HP / armor / destruction (faithful port of MCH_EntityAircraft.attackEntityFrom + destroyAircraft) ====
 
     /** Public read of this vehicle's parsed config (armor/HP/hitboxes), or null; for HUD + diagnostics/self-test. */
     public MCH_AircraftInfo hostInfo() { return weaponHostInfo(); }
+
+    /** The vehicle's human name — the config's {@code DisplayName}, falling back to the config name. */
+    public String displayName() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null && info.displayName != null && !info.displayName.isEmpty() ? info.displayName : configName();
+    }
 
     /** Config max HP ({@code MaxHP}), or 100 when this vehicle has no parsed info (reference {@code getMaxHP}). */
     public int getMaxHp() {

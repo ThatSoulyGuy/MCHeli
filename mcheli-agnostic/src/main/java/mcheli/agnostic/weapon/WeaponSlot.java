@@ -36,10 +36,14 @@ public final class WeaponSlot {
     public final List<MCH_AircraftInfo.Weapon> mounts;
 
     private final boolean infiniteMagazine;
+    /** True when this weapon tracks a finite RESERVE ({@code MaxAmmo > 0}) — the reference ammo economy. When false the
+     *  magazine simply refills on reload (the pre-economy behaviour) and {@link #restAllAmmo} is meaningless. */
+    private final boolean economy;
     private int barrel;      // round-robin index over mounts
     private int countWait;   // per-shot cooldown (ticks)
     private int reloadWait;  // reload countdown (ticks); >0 == reloading
     private int magazine;    // rounds left in the current burst
+    private int restAllAmmo; // RESERVE behind the magazine; a fresh vehicle spawns DRY (reference MCH_WeaponSet:51-52)
 
     public WeaponSlot(String weaponName, MCH_WeaponInfo info, List<MCH_AircraftInfo.Weapon> mounts) {
         if (mounts == null || mounts.isEmpty()) {
@@ -49,7 +53,74 @@ public final class WeaponSlot {
         this.info = info;
         this.mounts = mounts;
         this.infiniteMagazine = magSize() <= 0;
-        this.magazine = this.infiniteMagazine ? Integer.MAX_VALUE : magSize();
+        this.economy = info.maxAmmo > 0;
+        this.magazine = this.infiniteMagazine ? Integer.MAX_VALUE : (this.economy ? 0 : magSize());
+    }
+
+    /** The seat that operates this weapon ({@code AddWeapon}'s seat id; {@code <=0} == the pilot's). */
+    public int seatID() {
+        return this.mounts.get(0).seatID;
+    }
+
+    /** True when the PILOT may fire this weapon (config; forced true for a seat-0 weapon). */
+    public boolean canUsePilot() {
+        return this.mounts.get(0).canUsePilot;
+    }
+
+    /** True when this weapon tracks a finite reserve (config {@code MaxAmmo > 0}). */
+    public boolean hasEconomy() {
+        return this.economy;
+    }
+
+    /** Rounds in the RESERVE (behind the magazine), or -1 when this weapon has no economy. */
+    public int restAllAmmo() {
+        return this.economy ? this.restAllAmmo : -1;
+    }
+
+    /** Magazine + reserve — what the HUD's remaining-ammo readout and the NBT round-trip carry. */
+    public int totalAmmo() {
+        return this.economy ? this.restAllAmmo + Math.max(this.magazine, 0) : -1;
+    }
+
+    public int maxAmmo() {
+        return this.info.maxAmmo;
+    }
+
+    /** Set the reserve, clamped against {@code maxAmmo − the CURRENT magazine} (reference {@code MCH_WeaponSet:96-101}:
+     *  the rounds already loaded count against the cap, so a full mag shrinks the reserve ceiling). */
+    public void setRestAllAmmo(int n) {
+        if (!this.economy) {
+            return;
+        }
+        int cap = this.info.maxAmmo - Math.max(this.magazine, 0);
+        this.restAllAmmo = Math.max(0, Math.min(n, Math.max(0, cap)));
+    }
+
+    /** One supply pulse (reference {@code MCH_WeaponSet:103-108}): the magazine is deliberately RE-ABSORBED into the
+     *  reserve before adding {@code suppliedNum} — that is load-bearing, not a bug (it is how the cap stays honest). */
+    public void supplyRestAllAmmo() {
+        if (this.economy && this.restAllAmmo + Math.max(this.magazine, 0) < this.info.maxAmmo) {
+            setRestAllAmmo(this.restAllAmmo + Math.max(this.magazine, 0) + this.info.suppliedNum);
+        }
+    }
+
+    /** Pull rounds from the reserve into the magazine (reference {@code reloadMag}, {@code MCH_WeaponSet:144-155}). */
+    public void reloadMag() {
+        if (!this.economy || this.infiniteMagazine) {
+            return;
+        }
+        int n = Math.min(magSize() - this.magazine, this.restAllAmmo);
+        if (n > 0) {
+            this.magazine += n;
+            this.restAllAmmo -= n;
+        }
+    }
+
+    /** A creative rider boarding tops the magazine straight up (reference {@code MCH_WeaponSet:196-199}). */
+    public void onMount(boolean creative) {
+        if (creative && this.economy && !this.infiniteMagazine) {
+            this.magazine = magSize();
+        }
     }
 
     /** Burst/magazine size. {@code checkData} has already coerced {@code round<=0 -> maxAmmo}; if still 0, infinite. */
@@ -68,7 +139,11 @@ public final class WeaponSlot {
         if (this.reloadWait > 0) {
             this.reloadWait--;
             if (this.reloadWait == 0) {
-                this.magazine = magSize(); // reload complete — refill (reserve economy deferred)
+                if (this.economy) {
+                    reloadMag();           // pull from the reserve — a dry vehicle stays dry
+                } else {
+                    this.magazine = magSize(); // no economy configured: refill (pre-economy behaviour)
+                }
             }
         }
     }
@@ -84,12 +159,24 @@ public final class WeaponSlot {
      * burst empties. Never returns {@code null}.
      */
     public MCH_AircraftInfo.Weapon fireOneShot() {
+        return fireOneShot(false);
+    }
+
+    /**
+     * Consume one shot. {@code infinityAmmo} (a creative operator / the server's infinite-ammo setting) does NOT skip
+     * the decrement — the reference refills the RESERVE when the magazine empties (MCH_WeaponSet:384-391), so the
+     * reload cadence a config authored still plays out.
+     */
+    public MCH_AircraftInfo.Weapon fireOneShot(boolean infinityAmmo) {
         MCH_AircraftInfo.Weapon mount = this.mounts.get(this.barrel);
         this.barrel = (this.barrel + 1) % this.mounts.size();
         this.countWait = Math.max(1, this.info.delay);
         if (!this.infiniteMagazine) {
             this.magazine--;
             if (this.magazine <= 0) {
+                if (infinityAmmo && this.economy && this.restAllAmmo < magSize()) {
+                    this.restAllAmmo = magSize(); // creative tops the RESERVE, not the magazine
+                }
                 this.reloadWait = Math.max(1, this.info.reloadTime);
             }
         }

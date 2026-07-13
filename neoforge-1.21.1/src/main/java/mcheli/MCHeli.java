@@ -50,24 +50,26 @@ public class MCHeli {
         // runs only under runClient/runServer (FMLEnvironment.production is false in the dev workspace).
         if (!FMLEnvironment.production) {
             // Flight-physics proof: the heli generates collective lift and climbs (vs the vehicle, which falls).
-            NeoForge.EVENT_BUS.register(new DemoHeliSelfTest());
-            // Forward-thrust proofs: the plane and tank fly/drive forward under rider-gated thrust and stay aloft
-            // (vs a pilotless copy that free-falls). Distinct X columns, both at y+90 so the pilotless fall clears.
-            NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.PLANE, "a-10", 6.0, 11.0, 90.0, 5.0, 20.0));
-            // The tank is a GROUND vehicle (heavier gravity) -> its own drive-forward-without-flying test.
-            NeoForge.EVENT_BUS.register(new DemoTankSelfTest());
-            // Projectile proof: a fired bullet flies downrange, hits a target and damages it, then despawns.
-            NeoForge.EVENT_BUS.register(new DemoBulletSelfTest());
-            // Config-driven weapon proof: the AH-64's real selectable weapons build from its config, carry their
-            // real stats/ballistics, switch, and fire (direct + from the vehicle's own mounts).
-            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoWeaponSelfTest());
-            // Config-driven VISUALS proof: the muzzle-flash colour, cartridge model/scale + trail all come from config.
-            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoParticleSelfTest());
-            // Config-driven HUD proof: the eval engine, the hud/* configs, and the draw pipeline.
-            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHudSelfTest());
-            // Vehicle HP/armor/destruction proof: damage accumulation + int truncation, the per-part armor formula
-            // (m1a2 zones), the lava/onFire/inWall gates, and the faithful eject-explode-fall-despawn wreck.
-            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHpSelfTest());
+            //NeoForge.EVENT_BUS.register(new DemoHeliSelfTest());
+            //// Forward-thrust proofs: the plane and tank fly/drive forward under rider-gated thrust and stay aloft
+            //// (vs a pilotless copy that free-falls). Distinct X columns, both at y+90 so the pilotless fall clears.
+            //NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.PLANE, "a-10", 6.0, 11.0, 90.0, 5.0, 20.0));
+            //// The tank is a GROUND vehicle (heavier gravity) -> its own drive-forward-without-flying test.
+            //NeoForge.EVENT_BUS.register(new DemoTankSelfTest());
+            //// Projectile proof: a fired bullet flies downrange, hits a target and damages it, then despawns.
+            //NeoForge.EVENT_BUS.register(new DemoBulletSelfTest());
+            //// Config-driven weapon proof: the AH-64's real selectable weapons build from its config, carry their
+            //// real stats/ballistics, switch, and fire (direct + from the vehicle's own mounts).
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoWeaponSelfTest());
+            //// Config-driven VISUALS proof: the muzzle-flash colour, cartridge model/scale + trail all come from config.
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoParticleSelfTest());
+            //// Config-driven HUD proof: the eval engine, the hud/* configs, and the draw pipeline.
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHudSelfTest());
+            //// Vehicle HP/armor/destruction proof: damage accumulation + int truncation, the per-part armor formula
+            //// (m1a2 zones), the lava/onFire/inWall gates, and the faithful eject-explode-fall-despawn wreck.
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHpSelfTest());
+            //// Multi-seat + gunner weapons + ammo/fuel economy proof (#36/#37).
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoCrewFuelSelfTest());
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
     }

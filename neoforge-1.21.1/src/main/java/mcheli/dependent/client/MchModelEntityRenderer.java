@@ -186,7 +186,7 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             return Collections.emptySet();
         }
         Minecraft mc = Minecraft.getInstance();
-        boolean localPilotFirstPerson = mc.options.getCameraType().isFirstPerson() && entity.getFirstPassenger() == mc.player;
+        boolean localPilotFirstPerson = mc.options.getCameraType().isFirstPerson() && entity.pilot() == mc.player;
         return localPilotFirstPerson ? gm : Collections.emptySet();
     }
 
@@ -316,25 +316,13 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             return;
         }
         Minecraft mc = Minecraft.getInstance();
-        Entity rider = entity.getFirstPassenger();
-        boolean localPilotFP = mc.options.getCameraType().isFirstPerson() && rider == mc.player;
+        boolean firstPerson = mc.options.getCameraType().isFirstPerson();
 
-        // Rider free-look RELATIVE to the hull (model already yaw/pitch-rotated). Stand-in for ws.rotationYaw/Pitch.
-        // While ridden the aim is LATCHED on the entity; after dismount the guns hold the last pose (reference
-        // isUsedPlayer/lastRiderYaw) instead of snapping back to hull-forward.
-        float relYaw = 0.0F, relYawO = 0.0F, relPitch = 0.0F, relPitchO = 0.0F;
-        if (rider != null) {
-            float hy = rider.getYHeadRot();
-            float hyO = rider instanceof LivingEntity le ? le.yHeadRotO : hy;
-            relYaw = Mth.wrapDegrees(hy - entity.getYRot());
-            relYawO = Mth.wrapDegrees(hyO - entity.yRotO);
-            relPitch = Mth.wrapDegrees(rider.getXRot() - entity.getXRot());
-            relPitchO = Mth.wrapDegrees(rider.xRotO - entity.xRotO);
-            entity.latchAim(relYaw, relPitch);
-        } else if (entity.hasAimLatch()) {
-            relYaw = relYawO = entity.latchedAimYaw();
-            relPitch = relPitchO = entity.latchedAimPitch();
-        }
+        // The turret RING rides the latched PILOT aim (reference lastRiderYaw / rotationTurretYaw) — the SAME expression
+        // the seat attachment and the emplacement turret use, so seat/turret/camera never shear.
+        // turretOrbitYaw ALREADY interpolates — lerping it again gave a pt-squared ease that could never agree with the
+        // seat orbit / emplacement turret (which use it raw), shearing the gun off the turret every tick.
+        float ringYaw = entity.turretOrbitYaw(partialTick);
         float barrelDeg = calcRot(entity.barrelSpin(), entity.prevBarrelSpin(), partialTick);
         Vec3d tp = info.turretPosition;
         int c = wreckColor(entity);
@@ -342,27 +330,31 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
 
         for (MCH_AircraftInfo.PartWeapon w : info.partWeapon) {
             MCH_AircraftInfo.Weapon weapon = info.getWeaponByName(w.name[0]);
-            // Reference aims a weapon only while its seat is manned (updateWeaponsRotation): with ONE rider that is
-            // exactly canUsePilot. An unmanned turret weapon (m1a2 RWS/M240) still RIDES the ring (block 1) but stays
+            // Reference aims a weapon only while ITS OWN seat is manned (updateWeaponsRotation), and the weapon tracks
+            // THAT operator's look — not the pilot's. An unmanned turret weapon still RIDES the ring (block 1) but stays
             // frozen at its default yaw/pitch (its ws.rotationYaw never updates; rotationTurretYaw cancels block 2).
-            boolean operated = weapon == null || weapon.canUsePilot;
-            if (w.hideGM && localPilotFP) {
-                boolean hide = weapon == null;
-                if (!hide) {
-                    for (String nm : w.name) {
-                        MCH_AircraftInfo.Weapon wn = info.getWeaponByName(nm);
-                        if (wn != null && wn.canUsePilot) {
-                            hide = true;
-                            break;
-                        }
-                    }
-                }
-                if (hide) {
-                    continue;
-                }
+            Entity op = entity.weaponOperator(weapon);
+            boolean operated = op != null;
+            // Each operator aims by their OWN look, relative to the hull (the model is already hull-rotated).
+            float relYaw = 0.0F, relYawO = 0.0F, relPitch = 0.0F, relPitchO = 0.0F;
+            if (operated) {
+                float hy = op.getYHeadRot();
+                float hyO = op instanceof LivingEntity le ? le.yHeadRotO : hy;
+                relYaw = Mth.wrapDegrees(hy - entity.getYRot());
+                relYawO = Mth.wrapDegrees(hyO - entity.yRotO);
+                relPitch = Mth.wrapDegrees(op.getXRot() - entity.getXRot());
+                relPitchO = Mth.wrapDegrees(op.xRotO - entity.xRotO);
+            }
+            // An UNMANNED weapon takes no aim rotation at all (below): it rides the ring at its default facing, which is
+            // what the reference renders (its ws.rotationYaw never updates and rotationTurretYaw cancels the ring block).
+            // HideGM hides a weapon ONLY for the player who OPERATES it, in first person (reference: the skip fires on
+            // isClientPlayer(getWeaponUserByWeaponName) — a gun a different crew member mans stays visible to you).
+            if (w.hideGM && firstPerson && op == mc.player) {
+                continue;
             }
             pose.pushPose();
-            float ring = w.turret ? calcRot(relYaw, relYawO, partialTick) : 0.0F;
+            // The RING is the pilot's turret slew (never a gunner's head); a weapon's own aim is its operator's look.
+            float ring = w.turret ? ringYaw : 0.0F;
             if (w.turret) { // block 1: onto the turret ring about turretPosition; glRotatef(ring,0,-1,0) == Axis.YP(-ring)
                 pose.translate(tp.x(), tp.y(), tp.z());
                 pose.mulPose(Axis.YP.rotationDegrees(-ring));

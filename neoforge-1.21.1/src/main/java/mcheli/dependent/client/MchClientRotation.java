@@ -79,7 +79,8 @@ public final class MchClientRotation {
                 mc.player.xRotO = px; // the reference re-clamps every tick; clamping prev too avoids the 1-frame lerp
             }
         }
-        if (!v.supportsMouseRotation()) {
+        // Only the PILOT flies: a gunner keeps free vanilla look (within their clamps) and never drives the hull.
+        if (!v.supportsMouseRotation() || v.pilot() != mc.player) {
             reset();
             return;
         }

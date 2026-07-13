@@ -24,5 +24,9 @@ public final class MchControlNetwork {
             ServerboundWeaponSwitchPayload.TYPE,
             ServerboundWeaponSwitchPayload.STREAM_CODEC,
             ServerboundWeaponSwitchPayload::handle);
+        registrar.playToServer(
+            ServerboundVehicleGuiPayload.TYPE,
+            ServerboundVehicleGuiPayload.STREAM_CODEC,
+            ServerboundVehicleGuiPayload::handle);
     }
 }

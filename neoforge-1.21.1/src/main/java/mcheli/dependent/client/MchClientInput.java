@@ -43,11 +43,17 @@ public final class MchClientInput {
 
         // We are actively driving only when a player exists, no GUI is capturing input, and the ridden entity is
         // controllable. ANY other state (GUI open, dismounted, no player) means "release the controls".
+        // ANY seat sends input (a gunner fires + switches weapons); the SERVER drops a non-pilot's drive bits, and
+        // the pilot-only keys are additionally gated below so we never even send them from a gunner seat.
         boolean controlling = mc.player != null && mc.screen == null && vehicle instanceof MchControllable;
+        // The reference blocks weapon use + weapon switching while the pilot is in the resupply GUI and for a 20-tick
+        // tail afterwards (isPilotReloading). Driving is NOT blocked. The server enforces this too.
+        boolean armed = controlling && !(vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle v
+            && v.isPilotReloading());
 
         // Weapon cycle (edge-triggered): the vanilla swap-offhand key (default F) is unused while piloting, so reuse
         // it for "next weapon". Only fires on the rising edge and only while actively controlling.
-        boolean switchDown = controlling && mc.options.keySwapOffhand.isDown();
+        boolean switchDown = armed && mc.options.keySwapOffhand.isDown();
         if (switchDown && !switchKeyWasDown && vehicle != null) {
             PacketDistributor.sendToServer(new ServerboundWeaponSwitchPayload(vehicle.getId(), 1));
         }
@@ -73,13 +79,16 @@ public final class MchClientInput {
 
         Options o = mc.options;
         int bits = 0;
+        // Send the drive keys from ANY seat: the SERVER decides who may drive (it drops a non-pilot's drive bits
+        // against its own authoritative seat map). Gating this client-side on a synced seat map made driving depend on
+        // a packet arriving — when it lagged, no input was sent at all.
         if (o.keyUp.isDown())     bits |= ServerboundControlPayload.THROTTLE_UP;
         if (o.keyDown.isDown())   bits |= ServerboundControlPayload.THROTTLE_DOWN;
         if (o.keyLeft.isDown())   bits |= ServerboundControlPayload.MOVE_LEFT;
         if (o.keyRight.isDown())  bits |= ServerboundControlPayload.MOVE_RIGHT;
         // Raw left-mouse-button state — reliable while riding (vanilla attack handling can consume keyAttack). Gated
         // by 'controlling' above (no GUI, mouse grabbed), so it only reads while actually piloting.
-        if (org.lwjgl.glfw.GLFW.glfwGetMouseButton(
+        if (armed && org.lwjgl.glfw.GLFW.glfwGetMouseButton(
                 mc.getWindow().getWindow(), org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
             bits |= ServerboundControlPayload.FIRE;
         }

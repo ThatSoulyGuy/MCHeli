@@ -23,7 +23,8 @@ public final class DemoHeliState implements HeliState {
     private boolean hoveringMode;
     private boolean gunnerMode;
 
-    public DemoHeliState(java.util.function.BooleanSupplier destroyed) { this.destroyed = destroyed; }
+    private final AbstractMchVehicle owner;
+    public DemoHeliState(AbstractMchVehicle owner) { this.owner = owner; this.destroyed = owner::isDestroyed; }
 
     @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
 
@@ -33,8 +34,8 @@ public final class DemoHeliState implements HeliState {
     @Override public boolean isGunnerMode() { return gunnerMode; }
 
     // maxFuel <= 0 -> fuel never gates the control path (reference canUseFuel).
-    @Override public boolean canUseFuel(boolean checkOtherSeat) { return true; }
-    @Override public boolean canUseFuel() { return true; }
+    @Override public boolean canUseFuel(boolean checkOtherSeat) { return this.owner.canUseFuel(checkOtherSeat); }
+    @Override public boolean canUseFuel() { return this.owner.canUseFuel(false); }
     // rotors.length <= 0 -> blades always usable (reference MCH_EntityHeli.canUseBlades).
     @Override public boolean canUseBlades() { return true; }
     // partCanopy == null -> always "closed" (reference MCH_EntityAircraft.isCanopyClose).

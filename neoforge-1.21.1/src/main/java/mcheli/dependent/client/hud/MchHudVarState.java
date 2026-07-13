@@ -74,7 +74,11 @@ public final class MchHudVarState implements HudState {
             case "motion_y" -> this.motion.y;
             case "motion_z" -> this.motion.z;
             case "speed" -> this.motion.length();
-            case "fuel" -> 1.0;        // stub: tank full until the fuel system lands (keeps low_fuel = 0)
+            // Fuel fraction 0..1 — faithfully 0 for a config with no tank (reference getFuelP): the low-fuel warning
+            // itself gates on maxFuel>0, so an empty gauge on a fuel-less vehicle raises no false alarm.
+            case "fuel" -> this.vehicle.getFuelP();
+            case "low_fuel" -> this.vehicle.getMaxFuel() > 0 && this.vehicle.getFuelP() < 0.1F
+                && !this.vehicle.isInfinityFuel(false) ? 1.0 : 0.0;
             case "cam_zoom" -> 1.0;
             // HP bar: hp/max_hp raw values; hp_rto 0..1 drives the bar width + colour threshold (reference MCH_HudItem).
             case "hp" -> this.vehicle.getHp();
@@ -117,9 +121,15 @@ public final class MchHudVarState implements HudState {
             case "MC_THOR": return this.mcHour;
             case "MC_TMIN": return this.mcMin;
             case "MC_TSEC": return this.mcSec;
-            case "WPN_NAME": return this.vehicle.selectedWeaponName();
-            case "WPN_AMMO": return ammoStr(this.vehicle.getSelectedAmmo());     // current magazine (synced)
-            case "WPN_RM_AMMO": return ammoStr(this.vehicle.getSelectedMaxAmmo()); // config reserve (full economy = #37)
+            // While the pilot is in the resupply GUI the reference BLANKS the weapon readout (MCH_HudItem:473-476):
+            // the name becomes "-- Reloading --" and both ammo figures become "----".
+            case "WPN_NAME": return this.vehicle.isPilotReloading()
+                ? "-- Reloading --" : this.vehicle.selectedWeaponName();
+            case "WPN_AMMO": return this.vehicle.isPilotReloading()
+                ? "----" : ammoStr(this.vehicle.getSelectedAmmo());              // current magazine (synced)
+            // "RM" is REMAINING: the reserve left behind the magazine (reference getRestAllAmmoNum), NOT the config max.
+            case "WPN_RM_AMMO": return this.vehicle.isPilotReloading()
+                ? "----" : ammoStr(this.vehicle.getSelectedRestAmmo());
             case "RELOAD_SEC": return (double) this.vehicle.getSelectedReloadSeconds(); // cooldown countdown text
             case "RELOAD_PER": return (double) (this.vehicle.getSelectedReload() * 100.0F);
             case "HP": return this.vehicle.getHp();          // int (%d)

@@ -66,6 +66,10 @@ public final class MchRegistries {
         DeferredRegister.create(Registries.PARTICLE_TYPE, MCHeli.MODID);
     public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS =
         DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MCHeli.MODID);
+    public static final DeferredRegister<net.minecraft.world.inventory.MenuType<?>> MENUS =
+        DeferredRegister.create(Registries.MENU, MCHeli.MODID);
+    public static final DeferredRegister<net.minecraft.world.item.crafting.RecipeSerializer<?>> RECIPE_SERIALIZERS =
+        DeferredRegister.create(Registries.RECIPE_SERIALIZER, MCHeli.MODID);
 
     // ---- one EntityType per category (faithful uniform 2.0x0.7 collision core; real hits use the per-part armor
     //      boxes, and getBoundingBoxForCulling() inflates so the big models don't cull). ----
@@ -176,6 +180,20 @@ public final class MchRegistries {
     // pointing at a representative vehicle's original sprite (textures/items/<name>.png). The vehicle SPAWN items keep
     // their 3D-model icons; these tab icons render flat. Never added to a tab's displayItems, so they never appear as
     // spawnable items (an item in no tab is also absent from the creative search).
+    /** The fuel canister — put it in a vehicle's fuel slot (the riding GUI) and the vehicle siphons it into its tank. */
+    public static final DeferredItem<mcheli.dependent.item.MchFuelItem> FUEL =
+        ITEMS.registerItem("fuel", mcheli.dependent.item.MchFuelItem::new, new Item.Properties());
+
+    /** Refill a used fuel can by crafting it with coal (reference {@code MCH_RecipeFuel}). */
+    public static final Supplier<net.minecraft.world.item.crafting.RecipeSerializer<mcheli.dependent.item.MchFuelRefillRecipe>> FUEL_REFILL =
+        RECIPE_SERIALIZERS.register("fuel_refill", () ->
+            new net.minecraft.world.item.crafting.SimpleCraftingRecipeSerializer<>(mcheli.dependent.item.MchFuelRefillRecipe::new));
+
+    /** The riding GUI's menu (fuel slots + reload). */
+    public static final Supplier<net.minecraft.world.inventory.MenuType<mcheli.dependent.menu.MchVehicleMenu>> VEHICLE_MENU =
+        MENUS.register("vehicle", () -> net.neoforged.neoforge.common.extensions.IMenuTypeExtension.create(
+            mcheli.dependent.menu.MchVehicleMenu::new));
+
     public static final DeferredItem<Item> ICON_HELI = ITEMS.registerItem("tab_helicopter", Item::new, new Item.Properties());
     public static final DeferredItem<Item> ICON_PLANE = ITEMS.registerItem("tab_plane", Item::new, new Item.Properties());
     public static final DeferredItem<Item> ICON_TANK = ITEMS.registerItem("tab_tank", Item::new, new Item.Properties());
@@ -200,6 +218,7 @@ public final class MchRegistries {
                         output.accept(it);
                     }
                 }
+                output.accept(new ItemStack(FUEL.get())); // every category burns fuel, so every tab offers the can
             })
             .build());
     }
@@ -209,5 +228,7 @@ public final class MchRegistries {
         ITEMS.register(modBus);
         CREATIVE_TABS.register(modBus);
         PARTICLES.register(modBus);
+        MENUS.register(modBus);
+        RECIPE_SERIALIZERS.register(modBus);
     }
 }

@@ -82,27 +82,17 @@ public class MchGroundVehicleRenderer extends MchModelEntityRenderer<MchGroundVe
         // clamped to the elevation limits MINUS the hull render pitch (reference drawPart: RNG(lastRiderPitch,min,max) -
         // pitch — the pose is already hull-pitched, so subtracting keeps the gun's elevation world-absolute). The aim is
         // LATCHED so a dismounted emplacement holds its last pose (reference isUsedPlayer/lastRiderYaw).
-        float turretYaw = 0.0F;
-        float lookPitch = 0.0F;
-        Entity rider = entity.getFirstPassenger();
-        if (rider != null) {
-            float headYaw = rider.getYHeadRot();
-            float headYawO = rider instanceof LivingEntity le ? le.yHeadRotO : headYaw;
-            turretYaw = calcRot(Mth.wrapDegrees(headYaw - entity.getYRot()),
-                Mth.wrapDegrees(headYawO - entity.yRotO), partialTick);
-            lookPitch = Mth.lerp(partialTick, rider.xRotO, rider.getXRot());
-            entity.latchAim(turretYaw, lookPitch);
-        } else if (entity.hasAimLatch()) {
-            turretYaw = entity.latchedAimYaw();
-            lookPitch = entity.latchedAimPitch();
-        }
+        // ONE aim source (entity.turretOrbitYaw/turretAimPitch — the latched PILOT look, held after dismount): the same
+        // expression the seat attachment and the weapon ring use, so seat/turret/camera never shear apart.
+        float turretYaw = entity.turretOrbitYaw(partialTick);
+        float lookPitch = entity.turretAimPitch(partialTick);
         float hullPitch = Mth.lerp(partialTick, entity.xRotO, entity.getXRot());
         float pitch = Mth.clamp(lookPitch, m.minPitch(), m.maxPitch()) - hullPitch;
         // First-person cockpit hide: a part whose config {@code DrawFirstPerson} flag is FALSE is skipped only for the
         // LOCAL player who is piloting this emplacement in first person (so the gun mount right at the camera does not
         // wall off the view) — the 1.21.1 port of MCH_RenderVehicle.drawPart's isClientPlayer && isFirstPerson gate.
         Minecraft mc = Minecraft.getInstance();
-        boolean hideFirstPerson = mc.options.getCameraType().isFirstPerson() && entity.getFirstPassenger() == mc.player;
+        boolean hideFirstPerson = mc.options.getCameraType().isFirstPerson() && entity.pilot() == mc.player;
         // Gatling barrel spin (type==1 parts, e.g. the Phalanx cannon): accumulates while the gun is firing.
         float barrelDeg = calcRot(entity.barrelSpin(), entity.prevBarrelSpin(), partialTick);
         int c = wreckColor(entity);

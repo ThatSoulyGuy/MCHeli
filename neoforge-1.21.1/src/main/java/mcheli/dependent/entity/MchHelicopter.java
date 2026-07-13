@@ -27,7 +27,7 @@ public class MchHelicopter extends AbstractMchVehicle {
     /** Fallback for an unknown/blank config name so the physics never sees a null info. */
     private static final MCH_HeliInfo FALLBACK = buildFallback();
 
-    private final HeliState heliState = new DemoHeliState(this::isDestroyed);
+    private final HeliState heliState = new DemoHeliState(this);
     private final AircraftSimState simState = new AircraftSimState(0.07); // heli idles currentSpeed at 0.07
     private final AircraftSimState rotState = new AircraftSimState();
     private RotationSolver.ControlMapping mapping; // lazy — needs the resolved concrete MCH_HeliInfo
@@ -49,6 +49,10 @@ public class MchHelicopter extends AbstractMchVehicle {
 
     @Override protected String modelDir() { return "helicopters"; }
 
+
+    /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
+     *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
+    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
     @Override protected RotationSolver.ControlMapping controlMapping() {
         if (this.mapping == null) {
             this.mapping = new HeliControlMapping(this.ref, (MCH_HeliInfo) weaponHostInfo(), this.rotState, this.heliState);

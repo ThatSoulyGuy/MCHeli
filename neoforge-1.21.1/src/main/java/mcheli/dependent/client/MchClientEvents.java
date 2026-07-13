@@ -34,6 +34,12 @@ public final class MchClientEvents {
         event.registerEntityRenderer(MchRegistries.CARTRIDGE.get(), MchCartridgeRenderer::new);
     }
 
+    /** The riding GUI (fuel slots + reload) — bound to the menu type registered in {@link MchRegistries}. */
+    @SubscribeEvent
+    public static void onRegisterScreens(net.neoforged.neoforge.client.event.RegisterMenuScreensEvent event) {
+        event.register(MchRegistries.VEHICLE_MENU.get(), mcheli.dependent.client.screen.MchVehicleScreen::new);
+    }
+
     @SubscribeEvent
     public static void onRegisterParticleProviders(RegisterParticleProvidersEvent event) {
         event.registerSpriteSet(MchRegistries.WEAPON_FX.get(), MuzzleFxParticle.Provider::new);

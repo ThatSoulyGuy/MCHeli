@@ -50,9 +50,9 @@ public record ServerboundRotationPayload(int vehicleId, float yaw, float pitch, 
         ctx.enqueueWork(() -> {
             Player player = ctx.player();
             Entity e = player.level().getEntity(p.vehicleId());
-            // Sender must be riding a mouse-steerable vehicle (single-seat -> the pilot; multi-seat needs the
-            // controlling-seat check when that hierarchy is ported).
-            if (e instanceof AbstractMchVehicle v && v.supportsMouseRotation() && e.hasPassenger(player)) {
+            // Only the PILOT (seat 0) may steer. Without the seat check a gunner's client-authoritative rotation packets
+            // would turn the whole vehicle, defeating the drive gate on the control payload.
+            if (e instanceof AbstractMchVehicle v && v.supportsMouseRotation() && v.seatIndexOf(player) == 0) {
                 v.applyServerRotation(p.yaw(), p.pitch(), p.roll());
             }
         });

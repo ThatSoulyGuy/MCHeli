@@ -58,14 +58,21 @@ public record ServerboundControlPayload(int vehicleId, int bits) implements Cust
             // equivalent of the reference's isPilot() (seat 0) check — on the demo entities getMaxPassengers()==1,
             // so the sole passenger IS the pilot. When the multi-seat MCH vehicle hierarchy is ported this must
             // become a controlling-seat check so a gunner/passenger cannot drive.
-            if (e instanceof MchControllable c && e.hasPassenger(player)) {
-                MchControlState s = c.getControlState();
+            if (e instanceof mcheli.dependent.entity.AbstractMchVehicle v && e.hasPassenger(player)) {
+                int seat = v.seatIndexOf(player);
+                if (seat < 0) {
+                    return; // seat not resolved (mount race) — drop this packet rather than mis-attribute it
+                }
+                MchControlState s = v.controlState(seat);
                 int b = p.bits();
-                s.throttleUp   = (b & THROTTLE_UP)   != 0;
-                s.throttleDown = (b & THROTTLE_DOWN) != 0;
-                s.moveLeft     = (b & MOVE_LEFT)     != 0;
-                s.moveRight    = (b & MOVE_RIGHT)    != 0;
-                s.brake        = (b & BRAKE)         != 0;
+                // Every seat owns FIRE / free-look; only the PILOT (seat 0) may drive — a gunner's movement bits are
+                // dropped, matching the reference, which routes hull control from the pilot packet alone.
+                boolean pilot = seat == 0;
+                s.throttleUp   = pilot && (b & THROTTLE_UP)   != 0;
+                s.throttleDown = pilot && (b & THROTTLE_DOWN) != 0;
+                s.moveLeft     = pilot && (b & MOVE_LEFT)     != 0;
+                s.moveRight    = pilot && (b & MOVE_RIGHT)    != 0;
+                s.brake        = pilot && (b & BRAKE)         != 0;
                 s.freeLook     = (b & FREE_LOOK)     != 0;
                 s.fire         = (b & FIRE)          != 0;
             }
