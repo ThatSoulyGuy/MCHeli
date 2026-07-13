@@ -45,6 +45,7 @@ public final class DemoForwardVehicleSelfTest {
 
     private final String label;
     private final Supplier<? extends EntityType<? extends Entity>> type;
+    private final String configName;
     private final double xPiloted;
     private final double xPilotless;
     private final double yOffset;
@@ -68,10 +69,11 @@ public final class DemoForwardVehicleSelfTest {
      * @param altDifferentialMin  minimum (pilotedDy − pilotlessDy) proving the control path kept it aloft
      */
     public DemoForwardVehicleSelfTest(String label, Supplier<? extends EntityType<? extends Entity>> type,
-                                      double xPiloted, double xPilotless, double yOffset,
+                                      String configName, double xPiloted, double xPilotless, double yOffset,
                                       double forwardMin, double altDifferentialMin) {
         this.label = label;
         this.type = type;
+        this.configName = configName;
         this.xPiloted = xPiloted;
         this.xPilotless = xPilotless;
         this.yOffset = yOffset;
@@ -92,6 +94,8 @@ public final class DemoForwardVehicleSelfTest {
             LOG.error("[{}-SELFTEST] FAIL: EntityType.create returned null", label);
             return;
         }
+        if (piloted instanceof mcheli.dependent.entity.AbstractMchVehicle pv) pv.setConfigName(configName);
+        if (pilotless instanceof mcheli.dependent.entity.AbstractMchVehicle lv) lv.setConfigName(configName);
         piloted.setPos(spawn.getX() + xPiloted, y, z);
         piloted.setYRot(0.0F);
         level.addFreshEntity(piloted);

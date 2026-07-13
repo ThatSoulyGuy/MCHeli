@@ -17,10 +17,15 @@ import mcheli.agnostic.sim.HeliState;
  * arrives when those subsystems are ported, at which point this seam is replaced by one reading the live entity.
  */
 public final class DemoHeliState implements HeliState {
+    /** Bound to the live entity's {@code isDestroyed()} — a destroyed heli loses collective lift (HeliFlightModel gates
+     *  on {@code !isDestroyed()}) and falls, which is the mechanism the wreck relies on. */
+    private final java.util.function.BooleanSupplier destroyed;
     private boolean hoveringMode;
     private boolean gunnerMode;
 
-    @Override public boolean isDestroyed() { return false; }
+    public DemoHeliState(java.util.function.BooleanSupplier destroyed) { this.destroyed = destroyed; }
+
+    @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
 
     // isHovering() = isGunnerMode || isHoveringMode() — reference MCH_EntityAircraft.isHovering().
     @Override public boolean isHovering() { return gunnerMode || hoveringMode; }

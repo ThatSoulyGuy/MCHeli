@@ -1445,11 +1445,11 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
    }
 
    public static class CrawlerTrackPrm {
-      float x;
-      float y;
+      public float x;
+      public float y;
       float nx;
       float ny;
-      float r;
+      public float r;
 
       public CrawlerTrackPrm(float x, float y) {
          this.x = x;
@@ -1566,8 +1566,8 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
    }
 
    public static class PartWheel extends MCH_AircraftInfo.DrawnPart {
-      final float rotDir;
-      final Vec3d pos2;
+      public final float rotDir;
+      public final Vec3d pos2;
 
       public PartWheel(float px, float py, float pz, float rx, float ry, float rz, float rd, float px2, float py2, float pz2, String name) {
          super(px, py, pz, rx, ry, rz, name);
@@ -1671,7 +1671,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
    }
 
    public static class TrackRoller extends MCH_AircraftInfo.DrawnPart {
-      final int side;
+      public final int side;
 
       public TrackRoller(float px, float py, float pz, String name) {
          super(px, py, pz, 0.0F, 0.0F, 0.0F, name);

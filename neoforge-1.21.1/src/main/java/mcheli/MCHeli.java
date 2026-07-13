@@ -15,7 +15,6 @@ import mcheli.dependent.DemoBulletSelfTest;
 import mcheli.dependent.DemoForwardVehicleSelfTest;
 import mcheli.dependent.DemoHeliSelfTest;
 import mcheli.dependent.DemoTankSelfTest;
-import mcheli.dependent.DemoVehicleSelfTest;
 import mcheli.dependent.control.MchControlNetwork;
 import mcheli.dependent.port.NeoLogger;
 import mcheli.dependent.port.NeoResourceSource;
@@ -39,7 +38,9 @@ public class MCHeli {
     // ModContainer by parameter type (there is no FMLJavaModLoadingContext as in 1.7.10).
     public MCHeli(IEventBus modEventBus, ModContainer modContainer) {
         modEventBus.addListener(this::commonSetup);
-        // Register the demo vehicle's EntityType + spawn item (and creative-tab entry) on the mod bus.
+        // Scan the bundled configs -> one spawn item per vehicle (must run BEFORE register() so the DeferredRegister
+        // entries exist when the RegisterEvent fires), then register the 4 category EntityTypes + items + tabs.
+        MchRegistries.registerVehicles();
         MchRegistries.register(modEventBus);
         MchSounds.register(modEventBus);
         // Register the serverbound player-control payload (client keys -> server ControlInput).
@@ -48,12 +49,11 @@ public class MCHeli {
         // runtime. Gated on !production so a shipped jar never spawns test entities or spams the log — it
         // runs only under runClient/runServer (FMLEnvironment.production is false in the dev workspace).
         if (!FMLEnvironment.production) {
-            NeoForge.EVENT_BUS.register(new DemoVehicleSelfTest());
             // Flight-physics proof: the heli generates collective lift and climbs (vs the vehicle, which falls).
             NeoForge.EVENT_BUS.register(new DemoHeliSelfTest());
             // Forward-thrust proofs: the plane and tank fly/drive forward under rider-gated thrust and stay aloft
             // (vs a pilotless copy that free-falls). Distinct X columns, both at y+90 so the pilotless fall clears.
-            NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.DEMO_PLANE, 6.0, 11.0, 90.0, 5.0, 20.0));
+            NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.PLANE, "a-10", 6.0, 11.0, 90.0, 5.0, 20.0));
             // The tank is a GROUND vehicle (heavier gravity) -> its own drive-forward-without-flying test.
             NeoForge.EVENT_BUS.register(new DemoTankSelfTest());
             // Projectile proof: a fired bullet flies downrange, hits a target and damages it, then despawns.
@@ -65,6 +65,9 @@ public class MCHeli {
             NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoParticleSelfTest());
             // Config-driven HUD proof: the eval engine, the hud/* configs, and the draw pipeline.
             NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHudSelfTest());
+            // Vehicle HP/armor/destruction proof: damage accumulation + int truncation, the per-part armor formula
+            // (m1a2 zones), the lava/onFire/inWall gates, and the faithful eject-explode-fall-despawn wreck.
+            NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHpSelfTest());
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
     }

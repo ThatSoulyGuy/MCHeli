@@ -1,7 +1,7 @@
 package mcheli.dependent;
 
 import com.mojang.logging.LogUtils;
-import mcheli.dependent.entity.MchDemoTank;
+import mcheli.dependent.entity.MchTank;
 import mcheli.dependent.registry.MchRegistries;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -29,20 +29,20 @@ public final class DemoTankSelfTest {
     private static final double LATERAL_MAX = 0.5;   // must stay straight (yaw 0, no A/D)
     private static final double MAX_CLIMB = 1.0;     // must NOT fly up (a flying tank => dy > 0)
 
-    private MchDemoTank tank;
+    private MchTank tank;
     private Entity pilot;
     private Vec3 startPos;
     private int ticks = -1;
 
     // Grounded turn probe: a second tank ON the ground holding A (moveLeft) — the forward tank is airborne (isFly),
     // so its onUpdateAngles turn branch never runs. This one verifies the hull actually yaws server-side.
-    private MchDemoTank turnTank;
+    private MchTank turnTank;
     private Entity turnPilot;
     private float turnStartYaw;
 
     // Climb probe: a tank on flat ground with a 1-block step placed in its forward (+Z) path — driven into it, it must
     // crest the step (Y rises ~1) rather than stall against it. Verifies the config StepHeight actually lifts the hull.
-    private MchDemoTank climbTank;
+    private MchTank climbTank;
     private Entity climbPilot;
     private double climbStartY;
     private double climbStartZ;
@@ -55,11 +55,12 @@ public final class DemoTankSelfTest {
         double y = spawn.getY() + 40.0;        // in open air; a grounded tank falls, a flying one climbs
         double z = spawn.getZ() + 0.5;
 
-        tank = MchRegistries.DEMO_TANK.get().create(level);
+        tank = MchRegistries.TANK.get().create(level);
         if (tank == null) {
-            LOG.error("[TANK-SELFTEST] FAIL: EntityType.create returned null for demo_tank");
+            LOG.error("[TANK-SELFTEST] FAIL: EntityType.create returned null for the tank type");
             return;
         }
+        tank.setConfigName("m1a2");
         tank.setPos(x, y, z);
         tank.setYRot(0.0F);
         level.addFreshEntity(tank);
@@ -88,8 +89,9 @@ public final class DemoTankSelfTest {
         double tz = spawn.getZ() + 8.5;
         int surfaceY = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,
             (int) Math.floor(tx), (int) Math.floor(tz));
-        turnTank = MchRegistries.DEMO_TANK.get().create(level);
+        turnTank = MchRegistries.TANK.get().create(level);
         if (turnTank != null) {
+            turnTank.setConfigName("m1a2");
             turnTank.setPos(tx, surfaceY, tz);
             turnTank.setYRot(0.0F);
             level.addFreshEntity(turnTank);
@@ -131,8 +133,9 @@ public final class DemoTankSelfTest {
             }
         }
         double climbSpawnY = floorY + 1;               // stand on the floor (top face)
-        climbTank = MchRegistries.DEMO_TANK.get().create(level);
+        climbTank = MchRegistries.TANK.get().create(level);
         if (climbTank != null) {
+            climbTank.setConfigName("m1a2");
             climbTank.setPos(cx, climbSpawnY, cz);
             climbTank.setYRot(0.0F); // yaw 0 => forward +Z, toward the step
             level.addFreshEntity(climbTank);

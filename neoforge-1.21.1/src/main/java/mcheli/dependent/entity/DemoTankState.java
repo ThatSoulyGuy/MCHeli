@@ -11,9 +11,14 @@ import mcheli.agnostic.sim.TankState;
  * {@code ControlInput.brake()}, not state.)
  */
 public final class DemoTankState implements TankState {
+    /** Bound to the live entity's {@code isDestroyed()} — a destroyed tank stops driving (TankFlightModel gates on
+     *  {@code !isDestroyed()}) and coasts to a wreck. */
+    private final java.util.function.BooleanSupplier destroyed;
     private boolean gunnerMode;
 
-    @Override public boolean isDestroyed() { return false; }
+    public DemoTankState(java.util.function.BooleanSupplier destroyed) { this.destroyed = destroyed; }
+
+    @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
     @Override public boolean isGunnerMode() { return gunnerMode; }
     @Override public boolean isTargetDrone() { return false; }
     @Override public boolean canUseFuel() { return true; }     // maxFuel <= 0

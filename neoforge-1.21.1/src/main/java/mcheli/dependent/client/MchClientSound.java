@@ -2,9 +2,9 @@ package mcheli.dependent.client;
 
 import mcheli.MCHeli;
 import mcheli.dependent.entity.AbstractMchVehicle;
-import mcheli.dependent.entity.MchDemoHeli;
-import mcheli.dependent.entity.MchDemoPlane;
-import mcheli.dependent.entity.MchDemoTank;
+import mcheli.dependent.entity.MchHelicopter;
+import mcheli.dependent.entity.MchPlane;
+import mcheli.dependent.entity.MchTank;
 import mcheli.dependent.registry.MchSounds;
 import net.minecraft.client.Minecraft;
 import net.minecraft.sounds.SoundEvent;
@@ -48,13 +48,13 @@ public final class MchClientSound {
     }
 
     private static SoundEvent engineSoundFor(AbstractMchVehicle v) {
-        if (v instanceof MchDemoHeli) {
+        if (v instanceof MchHelicopter) {
             return MchSounds.HELI.get();
         }
-        if (v instanceof MchDemoPlane) {
+        if (v instanceof MchPlane) {
             return MchSounds.PLANE.get();
         }
-        if (v instanceof MchDemoTank) {
+        if (v instanceof MchTank) {
             return MchSounds.TANK_RUN.get();
         }
         return null; // ground demo vehicle: no engine sound yet

@@ -1,19 +1,30 @@
 package mcheli.dependent.registry;
 
+import com.mojang.logging.LogUtils;
 import com.mojang.serialization.MapCodec;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Supplier;
 import mcheli.MCHeli;
+import mcheli.agnostic.aircraft.MCH_AircraftInfo;
+import mcheli.agnostic.helicopter.MCH_HeliInfoManager;
+import mcheli.agnostic.plane.MCP_PlaneInfoManager;
+import mcheli.agnostic.tank.MCH_TankInfoManager;
+import mcheli.agnostic.vehicle.MCH_VehicleInfoManager;
+import mcheli.dependent.entity.AbstractMchVehicle;
 import mcheli.dependent.entity.MchBullet;
 import mcheli.dependent.entity.MchCartridge;
-import mcheli.dependent.entity.MchDemoHeli;
-import mcheli.dependent.entity.MchDemoPlane;
-import mcheli.dependent.entity.MchDemoTank;
-import mcheli.dependent.entity.MchDemoVehicle;
-import mcheli.dependent.item.HeliSpawnItem;
-import mcheli.dependent.item.PlaneSpawnItem;
-import mcheli.dependent.item.TankSpawnItem;
+import mcheli.dependent.entity.MchGroundVehicle;
+import mcheli.dependent.entity.MchHelicopter;
+import mcheli.dependent.entity.MchPlane;
+import mcheli.dependent.entity.MchTank;
 import mcheli.dependent.item.VehicleSpawnItem;
 import mcheli.dependent.particle.MuzzleFxOptions;
+import mcheli.dependent.port.NeoResourceSource;
 import net.minecraft.core.particles.ParticleType;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -27,131 +38,171 @@ import net.minecraft.world.item.ItemStack;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.registries.DeferredItem;
 import net.neoforged.neoforge.registries.DeferredRegister;
+import org.slf4j.Logger;
 
 /**
- * Central registration for the vertical slice: the demo vehicle {@link EntityType} and the spawn
- * {@link Item}. Wired onto the mod event bus from {@link MCHeli}.
+ * Central registration for the FULL vehicle fleet. There are exactly FOUR vehicle {@link EntityType}s — one per
+ * category (helicopter/plane/tank/vehicle) — each serving every config in that category; the specific vehicle is
+ * carried by the entity's synced config name. Every bundled config becomes its OWN spawn {@link VehicleSpawnItem}
+ * (scanned from the resources at mod construction), listed under its category's creative tab with its own name +
+ * 3D-model icon. This mirrors 1.7.10 MCHeli (4 entity classes + one item per vehicle). Wired from {@link MCHeli}.
  */
 public final class MchRegistries {
     private MchRegistries() {}
+    private static final Logger LOG = LogUtils.getLogger();
+
+    /** A vehicle category: its resource directory + the entity type that serves it. */
+    public enum Category {
+        HELICOPTER("helicopters"), PLANE("planes"), TANK("tanks"), VEHICLE("vehicles");
+        public final String dir;
+        Category(String dir) { this.dir = dir; }
+    }
 
     public static final DeferredRegister<EntityType<?>> ENTITY_TYPES =
         DeferredRegister.create(Registries.ENTITY_TYPE, MCHeli.MODID);
     public static final DeferredRegister.Items ITEMS =
         DeferredRegister.createItems(MCHeli.MODID);
+    public static final DeferredRegister<ParticleType<?>> PARTICLES =
+        DeferredRegister.create(Registries.PARTICLE_TYPE, MCHeli.MODID);
+    public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS =
+        DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MCHeli.MODID);
 
-    public static final Supplier<EntityType<MchDemoVehicle>> DEMO_VEHICLE =
-        ENTITY_TYPES.register("demo_vehicle", () ->
-            EntityType.Builder.<MchDemoVehicle>of(MchDemoVehicle::new, MobCategory.MISC)
-                .sized(1.5F, 0.75F)
-                .clientTrackingRange(10)
-                .build("demo_vehicle"));
+    // ---- one EntityType per category (faithful uniform 2.0x0.7 collision core; real hits use the per-part armor
+    //      boxes, and getBoundingBoxForCulling() inflates so the big models don't cull). ----
+    public static final Supplier<EntityType<MchHelicopter>> HELI =
+        ENTITY_TYPES.register("helicopter", () -> EntityType.Builder.<MchHelicopter>of(MchHelicopter::new, MobCategory.MISC)
+            .sized(2.0F, 0.7F).clientTrackingRange(10).build("helicopter"));
+    public static final Supplier<EntityType<MchPlane>> PLANE =
+        ENTITY_TYPES.register("plane", () -> EntityType.Builder.<MchPlane>of(MchPlane::new, MobCategory.MISC)
+            .sized(2.0F, 0.7F).clientTrackingRange(10).build("plane"));
+    public static final Supplier<EntityType<MchTank>> TANK =
+        ENTITY_TYPES.register("tank", () -> EntityType.Builder.<MchTank>of(MchTank::new, MobCategory.MISC)
+            .sized(2.0F, 0.7F).clientTrackingRange(10).build("tank"));
+    public static final Supplier<EntityType<MchGroundVehicle>> VEHICLE =
+        ENTITY_TYPES.register("vehicle", () -> EntityType.Builder.<MchGroundVehicle>of(MchGroundVehicle::new, MobCategory.MISC)
+            .sized(2.0F, 0.7F).clientTrackingRange(10).build("vehicle"));
 
-    public static final DeferredItem<VehicleSpawnItem> DEMO_VEHICLE_ITEM =
-        ITEMS.registerItem("demo_vehicle_spawner", VehicleSpawnItem::new, new Item.Properties().stacksTo(1));
+    /** The entity type that serves a category. */
+    public static EntityType<? extends AbstractMchVehicle> entityTypeFor(Category cat) {
+        return switch (cat) {
+            case HELICOPTER -> HELI.get();
+            case PLANE -> PLANE.get();
+            case TANK -> TANK.get();
+            case VEHICLE -> VEHICLE.get();
+        };
+    }
 
-    public static final Supplier<EntityType<MchDemoHeli>> DEMO_HELI =
-        ENTITY_TYPES.register("demo_heli", () ->
-            EntityType.Builder.<MchDemoHeli>of(MchDemoHeli::new, MobCategory.MISC)
-                // Body-sized footprint (ah-64 fuselage/mast). MC AABBs are square (width x height x width), so this
-                // can't enclose the 15-wide rotor or 19-long tail; the reference used a tiny core AABB + separate
-                // BoundingBox hit-volumes (not yet ported). Tune here.
-                .sized(5.0F, 4.5F)
-                .clientTrackingRange(10)
-                .build("demo_heli"));
+    /** The parsed config for a vehicle (from the category's manager); null before configs load or for an unknown name. */
+    public static MCH_AircraftInfo infoFor(Category cat, String name) {
+        return switch (cat) {
+            case HELICOPTER -> MCH_HeliInfoManager.get(name);
+            case PLANE -> MCP_PlaneInfoManager.get(name);
+            case TANK -> MCH_TankInfoManager.get(name);
+            case VEHICLE -> MCH_VehicleInfoManager.get(name);
+        };
+    }
 
-    public static final DeferredItem<HeliSpawnItem> DEMO_HELI_ITEM =
-        ITEMS.registerItem("demo_heli_spawner", HeliSpawnItem::new, new Item.Properties().stacksTo(1));
+    // ---- the 112 per-vehicle spawn items, scanned from the bundled configs at construction ----
+    private static final Map<Category, List<DeferredItem<VehicleSpawnItem>>> ITEMS_BY_CATEGORY = new EnumMap<>(Category.class);
+    private static final Map<String, DeferredItem<VehicleSpawnItem>> ITEM_BY_NAME = new HashMap<>();
 
-    public static final Supplier<EntityType<MchDemoPlane>> DEMO_PLANE =
-        ENTITY_TYPES.register("demo_plane", () ->
-            EntityType.Builder.<MchDemoPlane>of(MchDemoPlane::new, MobCategory.MISC)
-                .sized(6.0F, 4.0F) // a-10 fuselage + inner wings (square footprint; wings/tail extend beyond)
-                .clientTrackingRange(10)
-                .build("demo_plane"));
+    /** Register one spawn item per bundled config, keyed by the config base-name (e.g. {@code ah-64}). Call from the
+     *  MCHeli constructor BEFORE {@link #register}, so the DeferredRegister entries exist when the RegisterEvent fires. */
+    public static void registerVehicles() {
+        NeoResourceSource res = new NeoResourceSource();
+        for (Category cat : Category.values()) {
+            List<String> names = new ArrayList<>();
+            for (String file : res.list(cat.dir)) {
+                if (file.endsWith(".txt")) {
+                    names.add(file.substring(0, file.length() - 4));
+                }
+            }
+            Collections.sort(names); // Files.list order is filesystem-dependent — sort for a stable menu
+            List<DeferredItem<VehicleSpawnItem>> list = new ArrayList<>();
+            for (String name : names) {
+                DeferredItem<VehicleSpawnItem> item = ITEMS.registerItem(name,
+                    props -> new VehicleSpawnItem(cat, name, props), new Item.Properties().stacksTo(1));
+                list.add(item);
+                ITEM_BY_NAME.put(name, item);
+            }
+            ITEMS_BY_CATEGORY.put(cat, list);
+            if (names.isEmpty()) {
+                LOG.error("MCHeli: scanned ZERO {} configs — the creative tab will be empty (resource scan failed?)", cat.dir);
+            } else {
+                LOG.info("MCHeli: registered {} {} spawn items", names.size(), cat.dir);
+            }
+        }
+    }
 
-    public static final DeferredItem<PlaneSpawnItem> DEMO_PLANE_ITEM =
-        ITEMS.registerItem("demo_plane_spawner", PlaneSpawnItem::new, new Item.Properties().stacksTo(1));
+    /** The registered spawn item for a config name (for creative salvage drops), or null if none. */
+    public static Item spawnItemFor(String configName) {
+        DeferredItem<VehicleSpawnItem> d = ITEM_BY_NAME.get(configName);
+        return d != null ? d.get() : null;
+    }
 
-    public static final Supplier<EntityType<MchDemoTank>> DEMO_TANK =
-        ENTITY_TYPES.register("demo_tank", () ->
-            EntityType.Builder.<MchDemoTank>of(MchDemoTank::new, MobCategory.MISC)
-                .sized(5.0F, 3.5F) // m1a2 hull (4.8 wide) + turret
-                .clientTrackingRange(10)
-                .build("demo_tank"));
+    private static List<DeferredItem<VehicleSpawnItem>> itemsOf(Category cat) {
+        return ITEMS_BY_CATEGORY.getOrDefault(cat, Collections.emptyList());
+    }
 
-    public static final DeferredItem<TankSpawnItem> DEMO_TANK_ITEM =
-        ITEMS.registerItem("demo_tank_spawner", TankSpawnItem::new, new Item.Properties().stacksTo(1));
+    /** All registered spawn items (for the client 3D-icon extension registration). */
+    public static List<VehicleSpawnItem> allSpawnItems() {
+        List<VehicleSpawnItem> out = new ArrayList<>();
+        for (DeferredItem<VehicleSpawnItem> d : ITEM_BY_NAME.values()) {
+            out.add(d.get());
+        }
+        return out;
+    }
 
-    // Projectile fired by the demo vehicles. Small hitbox, short client tracking range, per-tick position sync
-    // (it's fast + short-lived).
+    // Projectile + cartridge + particle (NOT per-vehicle; unchanged).
     public static final Supplier<EntityType<MchBullet>> DEMO_BULLET =
         ENTITY_TYPES.register("demo_bullet", () ->
             EntityType.Builder.<MchBullet>of(MchBullet::new, MobCategory.MISC)
-                .sized(0.2F, 0.2F)
-                .clientTrackingRange(6)
-                .updateInterval(1)
-                .build("demo_bullet"));
+                .sized(0.2F, 0.2F).clientTrackingRange(6).updateInterval(1).build("demo_bullet"));
 
-    // Ejected shell casing (a client-cosmetic 3D model that inherits vehicle motion, bounces, tumbles, and despawns).
     public static final Supplier<EntityType<MchCartridge>> CARTRIDGE =
         ENTITY_TYPES.register("cartridge", () ->
             EntityType.Builder.<MchCartridge>of(MchCartridge::new, MobCategory.MISC)
-                .sized(0.15F, 0.15F)
-                .clientTrackingRange(4)
-                .updateInterval(3)
-                .noSave()      // purely cosmetic — never persist to disk (its 10s despawn timer isn't saved)
-                .noSummon()
-                .build("cartridge"));
-
-    // Custom weapon "fx" particle (muzzle flash / muzzle smoke / projectile trail) — a soft billboard whose colour,
-    // size and lifetime all come from the weapon config (see MuzzleFxOptions).
-    public static final DeferredRegister<ParticleType<?>> PARTICLES =
-        DeferredRegister.create(Registries.PARTICLE_TYPE, MCHeli.MODID);
+                .sized(0.15F, 0.15F).clientTrackingRange(4).updateInterval(3).noSave().noSummon().build("cartridge"));
 
     public static final Supplier<ParticleType<MuzzleFxOptions>> WEAPON_FX =
         PARTICLES.register("weapon_fx", () -> new ParticleType<MuzzleFxOptions>(false) {
-            @Override public MapCodec<MuzzleFxOptions> codec() {
-                return MuzzleFxOptions.CODEC;
-            }
+            @Override public MapCodec<MuzzleFxOptions> codec() { return MuzzleFxOptions.CODEC; }
             @Override public StreamCodec<? super RegistryFriendlyByteBuf, MuzzleFxOptions> streamCodec() {
                 return MuzzleFxOptions.STREAM_CODEC;
             }
         });
 
-    // Dedicated MCHeli creative tabs — one per vehicle category, mirroring the loaded config buckets
-    // (helicopters/planes/tanks/vehicles). Each tab's icon is its own spawn item; as real vehicles gain
-    // items these tabs fill out. Replaces the temporary injection into vanilla Tools & Utilities.
-    public static final DeferredRegister<CreativeModeTab> CREATIVE_TABS =
-        DeferredRegister.create(Registries.CREATIVE_MODE_TAB, MCHeli.MODID);
+    // Flat "original" 2D icons for the TAB BUTTONS only — a plain item per category with an item/generated model
+    // pointing at a representative vehicle's original sprite (textures/items/<name>.png). The vehicle SPAWN items keep
+    // their 3D-model icons; these tab icons render flat. Never added to a tab's displayItems, so they never appear as
+    // spawnable items (an item in no tab is also absent from the creative search).
+    public static final DeferredItem<Item> ICON_HELI = ITEMS.registerItem("tab_helicopter", Item::new, new Item.Properties());
+    public static final DeferredItem<Item> ICON_PLANE = ITEMS.registerItem("tab_plane", Item::new, new Item.Properties());
+    public static final DeferredItem<Item> ICON_TANK = ITEMS.registerItem("tab_tank", Item::new, new Item.Properties());
+    public static final DeferredItem<Item> ICON_VEHICLE = ITEMS.registerItem("tab_vehicle", Item::new, new Item.Properties());
 
-    public static final Supplier<CreativeModeTab> TAB_HELICOPTERS =
-        CREATIVE_TABS.register("helicopters", () -> CreativeModeTab.builder()
-            .title(Component.translatable("itemGroup.mcheli.helicopters"))
-            .icon(() -> new ItemStack(DEMO_HELI_ITEM.get()))
-            .displayItems((params, output) -> output.accept(DEMO_HELI_ITEM.get()))
-            .build());
+    // ---- one creative tab per category, enumerating every (non-UAV) vehicle in it ----
+    public static final Supplier<CreativeModeTab> TAB_HELICOPTERS = tab(Category.HELICOPTER, "helicopters", ICON_HELI);
+    public static final Supplier<CreativeModeTab> TAB_PLANES = tab(Category.PLANE, "planes", ICON_PLANE);
+    public static final Supplier<CreativeModeTab> TAB_TANKS = tab(Category.TANK, "tanks", ICON_TANK);
+    public static final Supplier<CreativeModeTab> TAB_VEHICLES = tab(Category.VEHICLE, "vehicles", ICON_VEHICLE);
 
-    public static final Supplier<CreativeModeTab> TAB_PLANES =
-        CREATIVE_TABS.register("planes", () -> CreativeModeTab.builder()
-            .title(Component.translatable("itemGroup.mcheli.planes"))
-            .icon(() -> new ItemStack(DEMO_PLANE_ITEM.get()))
-            .displayItems((params, output) -> output.accept(DEMO_PLANE_ITEM.get()))
+    private static Supplier<CreativeModeTab> tab(Category cat, String key, Supplier<? extends Item> icon) {
+        return CREATIVE_TABS.register(key, () -> CreativeModeTab.builder()
+            .title(Component.translatable("itemGroup.mcheli." + key))
+            .icon(() -> new ItemStack(icon.get()))   // flat original tab-button icon
+            .displayItems((params, output) -> {
+                // Runs lazily at GUI open (after configs load) so isUAV() is known: UAV vehicles are hidden until the
+                // UAV station is ported. The listed spawn items keep their 3D-model icons (VehicleItemRenderer).
+                for (DeferredItem<VehicleSpawnItem> d : itemsOf(cat)) {
+                    VehicleSpawnItem it = d.get();
+                    if (!it.isUAV()) {
+                        output.accept(it);
+                    }
+                }
+            })
             .build());
-
-    public static final Supplier<CreativeModeTab> TAB_TANKS =
-        CREATIVE_TABS.register("tanks", () -> CreativeModeTab.builder()
-            .title(Component.translatable("itemGroup.mcheli.tanks"))
-            .icon(() -> new ItemStack(DEMO_TANK_ITEM.get()))
-            .displayItems((params, output) -> output.accept(DEMO_TANK_ITEM.get()))
-            .build());
-
-    public static final Supplier<CreativeModeTab> TAB_VEHICLES =
-        CREATIVE_TABS.register("vehicles", () -> CreativeModeTab.builder()
-            .title(Component.translatable("itemGroup.mcheli.vehicles"))
-            .icon(() -> new ItemStack(DEMO_VEHICLE_ITEM.get()))
-            .displayItems((params, output) -> output.accept(DEMO_VEHICLE_ITEM.get()))
-            .build());
+    }
 
     public static void register(IEventBus modBus) {
         ENTITY_TYPES.register(modBus);

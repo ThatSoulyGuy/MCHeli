@@ -10,8 +10,8 @@ import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
 import mcheli.agnostic.weapon.VehicleWeapons;
 import mcheli.agnostic.weapon.WeaponSlot;
 import mcheli.dependent.entity.MchBullet;
-import mcheli.dependent.entity.MchDemoHeli;
-import mcheli.dependent.entity.MchDemoTank;
+import mcheli.dependent.entity.MchHelicopter;
+import mcheli.dependent.entity.MchTank;
 import mcheli.dependent.entity.MchExplosion;
 import mcheli.dependent.port.NeoEntityRef;
 import mcheli.dependent.registry.MchRegistries;
@@ -33,7 +33,7 @@ import org.slf4j.Logger;
  *   <li><b>Loadout / ballistics / switching</b> — the AH-64's selectable weapons build from its config with the right
  *       stats, the M230 ballistics come out exact, and selection cycles.</li>
  *   <li><b>Fire → hit → damage</b> — an {@link MchBullet} with the M230's stats deals its exact config power, and a
- *       real {@link MchDemoHeli}'s own fire path spawns bullets from the config mounts.</li>
+ *       real {@link MchHelicopter}'s own fire path spawns bullets from the config mounts.</li>
  *   <li><b>Explosion AoE + falloff</b> — {@link MchExplosion} damages entities within {@code 2·power}, more at the
  *       centre than the edge.</li>
  *   <li><b>Damage factor</b> — the AGM-114's {@code DamageFactor = tank, 2.0} resolves to 2× vs a tank and 1× vs a
@@ -60,7 +60,7 @@ public final class DemoWeaponSelfTest {
     private MchBullet directBullet;
 
     // vehicle fire
-    private MchDemoHeli firingHeli;
+    private MchHelicopter firingHeli;
 
     // explosion (deferred to the first tick so the target golems are indexed for the AoE search)
     private boolean explosionOk;
@@ -132,8 +132,9 @@ public final class DemoWeaponSelfTest {
         try {
             double hx = spawn.getX() + 24.5;
             double hz = spawn.getZ() + 0.5;
-            MchDemoHeli heli = MchRegistries.DEMO_HELI.get().create(this.level);
+            MchHelicopter heli = MchRegistries.HELI.get().create(this.level);
             if (heli != null) {
+                heli.setConfigName("ah-64");
                 heli.setPos(hx, y, hz);
                 this.level.addFreshEntity(heli);
                 if (EntityType.PIG.create(this.level) instanceof Mob rider) {
@@ -162,7 +163,8 @@ public final class DemoWeaponSelfTest {
         // ---- Part 6: damage factor (AGM-114: DamageFactor = tank, 2.0) — pure role lookup, no world entity needed. ----
         MCH_WeaponInfo agm114 = MCH_WeaponInfoManager.get("agm114");
         if (agm114 != null) {
-            MchDemoTank tank = MchRegistries.DEMO_TANK.get().create(this.level);
+            MchTank tank = MchRegistries.TANK.get().create(this.level);
+            if (tank != null) tank.setConfigName("m1a2");
             LivingEntity golem = EntityType.IRON_GOLEM.create(this.level) instanceof LivingEntity g ? g : null;
             if (tank != null && golem != null) {
                 float vsTank = agm114.getDamageFactor(new NeoEntityRef(tank));

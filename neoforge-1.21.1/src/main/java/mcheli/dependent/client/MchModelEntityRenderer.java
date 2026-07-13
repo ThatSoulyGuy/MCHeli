@@ -4,10 +4,26 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.logging.LogUtils;
 import com.mojang.math.Axis;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import mcheli.agnostic.aircraft.MCH_AircraftInfo;
+import mcheli.agnostic.helicopter.MCH_HeliInfo;
 import mcheli.agnostic.model.MchModel;
+import mcheli.agnostic.model.ModelGroup;
+import mcheli.agnostic.plane.MCP_PlaneInfo;
 import mcheli.agnostic.spi.ModelHandle;
+import mcheli.agnostic.value.Vec3d;
+import mcheli.agnostic.vehicle.MCH_VehicleInfo;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import org.joml.Quaternionf;
 import mcheli.dependent.entity.AbstractMchVehicle;
 import mcheli.dependent.port.NeoResourceSource;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -18,101 +34,143 @@ import net.minecraft.util.Mth;
 import org.slf4j.Logger;
 
 /**
- * Base renderer that draws a real MCHeli {@code .mqo}/{@code .obj} model for a demo vehicle — the 1.21.1 rewrite of
- * {@code MCH_RenderAircraft}/{@code MCH_RenderHeli}'s core body render. The model is resolved once (by the reference
- * {@code <category>/<name>} convention) through the agnostic parsers and emitted via {@link MchModelRenderer}.
+ * Base renderer that draws the real {@code .mqo}/{@code .obj} model for whichever vehicle an entity currently IS —
+ * resolved every frame from its synced {@link AbstractMchVehicle#configName() config name} (a process-wide cache keeps
+ * this a map lookup, not a re-parse). ONE renderer instance per category serves every vehicle in that category.
  *
  * <p>Transform mirrors the reference exactly: the {@link PoseStack} is already at the entity, so it applies only
- * {@code yaw} about {@code -Y}, {@code pitch} about {@code X}, {@code roll} about {@code Z} — and NO scale, because
- * the {@code .mqo} parser already divides vertices by 100 into world units. Per-part animation (rotor/wheels/turret)
- * is a later increment; for now every group renders in its rest pose, which still shows the complete vehicle.
+ * {@code yaw} about {@code -Y}, {@code pitch} about {@code X}, {@code roll} about {@code Z} — and NO scale, because the
+ * {@code .mqo} parser already divides vertices by 100 into world units. The cockpit glass/canopy groups are dropped
+ * (their texture is opaque, so they'd wall off the pilot's view). A destroyed wreck renders near-black.
  */
 public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> extends EntityRenderer<T> {
     private static final Logger LOGGER = LogUtils.getLogger();
 
-    protected final MchModel model;
-    private final ResourceLocation defaultTexture;
-    private final String textureDir; // e.g. "textures/helicopters/" — a selected skin becomes <dir><skin>.png
-    private final java.util.Map<String, ResourceLocation> skinCache = new java.util.HashMap<>();
-    /** Groups NEVER drawn — the cockpit glass/canopy. Its texture is fully opaque, so it renders as a solid (dark)
-     *  wall that blocks the pilot's view; the heli has no glass mesh (open cockpit, see-through), so dropping the
-     *  plane's glass matches it — the pilot sees out, and the rest of the airframe still renders. */
-    private final java.util.Set<String> hiddenGroups;
+    /** Resource directory for this category's models/textures ({@code helicopters}/{@code planes}/{@code tanks}/{@code vehicles}). */
+    private final String categoryDir;
+    private final Map<String, MchModel> modelCache = new HashMap<>();
+    private final Map<String, Set<String>> hiddenCache = new HashMap<>();
+    private final Map<String, Set<String>> declaredCache = new HashMap<>();
+    private final Map<String, ResourceLocation> textureCache = new HashMap<>();
 
-    protected MchModelEntityRenderer(EntityRendererProvider.Context context, String modelName, String texturePath) {
+    protected MchModelEntityRenderer(EntityRendererProvider.Context context, String categoryDir) {
         super(context);
-        this.model = load(modelName);
-        this.defaultTexture = ResourceLocation.fromNamespaceAndPath("mcheli", texturePath);
-        this.textureDir = texturePath.substring(0, texturePath.lastIndexOf('/') + 1);
-        if (this.model == null) {
-            LOGGER.warn("MCHeli renderer: model '{}' did not load; entity will be invisible", modelName);
+        this.categoryDir = categoryDir;
+    }
+
+    /** The model for this entity's current config, resolved+cached by name (null before the name syncs / on load failure).
+     *  A FAILED load is cached as null (negative cache) so a broken/missing model isn't re-parsed + re-warned every frame
+     *  — {@code computeIfAbsent} would store nothing for a null result and retry forever. */
+    protected final MchModel model(T entity) {
+        String name = entity.configName();
+        if (name == null || name.isEmpty()) {
+            return null;
         }
-        java.util.Set<String> hidden = new java.util.HashSet<>();
-        if (this.model != null) {
-            for (mcheli.agnostic.model.ModelGroup g : this.model.groups()) {
+        if (this.modelCache.containsKey(name)) {
+            return this.modelCache.get(name);
+        }
+        MchModel m = load(this.categoryDir + "/" + name);
+        this.modelCache.put(name, m);
+        return m;
+    }
+
+    /** Groups NEVER drawn — cockpit glass meshes (their texture renders opaque in the cutout pipeline and would wall off
+     *  the pilot's view). A group that is itself a DECLARED part ({@code $canopy0} from {@code AddPartCanopy}, …) is
+     *  exempt: the reference draws declared parts, and the name-substring veto must not delete them (it cost six planes
+     *  their whole canopy + the mxtmv its door). Cached per config name. */
+    protected Set<String> hiddenGroups(T entity, MchModel model) {
+        return this.hiddenCache.computeIfAbsent(entity.configName(), n -> {
+            Set<String> hidden = new HashSet<>();
+            Set<String> declared = declaredGroups(entity);
+            for (ModelGroup g : model.groups()) {
                 if (g != null) {
-                    String n = g.name.toLowerCase(java.util.Locale.ROOT);
-                    if (n.contains("glass") || n.contains("canopy")) {
-                        hidden.add(n);
+                    String gn = g.name.toLowerCase(Locale.ROOT);
+                    if ((gn.contains("glass") || gn.contains("canopy")) && !declared.contains(gn)) {
+                        hidden.add(gn);
                     }
                 }
             }
-        }
-        this.hiddenGroups = hidden;
-    }
-
-    /** Resolve the entity's selected paint scheme to a texture ({@code <dir><skin>.png}), else the default. Cached.
-     *  Skin 0 always uses the baked default texture — it is the guaranteed-present file, and the correct fallback if
-     *  the config failed to load (the entity's info name is then a {@code demo_*} placeholder, not a real texture). */
-    private ResourceLocation textureFor(T entity) {
-        String skin = entity.getSkinIndex() == 0 ? null : entity.skinTextureName();
-        if (skin == null || skin.isEmpty()) {
-            return this.defaultTexture;
-        }
-        return this.skinCache.computeIfAbsent(skin,
-            s -> ResourceLocation.fromNamespaceAndPath("mcheli", this.textureDir + s + ".png"));
-    }
-
-    private static MchModel load(String name) {
-        ModelHandle h = new NeoResourceSource().loadModel(name);
-        return h instanceof MchModel m ? m : null;
+            return hidden;
+        });
     }
 
     @Override
     public ResourceLocation getTextureLocation(T entity) {
-        return textureFor(entity);
+        String tex = entity.skinTextureName();
+        if (tex == null || tex.isEmpty()) {
+            tex = entity.configName();
+        }
+        if (tex == null || tex.isEmpty()) {
+            tex = "missingno";
+        }
+        return this.textureCache.computeIfAbsent(tex,
+            t -> ResourceLocation.fromNamespaceAndPath("mcheli", "textures/" + this.categoryDir + "/" + t + ".png"));
+    }
+
+    private static MchModel load(String name) {
+        ModelHandle h = new NeoResourceSource().loadModel(name);
+        if (!(h instanceof MchModel m)) {
+            LOGGER.warn("MCHeli renderer: model '{}' did not load; entity will be invisible", name);
+            return null;
+        }
+        return m;
     }
 
     @Override
     public void render(T entity, float entityYaw, float partialTick, PoseStack pose, MultiBufferSource buffers,
                        int packedLight) {
-        if (this.model != null) {
+        MchModel model = model(entity);
+        if (model != null) {
             pose.pushPose();
+            // Lift the model so its LOWEST point (minY, e.g. skids/tracks/wheels ~-0.3) sits at the entity feet (the
+            // ground). The reference's wheel-suspension physics hold the hull up by |minY|; those aren't ported, so
+            // without this the model origin is at the feet and the whole vehicle sinks by |minY|. World-vertical, so it
+            // must come BEFORE the yaw/pitch/roll rotations (matching the reference, which lifts the entity in world-Y).
+            pose.translate(0.0, -model.minY, 0.0);
             // Reference order: yaw about -Y, pitch about X, roll about Z (MCH_RenderHeli.renderAircraft). No scale.
             pose.mulPose(Axis.YP.rotationDegrees(-entityYaw));
-            // Pitch is a plain lerp (matches MCH_RenderAircraft.calcRotPitch; pitch is clamped, never crosses the
-            // seam). Roll uses the short-path calcRot: roll IS wrapped to [-180,180] (RotationSolver), so a barrel
-            // roll can jump +179 -> -179 between ticks; a plain lerp would spin ~358 deg for one frame.
             float pitch = Mth.lerp(partialTick, entity.xRotO, entity.getXRot());
             float roll = calcRot(entity.getRollAngle(), entity.getPrevRollAngle(), partialTick);
             pose.mulPose(Axis.XP.rotationDegrees(pitch));
             pose.mulPose(Axis.ZP.rotationDegrees(roll));
 
-            VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(textureFor(entity)));
-            java.util.Set<String> dynamic = dynamicGroupsLower();
-            if (dynamic.isEmpty() && this.hiddenGroups.isEmpty()) {
-                MchModelRenderer.render(this.model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, 255, 255, 255, 255);
-            } else {
-                // Static hull minus the animated groups AND the hidden glass/canopy, then the moving parts.
-                java.util.Set<String> exclude = dynamic;
-                if (!this.hiddenGroups.isEmpty()) {
-                    exclude = new java.util.HashSet<>(dynamic);
-                    exclude.addAll(this.hiddenGroups);
+            VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(getTextureLocation(entity)));
+            // Destroyed wreck: darken the whole hull to a scorched near-black (reference 0.15·255 ≈ 38).
+            int c = entity.isDestroyed() ? 38 : 255;
+            Set<String> dynamic = dynamicGroupsLower(entity, model);
+            Set<String> hidden = hiddenGroups(entity, model);
+            Set<String> fpHidden = firstPersonHidden(entity); // HideGM weapon parts, local pilot in first person only
+            if (MchModelRenderer.hasGroup(model, "$body")) {
+                // Reference composition (MCH_RenderAircraft.renderBody + per-part renderPart): draw the $body SPAN, then
+                // each config-DECLARED part's span. A $-group that is neither $body nor a declared part is NEVER drawn
+                // (the reference hides it — hidden weapon variants, dummy/marker groups). Group ORDER in the model file
+                // no longer matters, so a model that puts $weapon0 before $body (KV-2) renders exactly like one that
+                // doesn't (m1a2). Declared parts whose animation is ported draw in renderDynamicParts; the rest draw
+                // static here so no declared part ever vanishes.
+                MchModelRenderer.renderPartSpan(model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
+                    c, c, c, 255, "$body", hidden);
+                for (String gname : declaredGroups(entity)) {
+                    if (!dynamic.contains(gname) && !fpHidden.contains(gname)) {
+                        // hidden can no longer contain a declared part's own name (see hiddenGroups), so a declared
+                        // canopy/door span draws — with any glass sub-mesh inside it still skipped.
+                        MchModelRenderer.renderPartSpan(model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
+                            c, c, c, 255, gname, hidden);
+                    }
                 }
-                MchModelRenderer.renderExcept(this.model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
-                    255, 255, 255, 255, exclude);
+                renderDynamicParts(entity, model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, partialTick);
+            } else if (dynamic.isEmpty() && hidden.isEmpty() && fpHidden.isEmpty()) {
+                // No $body group: the reference falls back to renderAll (drawing every group once).
+                MchModelRenderer.render(model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, c, c, c, 255);
+            } else {
+                // No $body + animated/hidden parts: render all-minus-animated then the animated parts transformed
+                // (avoids the reference renderAll quirk of double-drawing animated groups on a $body-less model).
+                Set<String> exclude = new HashSet<>(dynamic);
+                exclude.addAll(hidden);
+                exclude.addAll(fpHidden);
+                MchModelRenderer.renderExcept(model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
+                    c, c, c, 255, exclude);
                 if (!dynamic.isEmpty()) {
-                    renderDynamicParts(entity, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, partialTick);
+                    renderDynamicParts(entity, model, pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, partialTick);
                 }
             }
             pose.popPose();
@@ -120,22 +178,305 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
         super.render(entity, entityYaw, partialTick, pose, buffers, packedLight);
     }
 
-    /** Lower-cased names of the model groups a subclass animates in {@link #renderDynamicParts} (so they are excluded
-     *  from the static hull pass). Empty by default → the whole model renders statically. */
-    protected java.util.Set<String> dynamicGroupsLower() {
-        return java.util.Collections.emptySet();
+    /** Config {@code HideGM} weapon groups ({@code $weaponN}) — hidden ONLY for the LOCAL player piloting this vehicle in
+     *  first person, so a chin gun / gunsight doesn't fill the cockpit (port of {@code MCH_RenderAircraft}'s hideGM gate). */
+    private Set<String> firstPersonHidden(T entity) {
+        Set<String> gm = entity.firstPersonHiddenGroups();
+        if (gm.isEmpty()) {
+            return Collections.emptySet();
+        }
+        Minecraft mc = Minecraft.getInstance();
+        boolean localPilotFirstPerson = mc.options.getCameraType().isFirstPerson() && entity.getFirstPassenger() == mc.player;
+        return localPilotFirstPerson ? gm : Collections.emptySet();
     }
 
-    /** Draw the animated parts (rotor blades, wheels, turret, …). The {@code pose} is already at the entity and
-     *  oriented (yaw/pitch/roll); apply each part's local transform, then {@link MchModelRenderer#renderGroup}. */
-    protected void renderDynamicParts(T entity, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
-                                      float partialTick) {
+    /** Lower-cased names of the model groups this subclass animates (excluded from the static hull). Empty by default. */
+    protected Set<String> dynamicGroupsLower(T entity, MchModel model) {
+        return Collections.emptySet();
+    }
+
+    /** Draw the animated parts (rotor blades, gear, turret). The {@code pose} is at the entity + oriented. */
+    protected void renderDynamicParts(T entity, MchModel model, PoseStack pose, VertexConsumer consumer,
+                                      int packedLight, int overlay, float partialTick) {
+    }
+
+    /** The hull colour for this entity: scorched near-black for a destroyed wreck (reference 0.15·255 ≈ 38), else white.
+     *  Every render pass (hull, declared parts, animated parts) must use this so a wreck darkens UNIFORMLY. */
+    protected static int wreckColor(AbstractMchVehicle entity) {
+        return entity.isDestroyed() ? 38 : 255;
+    }
+
+    /** ALL lower-cased {@code $}-group names the config DECLARES as drawable parts (every {@code DrawnPart} list across
+     *  the category infos) — the reference draws exactly {@code $body} + these; anything else is never drawn. Cached per
+     *  config name. */
+    private Set<String> declaredGroups(T entity) {
+        return this.declaredCache.computeIfAbsent(entity.configName(), n -> {
+            Set<String> s = new HashSet<>();
+            MCH_AircraftInfo info = entity.hostInfo();
+            if (info == null) {
+                return s;
+            }
+            addDrawn(s, info.partWeapon);
+            if (info.partWeapon != null) {
+                for (MCH_AircraftInfo.PartWeapon w : info.partWeapon) {
+                    if (w != null && w.child != null) {
+                        addDrawn(s, w.child);
+                    }
+                }
+            }
+            addDrawn(s, info.partWeaponBay);
+            addDrawn(s, info.hatchList);
+            addDrawn(s, info.lightHatchList);
+            addDrawn(s, info.canopyList);
+            addDrawn(s, info.landingGear);
+            addDrawn(s, info.partThrottle);
+            addDrawn(s, info.partRotPart);
+            addDrawn(s, info.cameraList);
+            addDrawn(s, info.partWheel);
+            addDrawn(s, info.partSteeringWheel);
+            addDrawn(s, info.partCrawlerTrack);
+            addDrawn(s, info.partTrackRoller);
+            if (info instanceof MCH_HeliInfo hi) {
+                addDrawn(s, hi.rotorList);
+            }
+            if (info instanceof MCP_PlaneInfo pi) {
+                addDrawn(s, pi.nozzles);
+                addDrawn(s, pi.rotorList);
+                for (MCP_PlaneInfo.Rotor r : pi.rotorList) {
+                    if (r != null) {
+                        addDrawn(s, r.blades);
+                    }
+                }
+                addDrawn(s, pi.wingList);
+                for (MCP_PlaneInfo.Wing w : pi.wingList) {
+                    if (w != null && w.pylonList != null) {
+                        addDrawn(s, w.pylonList);
+                    }
+                }
+            }
+            if (info instanceof MCH_VehicleInfo vi) {
+                collectVParts(vi.partList, s);
+            }
+            return s;
+        });
+    }
+
+    private static void addDrawn(Set<String> out, java.util.List<? extends MCH_AircraftInfo.DrawnPart> parts) {
+        if (parts != null) {
+            for (MCH_AircraftInfo.DrawnPart p : parts) {
+                if (p != null) {
+                    out.add(("$" + p.modelName).toLowerCase(Locale.ROOT));
+                }
+            }
+        }
+    }
+
+    private static void collectVParts(java.util.List<MCH_VehicleInfo.VPart> parts, Set<String> out) {
+        if (parts != null) {
+            for (MCH_VehicleInfo.VPart p : parts) {
+                if (p != null) {
+                    out.add(("$" + p.modelName).toLowerCase(Locale.ROOT));
+                    collectVParts(p.child, out);
+                }
+            }
+        }
+    }
+
+    /** Lower-cased {@code $weaponN}/{@code $weaponN_M} groups the config declares as {@code AddPartWeapon}s — the aircraft
+     *  renderers exclude these from the static hull so {@link #renderWeaponParts} can draw them AIMED (not frozen). */
+    protected static Set<String> weaponGroupsLower(MCH_AircraftInfo info) {
+        Set<String> s = new HashSet<>();
+        if (info != null && info.partWeapon != null) {
+            for (MCH_AircraftInfo.PartWeapon w : info.partWeapon) {
+                s.add(("$" + w.modelName).toLowerCase(Locale.ROOT));
+                if (w.child != null) {
+                    for (MCH_AircraftInfo.PartWeaponChild c : w.child) {
+                        s.add(("$" + c.modelName).toLowerCase(Locale.ROOT));
+                    }
+                }
+            }
+        }
+        return s;
+    }
+
+    /**
+     * Faithful port of {@code MCH_RenderAircraft.renderWeapon} (523-685): draw each {@code AddPartWeapon} group aimed by
+     * the rider's free look. A {@code HideGM} weapon is skipped ENTIRELY (parent + children) when the local player is
+     * piloting in first person AND operates that weapon ({@code canUsePilot}); a {@code turret} weapon rides the turret
+     * ring; {@code yaw}/{@code pitch} weapons swing/elevate to the rider look (RELATIVE to the hull, since the model is
+     * already hull-rotated) clamped to the weapon's config range; {@code defaultRotationYaw}+{@code rev_sign} bracket the
+     * pitch; a {@code rotBarrel} weapon spins about its axis. Aim source is the single rider (the port's stand-in for
+     * {@code MCH_WeaponSet.rotationYaw/Pitch}); the 15°/tick slew, recoil and missile-cooldown gate are omitted (no
+     * synced state, cosmetic).
+     */
+    protected void renderWeaponParts(T entity, MchModel model, PoseStack pose, VertexConsumer consumer,
+                                     int light, int overlay, float partialTick) {
+        MCH_AircraftInfo info = entity.hostInfo();
+        if (info == null || info.partWeapon == null || info.partWeapon.isEmpty()) {
+            return;
+        }
+        Minecraft mc = Minecraft.getInstance();
+        Entity rider = entity.getFirstPassenger();
+        boolean localPilotFP = mc.options.getCameraType().isFirstPerson() && rider == mc.player;
+
+        // Rider free-look RELATIVE to the hull (model already yaw/pitch-rotated). Stand-in for ws.rotationYaw/Pitch.
+        // While ridden the aim is LATCHED on the entity; after dismount the guns hold the last pose (reference
+        // isUsedPlayer/lastRiderYaw) instead of snapping back to hull-forward.
+        float relYaw = 0.0F, relYawO = 0.0F, relPitch = 0.0F, relPitchO = 0.0F;
+        if (rider != null) {
+            float hy = rider.getYHeadRot();
+            float hyO = rider instanceof LivingEntity le ? le.yHeadRotO : hy;
+            relYaw = Mth.wrapDegrees(hy - entity.getYRot());
+            relYawO = Mth.wrapDegrees(hyO - entity.yRotO);
+            relPitch = Mth.wrapDegrees(rider.getXRot() - entity.getXRot());
+            relPitchO = Mth.wrapDegrees(rider.xRotO - entity.xRotO);
+            entity.latchAim(relYaw, relPitch);
+        } else if (entity.hasAimLatch()) {
+            relYaw = relYawO = entity.latchedAimYaw();
+            relPitch = relPitchO = entity.latchedAimPitch();
+        }
+        float barrelDeg = calcRot(entity.barrelSpin(), entity.prevBarrelSpin(), partialTick);
+        Vec3d tp = info.turretPosition;
+        int c = wreckColor(entity);
+        Set<String> hidden = hiddenGroups(entity, model); // glass sub-meshes stay hidden inside weapon spans too
+
+        for (MCH_AircraftInfo.PartWeapon w : info.partWeapon) {
+            MCH_AircraftInfo.Weapon weapon = info.getWeaponByName(w.name[0]);
+            // Reference aims a weapon only while its seat is manned (updateWeaponsRotation): with ONE rider that is
+            // exactly canUsePilot. An unmanned turret weapon (m1a2 RWS/M240) still RIDES the ring (block 1) but stays
+            // frozen at its default yaw/pitch (its ws.rotationYaw never updates; rotationTurretYaw cancels block 2).
+            boolean operated = weapon == null || weapon.canUsePilot;
+            if (w.hideGM && localPilotFP) {
+                boolean hide = weapon == null;
+                if (!hide) {
+                    for (String nm : w.name) {
+                        MCH_AircraftInfo.Weapon wn = info.getWeaponByName(nm);
+                        if (wn != null && wn.canUsePilot) {
+                            hide = true;
+                            break;
+                        }
+                    }
+                }
+                if (hide) {
+                    continue;
+                }
+            }
+            pose.pushPose();
+            float ring = w.turret ? calcRot(relYaw, relYawO, partialTick) : 0.0F;
+            if (w.turret) { // block 1: onto the turret ring about turretPosition; glRotatef(ring,0,-1,0) == Axis.YP(-ring)
+                pose.translate(tp.x(), tp.y(), tp.z());
+                pose.mulPose(Axis.YP.rotationDegrees(-ring));
+                pose.translate(-tp.x(), -tp.y(), -tp.z());
+            }
+            pose.translate(w.pos.x(), w.pos.y(), w.pos.z());
+            if (w.yaw && operated) {
+                pose.mulPose(Axis.YP.rotationDegrees(-calcRot(
+                    weaponYaw(weapon, relYaw, w.turret ? relYaw : 0.0F),
+                    weaponYaw(weapon, relYawO, w.turret ? relYawO : 0.0F), partialTick)));
+            }
+            if (w.turret && operated) { // block 2: rotationTurretYaw==0 for the OPERATING player; an unmanned weapon's
+                pose.mulPose(Axis.YP.rotationDegrees(ring)); // rotationTurretYaw tracks the ring -> block 2 cancels
+            }
+            boolean revSign = false;
+            float defYaw = weapon != null ? weapon.defaultYaw : 0.0F;
+            if ((int) defYaw != 0) {
+                float t = Mth.wrapDegrees(defYaw);
+                revSign = (t >= 45.0F && t <= 135.0F) || (t <= -45.0F && t >= -135.0F);
+                pose.mulPose(Axis.YP.rotationDegrees(defYaw)); // glRotatef(-defYaw,0,-1,0)
+            }
+            if (w.pitch && operated) {
+                // Reference order: clamp the relative pitch FIRST (updateWeaponsRotation RNG), THEN negate for a
+                // side-mounted gun (renderWeapon rev_sign) — negate-then-clamp breaks asymmetric ranges at the limits.
+                float p = weaponPitch(weapon, relPitch);
+                float pO = weaponPitch(weapon, relPitchO);
+                if (revSign) {
+                    p = -p;
+                    pO = -pO;
+                }
+                pose.mulPose(Axis.XP.rotationDegrees(Mth.lerp(partialTick, pO, p)));
+            }
+            if ((int) defYaw != 0) {
+                pose.mulPose(Axis.YP.rotationDegrees(-defYaw)); // glRotatef(+defYaw,0,-1,0)
+            }
+            if (w.rotBarrel) {
+                pose.mulPose(new Quaternionf().rotateAxis((float) Math.toRadians(barrelDeg),
+                    (float) w.rot.x(), (float) w.rot.y(), (float) w.rot.z()));
+            }
+            pose.translate(-w.pos.x(), -w.pos.y(), -w.pos.z());
+            MchModelRenderer.renderPartSpan(model, pose, consumer, light, overlay, c, c, c, 255,
+                "$" + w.modelName, hidden);
+            if (w.child != null) {
+                for (MCH_AircraftInfo.PartWeaponChild wc : w.child) {
+                    pose.pushPose();
+                    renderWeaponChild(model, wc, weapon, relYaw, relYawO, relPitch, relPitchO,
+                        pose, consumer, light, overlay, partialTick, c, hidden, operated);
+                    pose.popPose();
+                }
+            }
+            pose.popPose();
+        }
+    }
+
+    /** Port of {@code MCH_RenderAircraft.renderWeaponChild} (687-764): same aim as the parent MINUS the turret ring and
+     *  the barrel; the {@code pose} is already at the parent's post-{@code (-w.pos)} frame. */
+    private static void renderWeaponChild(MchModel model, MCH_AircraftInfo.PartWeaponChild w, MCH_AircraftInfo.Weapon weapon,
+                                          float relYaw, float relYawO, float relPitch, float relPitchO,
+                                          PoseStack pose, VertexConsumer consumer, int light, int overlay, float partialTick,
+                                          int c, Set<String> hidden, boolean operated) {
+        pose.translate(w.pos.x(), w.pos.y(), w.pos.z());
+        if (w.yaw && operated) {
+            pose.mulPose(Axis.YP.rotationDegrees(-calcRot(
+                weaponYaw(weapon, relYaw, 0.0F), weaponYaw(weapon, relYawO, 0.0F), partialTick)));
+        }
+        boolean revSign = false;
+        float defYaw = weapon != null ? weapon.defaultYaw : 0.0F;
+        if ((int) defYaw != 0) {
+            float t = Mth.wrapDegrees(defYaw);
+            revSign = (t >= 45.0F && t <= 135.0F) || (t <= -45.0F && t >= -135.0F);
+            pose.mulPose(Axis.YP.rotationDegrees(defYaw));
+        }
+        if (w.pitch && operated) {
+            float p = weaponPitch(weapon, relPitch);   // clamp FIRST, then rev_sign negate (reference order)
+            float pO = weaponPitch(weapon, relPitchO);
+            if (revSign) {
+                p = -p;
+                pO = -pO;
+            }
+            pose.mulPose(Axis.XP.rotationDegrees(Mth.lerp(partialTick, pO, p)));
+        }
+        if ((int) defYaw != 0) {
+            pose.mulPose(Axis.YP.rotationDegrees(-defYaw));
+        }
+        pose.translate(-w.pos.x(), -w.pos.y(), -w.pos.z());
+        MchModelRenderer.renderPartSpan(model, pose, consumer, light, overlay, c, c, c, 255,
+            "$" + w.modelName, hidden);
+    }
+
+    /** {@code ws.rotationYaw − ws.defaultRotationYaw} for a single rider (renderWeapon 592-601 + updateWeaponsRotation
+     *  5055-5078): the rider look-yaw relative to the hull, clamped to a FINITE yaw range, plus the turret-ring yaw. */
+    private static float weaponYaw(MCH_AircraftInfo.Weapon weapon, float relYaw, float ty) {
+        if (weapon == null) {
+            return relYaw; // reference `else e!=null` branch: rider yaw minus hull
+        }
+        float ey = Mth.wrapDegrees(relYaw - weapon.defaultYaw - ty);
+        boolean finite = Math.abs((int) weapon.minYaw) < 360 && Math.abs((int) weapon.maxYaw) < 360;
+        float rotationYaw = finite ? clampF(ey, weapon.minYaw, weapon.maxYaw) + weapon.defaultYaw + ty : ey + ty;
+        return rotationYaw - weapon.defaultYaw;
+    }
+
+    /** {@code ws.rotationPitch} for a single rider (updateWeaponsRotation 5081-5082): rider look-pitch relative to the
+     *  hull, clamped to the weapon's pitch range. */
+    private static float weaponPitch(MCH_AircraftInfo.Weapon weapon, float relPitch) {
+        return weapon == null ? relPitch : clampF(relPitch, weapon.minPitch, weapon.maxPitch);
+    }
+
+    private static float clampF(float v, float lo, float hi) {
+        return v < lo ? lo : (v > hi ? hi : v);
     }
 
     /**
      * Short-path angle interpolation — the 1.21.1 port of {@code MCH_RenderAircraft.calcRot}. Both endpoints are
-     * wrapped to [-180,180] ({@link Mth#wrapDegrees} == the reference's {@code wrapAngleTo180_float}); when they
-     * straddle the seam, {@code prev} is shifted by ±360 so the interpolation always takes the short way round.
+     * wrapped to [-180,180]; when they straddle the seam, {@code prev} is shifted by ±360 so it takes the short way.
      */
     protected static float calcRot(float rot, float prevRot, float tickTime) {
         rot = Mth.wrapDegrees(rot);
@@ -148,4 +489,3 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
         return prevRot + (rot - prevRot) * tickTime;
     }
 }
-

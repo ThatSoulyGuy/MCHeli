@@ -9,10 +9,10 @@ import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.value.AABB;
 import mcheli.agnostic.value.MoveResult;
 import mcheli.agnostic.value.Vec3d;
-import mcheli.dependent.entity.MchDemoHeli;
-import mcheli.dependent.entity.MchDemoPlane;
-import mcheli.dependent.entity.MchDemoTank;
-import mcheli.dependent.entity.MchDemoVehicle;
+import mcheli.dependent.entity.MchHelicopter;
+import mcheli.dependent.entity.MchPlane;
+import mcheli.dependent.entity.MchTank;
+import mcheli.dependent.entity.MchGroundVehicle;
 import mcheli.dependent.entity.RollHolder;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -45,10 +45,10 @@ public final class NeoEntityRef implements EntityRef {
 
     @Override public Role role() {
         if (e instanceof Player) return Role.PLAYER;
-        if (e instanceof MchDemoHeli) return Role.HELICOPTER;
-        if (e instanceof MchDemoPlane) return Role.PLANE;
-        if (e instanceof MchDemoTank) return Role.TANK;
-        if (e instanceof MchDemoVehicle) return Role.VEHICLE;
+        if (e instanceof MchHelicopter) return Role.HELICOPTER;
+        if (e instanceof MchPlane) return Role.PLANE;
+        if (e instanceof MchTank) return Role.TANK;
+        if (e instanceof MchGroundVehicle) return Role.VEHICLE;
         if (e instanceof LivingEntity) return Role.LIVING;
         return Role.OTHER;
     }

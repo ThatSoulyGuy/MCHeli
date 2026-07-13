@@ -1,7 +1,7 @@
 package mcheli.dependent;
 
 import com.mojang.logging.LogUtils;
-import mcheli.dependent.entity.MchDemoHeli;
+import mcheli.dependent.entity.MchHelicopter;
 import mcheli.dependent.registry.MchRegistries;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
@@ -42,8 +42,8 @@ public final class DemoHeliSelfTest {
     /** Max horizontal drift for the piloted heli — pitch/roll start at 0 so cyclic thrust is 0; catches stray motion. */
     private static final double LATERAL_MAX = 0.5;
 
-    private MchDemoHeli piloted;
-    private MchDemoHeli pilotless;
+    private MchHelicopter piloted;
+    private MchHelicopter pilotless;
     private Entity pilot;
     private Vec3 startPiloted;
     private Vec3 startPilotless;
@@ -63,12 +63,14 @@ public final class DemoHeliSelfTest {
         double xPilotless = spawn.getX() - 15.5;
         double z = spawn.getZ() + 0.5;
 
-        piloted = MchRegistries.DEMO_HELI.get().create(level);
-        pilotless = MchRegistries.DEMO_HELI.get().create(level);
+        piloted = MchRegistries.HELI.get().create(level);
+        pilotless = MchRegistries.HELI.get().create(level);
         if (piloted == null || pilotless == null) {
-            LOG.error("[HELI-SELFTEST] FAIL: EntityType.create returned null for demo_heli");
+            LOG.error("[HELI-SELFTEST] FAIL: EntityType.create returned null for the heli type");
             return;
         }
+        piloted.setConfigName("ah-64");
+        pilotless.setConfigName("ah-64");
         piloted.setPos(xPiloted, y, z);
         piloted.setYRot(0.0F);
         level.addFreshEntity(piloted);

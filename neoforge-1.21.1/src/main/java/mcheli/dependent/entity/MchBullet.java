@@ -211,6 +211,22 @@ public class MchBullet extends Entity {
             Vec3 segEnd = blockHit ? block.getLocation() : to;
             EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(
                 this.level(), this, from, segEnd, this.getBoundingBox().expandTowards(step).inflate(1.0), this::canHit);
+            // Augment: a round can strike an extra part hitbox that PROTRUDES beyond a vehicle's vanilla selection AABB
+            // (wingtip / tail / hull overhang). ProjectileUtil only clips that AABB, so also query each nearby vehicle's
+            // core + part boxes and take whichever hit is nearest the muzzle (the reference feeds the extra boxes into
+            // the bullet's own intercept, so protruding weak zones stay hittable).
+            double bestSq = entityHit != null ? from.distanceToSqr(entityHit.getLocation()) : Double.MAX_VALUE;
+            for (AbstractMchVehicle v : this.level().getEntitiesOfClass(
+                    AbstractMchVehicle.class, new AABB(from, segEnd).inflate(8.0), this::canHit)) {
+                Vec3 h = v.clipParts(from, segEnd);
+                if (h != null) {
+                    double d = from.distanceToSqr(h);
+                    if (d < bestSq) {
+                        bestSq = d;
+                        entityHit = new EntityHitResult(v, h);
+                    }
+                }
+            }
 
             if (this.weaponInfo != null && this.weaponInfo.delayFuse > 0) {
                 // delayFuse rounds IGNORE entities entirely — they only ricochet off blocks and self-detonate when the
@@ -228,6 +244,16 @@ public class MchBullet extends Entity {
                     return;
                 }
             } else if (entityHit != null) {
+                // Per-part weak-point/armor: stash the struck hitbox's factor on the vehicle just before hurt(), the
+                // port's stand-in for the reference's calculateIntercept side effect (ProjectileUtil ignores the extra
+                // boxes). The weapon's own by-class damageFactor is separate and already folded into onImpactEntity.
+                Entity real = entityHit.getEntity() instanceof PartEntity<?> part
+                    ? part.getParent() : entityHit.getEntity();
+                if (real instanceof AbstractMchVehicle v) {
+                    // Query the FULL trajectory [from, to] (NOT the selection-AABB entry point) so interior armor/weak
+                    // zones resolve — the reference tests the whole bullet segment against every box, nearest wins.
+                    v.setLastBBDamageFactor(v.boundingBoxDamageFactorAt(from, to));
+                }
                 onImpact(entityHit.getLocation(), entityHit.getEntity());
                 if (this.isRemoved()) {
                     return;

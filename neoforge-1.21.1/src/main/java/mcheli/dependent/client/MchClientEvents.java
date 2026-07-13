@@ -2,12 +2,17 @@ package mcheli.dependent.client;
 
 import mcheli.MCHeli;
 import mcheli.dependent.client.particle.MuzzleFxParticle;
+import mcheli.dependent.item.VehicleSpawnItem;
 import mcheli.dependent.registry.MchRegistries;
+import net.minecraft.client.renderer.BlockEntityWithoutLevelRenderer;
+import net.minecraft.world.item.Item;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 import net.neoforged.neoforge.client.event.RegisterParticleProvidersEvent;
+import net.neoforged.neoforge.client.extensions.common.IClientItemExtensions;
+import net.neoforged.neoforge.client.extensions.common.RegisterClientExtensionsEvent;
 
 /**
  * Client-only subscriber for renderer registration. The {@code value = Dist.CLIENT} filter means FML never loads
@@ -21,10 +26,10 @@ public final class MchClientEvents {
 
     @SubscribeEvent
     public static void onRegisterRenderers(EntityRenderersEvent.RegisterRenderers event) {
-        event.registerEntityRenderer(MchRegistries.DEMO_VEHICLE.get(), MchDemoVehicleRenderer::new);
-        event.registerEntityRenderer(MchRegistries.DEMO_HELI.get(), MchDemoHeliRenderer::new);
-        event.registerEntityRenderer(MchRegistries.DEMO_PLANE.get(), MchDemoPlaneRenderer::new);
-        event.registerEntityRenderer(MchRegistries.DEMO_TANK.get(), MchDemoTankRenderer::new);
+        event.registerEntityRenderer(MchRegistries.VEHICLE.get(), MchGroundVehicleRenderer::new);
+        event.registerEntityRenderer(MchRegistries.HELI.get(), MchHelicopterRenderer::new);
+        event.registerEntityRenderer(MchRegistries.PLANE.get(), MchPlaneRenderer::new);
+        event.registerEntityRenderer(MchRegistries.TANK.get(), MchTankRenderer::new);
         event.registerEntityRenderer(MchRegistries.DEMO_BULLET.get(), MchBulletRenderer::new);
         event.registerEntityRenderer(MchRegistries.CARTRIDGE.get(), MchCartridgeRenderer::new);
     }
@@ -32,5 +37,17 @@ public final class MchClientEvents {
     @SubscribeEvent
     public static void onRegisterParticleProviders(RegisterParticleProvidersEvent event) {
         event.registerSpriteSet(MchRegistries.WEAPON_FX.get(), MuzzleFxParticle.Provider::new);
+    }
+
+    /** Every vehicle spawn item renders its 3D model as its inventory icon (needs a {@code builtin/entity} item model). */
+    @SubscribeEvent
+    public static void onRegisterClientExtensions(RegisterClientExtensionsEvent event) {
+        VehicleItemRenderer renderer = new VehicleItemRenderer();
+        IClientItemExtensions ext = new IClientItemExtensions() {
+            @Override public BlockEntityWithoutLevelRenderer getCustomRenderer() { return renderer; }
+        };
+        for (VehicleSpawnItem item : MchRegistries.allSpawnItems()) {
+            event.registerItem(ext, item);
+        }
     }
 }

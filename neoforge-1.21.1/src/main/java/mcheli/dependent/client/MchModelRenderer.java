@@ -2,12 +2,14 @@ package mcheli.dependent.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.model.ModelFace;
 import mcheli.agnostic.model.ModelGroup;
 import mcheli.agnostic.model.ModelVertex;
+import mcheli.agnostic.model.MqoModel;
 
 /**
  * Emits a parsed {@link MchModel} to a {@link VertexConsumer} — the 1.21.1 rewrite of the reference's
@@ -62,6 +64,70 @@ public final class MchModelRenderer {
                     emitFace(last, consumer, face, packedLight, overlay, r, g, b, a);
                 }
             }
+        }
+    }
+
+    /** True when the model contains a group with this (case-insensitive) name. */
+    public static boolean hasGroup(MchModel model, String groupName) {
+        for (ModelGroup group : model.groups()) {
+            if (group != null && group.name.equalsIgnoreCase(groupName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Render a named part's full SPAN — the faithful port of the reference part primitive, which is what
+     * "{@code renderPart($name)}" actually meant in 1.7.10:
+     * <ul>
+     *   <li><b>MQO</b> ({@code W_MetasequoiaObject.renderPart}): the matched {@code $name} group PLUS every FOLLOWING
+     *       group whose name does NOT start with {@code $}, stopping at the next {@code $}-group. An MQO "part" is the
+     *       {@code $name} header + its trailing non-{@code $} sub-meshes (a tank turret is {@code $weapon0} + dozens of
+     *       plain-named armour meshes after it).</li>
+     *   <li><b>OBJ</b> ({@code W_WavefrontObject.renderPart}): the exact-named group only — no trailing span.</li>
+     * </ul>
+     * First match wins (as in the reference). {@code skipLower} groups are never drawn (the port's glass/canopy
+     * view fix); pass an empty set when no skip applies.
+     */
+    public static void renderPartSpan(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
+                                      int r, int g, int b, int a, String groupName, Set<String> skipLower) {
+        PoseStack.Pose last = pose.last();
+        List<ModelGroup> groups = model.groups();
+        // Span semantics apply on an MQO part whose name is $-prefixed (W_MetasequoiaObject.renderPart gates on
+        // charAt(0)=='$'); an OBJ, or a non-$ name, is exact-name only. EVERY match renders (the reference's outer
+        // loop keeps scanning after a span ends, so duplicate part names each draw their own span).
+        boolean span = model instanceof MqoModel && groupName.startsWith("$");
+        for (int i = 0; i < groups.size(); i++) {
+            ModelGroup group = groups.get(i);
+            if (group == null || !group.name.equalsIgnoreCase(groupName)) {
+                continue;
+            }
+            emitGroup(last, consumer, group, packedLight, overlay, r, g, b, a, skipLower);
+            if (span) {
+                int j = i + 1;
+                for (; j < groups.size(); j++) {
+                    ModelGroup next = groups.get(j);
+                    if (next == null) {
+                        continue;
+                    }
+                    if (next.name.startsWith("$")) {
+                        break; // the next $-part begins -> this part's span ends
+                    }
+                    emitGroup(last, consumer, next, packedLight, overlay, r, g, b, a, skipLower);
+                }
+                i = j - 1; // resume the scan AT the terminating $-group (it may itself match again)
+            }
+        }
+    }
+
+    private static void emitGroup(PoseStack.Pose last, VertexConsumer consumer, ModelGroup group, int light, int overlay,
+                                  int r, int g, int b, int a, Set<String> skipLower) {
+        if (!skipLower.isEmpty() && skipLower.contains(group.name.toLowerCase(Locale.ROOT))) {
+            return;
+        }
+        for (ModelFace face : group.faces) {
+            emitFace(last, consumer, face, light, overlay, r, g, b, a);
         }
     }
 

@@ -6,8 +6,6 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.phys.Vec3;
-import org.joml.Quaternionf;
-import org.joml.Vector3f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -15,21 +13,22 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Rigidly parents the FIRST-PERSON camera to an MCHeli vehicle's full orientation — the piece the public API cannot
- * reach. NeoForge's {@code ViewportEvent.ComputeCameraAngles} can set the camera ANGLES, but {@code Camera.setup} adds
- * the eye height on WORLD-Y ({@code + Mth.lerp(pt, eyeHeightOld, eyeHeight)}) with no event to intercept it, so in a
- * bank the eye peels off the cockpit. Injecting at the TAIL of {@code setup} we overwrite BOTH:
+ * Parents the camera to an MCHeli vehicle — the 1.21.1 port of the reference camera rig ({@code MCH_Camera} +
+ * {@code MCH_ViewEntityDummy} + per-config {@code CameraPosition}), reduced to the single-rider scope:
  *
  * <ul>
- *   <li><b>rotation</b> — {@code Camera.setRotation} composes {@code rotationYXZ(PI - yaw, -pitch, -roll)}; feeding the
- *       vehicle's own yaw/pitch/roll reproduces its forward+up at any attitude (compose Euler→quaternion, never
- *       decompose, so no gimbal at ±90°);</li>
- *   <li><b>position</b> — the eye is placed at the interpolated vehicle position plus the pilot eye offset rotated by
- *       the same orientation, so it rides the cockpit through banks/loops instead of the vanilla world-Y offset.</li>
+ *   <li><b>Eye position</b> — {@link AbstractMchVehicle#firstPersonEye}: the config {@code CameraPosition} (when
+ *       {@code alwaysCameraView} / an emplacement), orbited about the turret for a {@code rotSeat} seat
+ *       ({@code calcOnTurretPos}), else the locked-view cockpit eye; {@code null} means the reference renders from the
+ *       player itself and the vanilla camera (at the faithfully-attached rider) is already correct.</li>
+ *   <li><b>Rotation</b> — locked-view aircraft get the full vehicle yaw/pitch/roll (the reference locks the PLAYER to
+ *       the hull; {@code Camera.setup} adds eye height on world-Y with no event to intercept, hence this Mixin).
+ *       Free-look tanks keep the player's own look but gain the reference's faded camera roll
+ *       ({@code wrap(rotRoll)·cos(hullYaw − playerYaw)}, {@code MCH_ClientCommonTickHandler:408-415}); emplacements
+ *       get no roll ({@code cameraRollFade()==false}).</li>
+ *   <li><b>Third person</b> — orbits the same eye (the reference orbits the render-view dummy): re-anchor to the eye
+ *       and re-run the vanilla pull-back; the vanilla (possibly reverse-flipped) rotation is kept.</li>
  * </ul>
- *
- * <p>First-person only ({@code detached == false}); third-person keeps the vanilla orbit camera. Interpolation matches
- * the model renderer so the cockpit and the view stay locked together.
  */
 @Mixin(Camera.class)
 public abstract class CameraMixin {
@@ -39,40 +38,58 @@ public abstract class CameraMixin {
     @Shadow
     protected abstract void setRotation(float yaw, float pitch, float roll);
 
+    @Shadow
+    protected abstract float getMaxZoom(float startingDistance);
+
+    @Shadow
+    protected abstract void move(float zoom, float dy, float dx);
+
     @Inject(method = "setup", at = @At("TAIL"))
-    private void mcheli$cockpitCamera(BlockGetter level, Entity cam, boolean detached, boolean reverse,
+    private void mcheli$vehicleCamera(BlockGetter level, Entity cam, boolean detached, boolean reverse,
                                       float partialTick, CallbackInfo ci) {
-        if (detached || cam == null) {
-            return; // third-person / no camera entity -> leave the vanilla camera
+        if (cam == null || !(cam.getVehicle() instanceof AbstractMchVehicle v)) {
+            return;
         }
-        if (!(cam.getVehicle() instanceof AbstractMchVehicle v) || !v.supportsMouseRotation()
-            || !v.locksViewToVehicle()) {
-            return; // ground vehicles (tank) keep the free vanilla mouse-look camera
+        Vec3 eye = v.firstPersonEye(cam, partialTick); // null -> the vanilla player camera is the reference answer
+        boolean locked = v.supportsMouseRotation() && v.locksViewToVehicle();
+        float hullYaw = Mth.rotLerp(partialTick, v.yRotO, v.getYRot());
+        float hullRoll = mcheli$shortLerp(v.getRollAngle(), v.getPrevRollAngle(), partialTick);
+
+        Camera self = (Camera) (Object) this;
+        if (!detached) {
+            if (locked) {
+                // Reference locks the PLAYER to the hull (setAngles:1265-1288) -> camera shows the full hull attitude.
+                float hullPitch = Mth.lerp(partialTick, v.xRotO, v.getXRot());
+                this.setRotation(hullYaw, hullPitch, hullRoll);
+            } else if (v.cameraRollFade()) {
+                // Free look on a tank: camera roll fades as the player looks away from the hull axis.
+                float yawDiff = Mth.wrapDegrees(hullYaw - self.getYRot());
+                float roll = Mth.wrapDegrees(hullRoll) * Mth.cos(yawDiff * Mth.DEG_TO_RAD);
+                this.setRotation(self.getYRot(), self.getXRot(), roll);
+            }
+            if (eye != null) {
+                this.setPosition(eye);
+            }
+        } else {
+            // Third person: the reference applies camRoll in ALL views (orientCamera rolls OUTERMOST, before the
+            // third-person offset, and does NOT negate it in the front view) — keep the vanilla yaw/pitch (incl. the
+            // reverse flip) and add the same locked/faded roll as first person. Locked riders have yawDiff == 0, so
+            // the faded formula degenerates to the full hull roll for them.
+            if (locked || v.cameraRollFade()) {
+                float yawDiff = Mth.wrapDegrees(hullYaw - (reverse ? self.getYRot() - 180.0F : self.getYRot()));
+                float roll = Mth.wrapDegrees(hullRoll) * Mth.cos(yawDiff * Mth.DEG_TO_RAD);
+                this.setRotation(self.getYRot(), self.getXRot(), roll);
+            }
+            if (eye != null) {
+                // Re-anchor the orbit on the config/cockpit eye and redo the vanilla pull-back — with the NeoForge
+                // detached-distance hook + entity scale, exactly as vanilla Camera.setup does.
+                this.setPosition(eye);
+                float scale = cam instanceof net.minecraft.world.entity.LivingEntity le ? le.getScale() : 1.0F;
+                this.move(-this.getMaxZoom(
+                    net.neoforged.neoforge.client.ClientHooks.getDetachedCameraDistance(self, reverse, scale, 4.0F) * scale),
+                    0.0F, 0.0F);
+            }
         }
-        Vec3 feet = v.cockpitFeetOffset();
-        if (feet == null) {
-            return; // no cockpit seat defined -> leave the vanilla camera
-        }
-
-        // Vehicle orientation, interpolated to match the model renderer.
-        float yaw = Mth.rotLerp(partialTick, v.yRotO, v.getYRot());
-        float pitch = Mth.lerp(partialTick, v.xRotO, v.getXRot());
-        float roll = mcheli$shortLerp(v.getRollAngle(), v.getPrevRollAngle(), partialTick);
-
-        // Orientation: reuse Camera.setRotation (rebuilds the quaternion + forwards/up/left) with the vehicle Euler.
-        this.setRotation(yaw, pitch, roll);
-
-        // Position: interpolated vehicle position + R * (pilot feet + eye height) taken in MODEL space, so the eye
-        // rides the cockpit through any bank. R = Ry(-yaw)*Rx(pitch)*Rz(roll), matching the model renderer.
-        double vx = Mth.lerp((double) partialTick, v.xo, v.getX());
-        double vy = Mth.lerp((double) partialTick, v.yo, v.getY());
-        double vz = Mth.lerp((double) partialTick, v.zo, v.getZ());
-        Vector3f eye = new Vector3f((float) feet.x, (float) feet.y + cam.getEyeHeight(), (float) feet.z);
-        eye.rotate(new Quaternionf()
-            .rotateY((float) Math.toRadians(-yaw))
-            .rotateX((float) Math.toRadians(pitch))
-            .rotateZ((float) Math.toRadians(roll)));
-        this.setPosition(new Vec3(vx + (double) eye.x, vy + (double) eye.y, vz + (double) eye.z));
     }
 
     /** Short-path angle interpolation (matches MchModelEntityRenderer.calcRot) so the bank never spins the long way. */

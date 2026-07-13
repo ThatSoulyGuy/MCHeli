@@ -76,6 +76,10 @@ public final class MchHudVarState implements HudState {
             case "speed" -> this.motion.length();
             case "fuel" -> 1.0;        // stub: tank full until the fuel system lands (keeps low_fuel = 0)
             case "cam_zoom" -> 1.0;
+            // HP bar: hp/max_hp raw values; hp_rto 0..1 drives the bar width + colour threshold (reference MCH_HudItem).
+            case "hp" -> this.vehicle.getHp();
+            case "max_hp" -> this.vehicle.getMaxHp();
+            case "hp_rto" -> this.vehicle.getMaxHp() > 0 ? (double) this.vehicle.getHp() / this.vehicle.getMaxHp() : 0.0;
             // Control-stick indicator: the accumulated mouse-stick position (reference stick_x/stick_y), in [-1,1].
             // MCHeli flies by mouse — MchClientRotation accumulates the mouse delta into this virtual stick, clamps it,
             // and decays it to centre when the mouse is still; the HUD dot tracks the mouse and eases back on release.
@@ -118,8 +122,11 @@ public final class MchHudVarState implements HudState {
             case "WPN_RM_AMMO": return ammoStr(this.vehicle.getSelectedMaxAmmo()); // config reserve (full economy = #37)
             case "RELOAD_SEC": return (double) this.vehicle.getSelectedReloadSeconds(); // cooldown countdown text
             case "RELOAD_PER": return (double) (this.vehicle.getSelectedReload() * 100.0F);
-            case "HP": case "MAX_HP": case "INVENTORY": return 0;
-            case "HP_PER": return 0.0;
+            case "HP": return this.vehicle.getHp();          // int (%d)
+            case "MAX_HP": return this.vehicle.getMaxHp();    // int (%d)
+            case "INVENTORY": return 0;
+            case "HP_PER": return this.vehicle.getMaxHp() > 0  // Double 0..100 (%.0f) — NOT the 0..1 fraction
+                ? (double) this.vehicle.getHp() / this.vehicle.getMaxHp() * 100.0 : 0.0;
             case "KEY_GUI": return "G";
             default: return "";
         }

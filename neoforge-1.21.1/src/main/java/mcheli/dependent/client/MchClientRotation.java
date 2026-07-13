@@ -43,12 +43,43 @@ public final class MchClientRotation {
     @SubscribeEvent
     public static void onRenderFrame(RenderFrameEvent.Pre event) {
         Minecraft mc = Minecraft.getInstance();
-        if (mc.player == null || mc.screen != null) {
+        // ONE handler, fixed order: rotation solver FIRST, then the rider weld — as two listeners on the same event
+        // their order would be JVM-dependent and the weld could see last frame's hull rotation.
+        if (mc.player != null && mc.screen == null) {
+            doRotation(mc, event.getPartialTick().getGameTimeDeltaTicks());
+        } else {
+            reset();
+        }
+        // The weld LERPS, so it needs the 0..1 residual through the current tick — getGameTimeDeltaTicks() is the
+        // per-frame tick DELTA (~0.33 at 60fps), which as a lerp fraction made riders oscillate against the hull.
+        weldRiders(mc, event.getPartialTick().getGameTimeDeltaPartialTick(true));
+    }
+
+    private static void doRotation(Minecraft mc, float pt) {
+        Entity vehicle = mc.player.getVehicle();
+        if (!(vehicle instanceof AbstractMchVehicle v)) {
             reset();
             return;
         }
-        Entity vehicle = mc.player.getVehicle();
-        if (!(vehicle instanceof AbstractMchVehicle v) || !v.supportsMouseRotation()) {
+        // Config-driven look-pitch clamp — BEFORE the mouse-rotation gate (an emplacement has no controlMapping, so a
+        // clamp placed after it would be dead code). Emplacements clamp always+absolute (MCH_ClientVehicleTickHandler:
+        // 54-57); tanks clamp first-person only, relative to the hull-projected pitch (MCH_EntityTank.setAngles:1119-26).
+        float[] clamp = v.riderPitchClampNow();
+        if (clamp != null && (!v.riderPitchClampFirstPersonOnly() || mc.options.getCameraType().isFirstPerson())) {
+            float base = 0.0F;
+            if (v.riderPitchClampHullRelative()) {
+                float yawDiff = Mth.wrapDegrees(v.getYRot() - mc.player.getYRot());
+                base = v.getXRot() * Mth.cos(yawDiff * Mth.DEG_TO_RAD)
+                    - v.getRollAngle() * Mth.sin(yawDiff * Mth.DEG_TO_RAD);
+            }
+            float px = Mth.clamp(mc.player.getXRot(), base + clamp[0], base + clamp[1]);
+            px = Mth.clamp(px, -90.0F, 90.0F);
+            if (px != mc.player.getXRot()) {
+                mc.player.setXRot(px);
+                mc.player.xRotO = px; // the reference re-clamps every tick; clamping prev too avoids the 1-frame lerp
+            }
+        }
+        if (!v.supportsMouseRotation()) {
             reset();
             return;
         }
@@ -60,11 +91,10 @@ public final class MchClientRotation {
         v.setLocalRotationOwned(true);
         owned = v;
 
-        float pt = event.getPartialTick().getGameTimeDeltaTicks();
-
         // GROUND vehicle (tank): steer the hull with A/D but keep the free vanilla mouse-look — no stick accumulation,
         // no camera lock. The rotation mapping ignores the (zero) stick and turns the hull in onUpdateAngles; the yaw
-        // is shipped to the server by onClientTick (below) exactly like the aircraft.
+        // is shipped to the server by onClientTick (below) exactly like the aircraft. (The look-pitch clamp already ran
+        // above, before the supportsMouseRotation gate.)
         if (!v.locksViewToVehicle()) {
             lastVehicleId = vehicle.getId();
             stickX = 0.0;
@@ -112,6 +142,40 @@ public final class MchClientRotation {
         // Decay the stick toward centre so releasing the mouse stops the rotation (reference non-stick-mode).
         stickX *= 0.95;
         stickY *= 0.95;
+    }
+
+    /**
+     * Per-frame rider RE-WELD — the 1.21.1 port of {@code MCH_EntityAircraft.setupAllRiderRenderPosition} (:3242-3257):
+     * every render frame, every seated entity is snapped to its attachment computed from the LERPED hull position, and
+     * its own interpolation baseline is killed (:3253-3255) so riders render exactly welded to the seat/turret with
+     * zero lag (vanilla only re-seats passengers per TICK, so a fast turret slew visibly trailed its gunner). The
+     * local first-person player is skipped — CameraMixin welds the eye exactly and must not be double-written.
+     */
+    private static void weldRiders(Minecraft mc, float pt) {
+        if (mc.level == null || mc.player == null) {
+            return;
+        }
+        boolean firstPerson = mc.options.getCameraType().isFirstPerson();
+        for (Entity e : mc.level.entitiesForRendering()) {
+            if (!(e instanceof AbstractMchVehicle v) || v.getPassengers().isEmpty()) {
+                continue;
+            }
+            double hx = Mth.lerp((double) pt, v.xo, v.getX());
+            double hy = Mth.lerp((double) pt, v.yo, v.getY());
+            double hz = Mth.lerp((double) pt, v.zo, v.getZ());
+            for (Entity p : v.getPassengers()) {
+                if (p == mc.player && firstPerson) {
+                    continue;
+                }
+                net.minecraft.world.phys.Vec3 att = v.riderAttachment(p, pt);
+                double px = hx + att.x;
+                double py = hy + att.y;
+                double pz = hz + att.z;
+                p.setPos(px, py, pz);
+                p.xo = px; p.yo = py; p.zo = pz;       // kill the rider's own render lerp (reference :3253-3255)
+                p.xOld = px; p.yOld = py; p.zOld = pz;
+            }
+        }
     }
 
     /** Snap the player's view (and its interpolation baseline) onto the aircraft heading. */

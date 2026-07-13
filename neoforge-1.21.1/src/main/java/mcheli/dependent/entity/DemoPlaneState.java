@@ -17,9 +17,14 @@ import mcheli.agnostic.sim.PlaneState;
  * this seam when those subsystems are ported.
  */
 public final class DemoPlaneState implements PlaneState {
+    /** Bound to the live entity's {@code isDestroyed()} — a destroyed plane loses wing thrust (PlaneFlightModel gates
+     *  on {@code !isDestroyed()}) and falls into its death spiral. */
+    private final java.util.function.BooleanSupplier destroyed;
     private boolean gunnerMode;
 
-    @Override public boolean isDestroyed() { return false; }
+    public DemoPlaneState(java.util.function.BooleanSupplier destroyed) { this.destroyed = destroyed; }
+
+    @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
     @Override public boolean isGunnerMode() { return gunnerMode; }
     // isHovering = isGunnerMode || isHoveringMode; the demo plane has no hovering mode, so it collapses to gunner.
     @Override public boolean isHovering() { return gunnerMode; }
