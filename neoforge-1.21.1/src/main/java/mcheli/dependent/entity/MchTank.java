@@ -42,6 +42,9 @@ public class MchTank extends AbstractMchVehicle {
 
     @Override protected String modelDir() { return "tanks"; }
 
+    /** Reference {@code MCH_ClientTankTickHandler} sweeps the tank radar at 10°/tick (twice the heli/vehicle rate). */
+    @Override protected int radarSweepSpeed() { return 10; }
+
 
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */

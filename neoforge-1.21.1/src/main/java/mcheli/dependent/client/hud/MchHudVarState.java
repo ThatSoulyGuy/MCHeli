@@ -11,9 +11,10 @@ import net.minecraft.world.phys.Vec3;
 
 /**
  * The live {@link HudState} for the ridden vehicle: supplies expression variables and typed {@code DrawString} format
- * arguments from the entity + player. Variables/args the port doesn't have yet (HP, ammo, fuel, radar, flare, gunner,
- * …) fall through to 0 / empty, which — because the HUD configs guard those blocks with {@code If}-conditions — cleanly
- * hides them until their feature lands.
+ * arguments from the entity + player. HP, ammo, fuel, throttle, gunner mode, UAV and heat-weapon state are all wired to
+ * the real entity now; variables for genuinely-unported subsystems (entity radar + its {@code radar_rot} sweep, flares,
+ * VTOL nozzle, autopilot, free-look, TV-missile, mortar range) still fall through to 0 / empty, which — because the HUD
+ * configs guard those blocks with {@code If}-conditions — cleanly hides them until their feature lands.
  */
 public final class MchHudVarState implements HudState {
 
@@ -21,6 +22,7 @@ public final class MchHudVarState implements HudState {
     private final Player player;
     private final int width;
     private final int height;
+    private final float partialTick;
     private final Vec3 motion;
     private final double altitude;
     private final double seaAlt;
@@ -29,11 +31,12 @@ public final class MchHudVarState implements HudState {
     private final int mcMin;
     private final int mcSec;
 
-    public MchHudVarState(AbstractMchVehicle vehicle, Player player, int width, int height) {
+    public MchHudVarState(AbstractMchVehicle vehicle, Player player, int width, int height, float partialTick) {
         this.vehicle = vehicle;
         this.player = player;
         this.width = width;
         this.height = height;
+        this.partialTick = partialTick;
         this.motion = vehicle.getDeltaMovement();
         this.altitude = computeAltitude();
         this.seaAlt = Math.max(0.0, vehicle.getY() - vehicle.level().getSeaLevel());
@@ -66,7 +69,9 @@ public final class MchHudVarState implements HudState {
             case "altitude" -> this.altitude;
             case "sea_alt" -> this.seaAlt;
             case "time" -> this.timeOfDay;
-            case "throttle" -> this.vehicle.getEnginePower();
+            // The reference throttle readout is getCurrentThrottle() — the flight-sim throttle, 0 at rest — NOT the
+            // engine power (getEnginePower), which idles at 0.5 while merely ridden and made a parked vehicle read 50%.
+            case "throttle" -> this.vehicle.getThrottleInput();
             case "pos_x" -> this.vehicle.getX();
             case "pos_y" -> this.vehicle.getY();
             case "pos_z" -> this.vehicle.getZ();
@@ -79,7 +84,27 @@ public final class MchHudVarState implements HudState {
             case "fuel" -> this.vehicle.getFuelP();
             case "low_fuel" -> this.vehicle.getMaxFuel() > 0 && this.vehicle.getFuelP() < 0.1F
                 && !this.vehicle.isInfinityFuel(false) ? 1.0 : 0.0;
-            case "cam_zoom" -> 1.0;
+            // State gates the HUD configs use to show/hide blocks — now wired to the REAL vehicle state instead of 0,
+            // so a UAV shows its UAV panel, a heat-seeker shows its lock cue, and gunner mode swaps the reticle
+            // (reference MCH_HudItem.updateVarMap). Genuinely-unported subsystems (vtol_stat, auto_pilot, free_look,
+            // radar, tv-missile) stay 0, so their blocks cleanly stay hidden until those features land.
+            case "cam_zoom" -> mcheli.dependent.client.MchGunnerView.currentZoom();
+            case "gunner_mode" -> this.vehicle.isSeatGunnerMode(Math.max(0, this.vehicle.seatIndexOf(this.player)))
+                ? 1.0 : 0.0;
+            // Entity radar: have_radar gates the whole dial block; radar_rot spins the sweep line (interpolated).
+            case "have_radar" -> this.vehicle.isRadarMounted() ? 1.0 : 0.0;
+            case "radar_rot" -> this.vehicle.radarRotInterp(this.partialTick);
+            case "is_uav" -> this.vehicle.hostInfo() != null && this.vehicle.hostInfo().isUAV ? 1.0 : 0.0;
+            case "is_heat_wpn" -> this.vehicle.isSelectedWeaponHeat() ? 1.0 : 0.0;
+            // Selected-weapon aiming reticle: 1 = rocket/gun move-sight, 2 = lock-on missile sight (drives hud/sight.txt).
+            case "sight_type" -> this.vehicle.selectedWeaponSightType();
+            // Mortar range readout gate (config DisplayMortarDistance); mt_dist (the ballistic range) is unported -> 0,
+            // so hud/mortar.txt shows "DIST = ----" for a mortar weapon rather than a bogus number.
+            case "dsp_mt_dist" -> this.vehicle.selectedWeaponDisplaysMortarDist() ? 1.0 : 0.0;
+            // Autopilot indicator: the reference lights it for a PLANE whose pilot is in gunner mode (the airframe then
+            // holds a straight course while the pilot aims) — MCP_EntityPlane + getIsGunnerMode.
+            case "auto_pilot" -> this.vehicle instanceof mcheli.dependent.entity.MchPlane
+                && this.vehicle.isSeatGunnerMode(0) ? 1.0 : 0.0;
             // HP bar: hp/max_hp raw values; hp_rto 0..1 drives the bar width + colour threshold (reference MCH_HudItem).
             case "hp" -> this.vehicle.getHp();
             case "max_hp" -> this.vehicle.getMaxHp();
@@ -116,8 +141,8 @@ public final class MchHudVarState implements HudState {
             case "MOTION_X": return this.motion.x;
             case "MOTION_Y": return this.motion.y;
             case "MOTION_Z": return this.motion.z;
-            case "THROTTLE": return this.vehicle.getEnginePower() * 100.0;
-            case "CAM_ZOOM": return 1.0;   // %.1f in every config -> must be a Double, not an int
+            case "THROTTLE": return this.vehicle.getThrottleInput() * 100.0;  // sim throttle, 0 at rest (not idle power)
+            case "CAM_ZOOM": return (double) mcheli.dependent.client.MchGunnerView.currentZoom(); // %.1f -> Double
             case "MC_THOR": return this.mcHour;
             case "MC_TMIN": return this.mcMin;
             case "MC_TSEC": return this.mcSec;
@@ -155,4 +180,6 @@ public final class MchHudVarState implements HudState {
     @Override public int screenWidth() { return this.width; }
     @Override public int screenHeight() { return this.height; }
     @Override public float lineWidth() { return 1.0F; }
+    @Override public double[] radarEntities() { return this.vehicle.radarEntityXZ(); }
+    @Override public double[] radarEnemies() { return this.vehicle.radarEnemyXZ(); }
 }

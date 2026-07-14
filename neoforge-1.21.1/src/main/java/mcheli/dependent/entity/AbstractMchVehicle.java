@@ -754,6 +754,35 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         return slot != null ? slot.info.maxAmmo : -1;
     }
 
+    /** True if the selected weapon is a heat/IR-seeker (config {@code MaxHeatCount &gt; 0}) — the HUD's
+     *  {@code is_heat_wpn} lock-cue gate (reference {@code MCH_HudItem}: {@code is_heat_wpn = wi.maxHeatCount &gt; 0}). */
+    public boolean isSelectedWeaponHeat() {
+        WeaponSlot slot = selectedHudSlot();
+        return slot != null && slot.info.maxHeatCount > 0;
+    }
+
+    /** The selected weapon's aiming-reticle type for the HUD {@code sight_type} overlay (reference {@code MCH_HudItem}):
+     *  a lock-on missile sight ({@code sight = missilesight}) = 2, a ballistic rocket/gun move-sight
+     *  ({@code sight = movesight}) = 1, otherwise 0 — straight from the weapon's config, so the scope/lock reticle in
+     *  {@code hud/sight.txt} shows for the ~160 sighted weapons. */
+    public int selectedWeaponSightType() {
+        WeaponSlot slot = selectedHudSlot();
+        if (slot == null) {
+            return 0;
+        }
+        return switch (slot.info.sight) {
+            case LOCK -> 2;
+            case ROCKET -> 1;
+            default -> 0;
+        };
+    }
+
+    /** The selected weapon's {@code DisplayMortarDistance} config flag — gates the HUD {@code mortar} range readout. */
+    public boolean selectedWeaponDisplaysMortarDist() {
+        WeaponSlot slot = selectedHudSlot();
+        return slot != null && slot.info.displayMortarDistance;
+    }
+
     /** The selected weapon's reload/cooldown progress 0..1 (synced), for the HUD {@code reload_time}/{@code reloading}
      *  bar; 0 == ready to fire. */
     public float getSelectedReload() { return this.entityData.get(DATA_RELOAD); }
@@ -765,13 +794,16 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         return slot != null ? getSelectedReload() * slot.reloadIntervalTicks() / 20.0F : 0.0F;
     }
 
-    /** The HUD config name for a seat (0 = pilot), from this vehicle's {@code HUD =} config list, or null. */
+    /** The HUD config name for a seat (0 = pilot), from this vehicle's {@code HUD =} config list, or null. A {@code none}
+     *  (or blank) entry means the seat has NO cockpit HUD and maps to null, so the caller keeps the vanilla crosshair
+     *  rather than suppressing it for an empty overlay (the reference has no HudManager entry for {@code none}). */
     public String hudName(int seat) {
         MCH_AircraftInfo info = weaponHostInfo();
         if (info == null || info.hudList == null || seat < 0 || seat >= info.hudList.size()) {
             return null;
         }
-        return info.hudList.get(seat);
+        String name = info.hudList.get(seat);
+        return name == null || name.isEmpty() || name.equalsIgnoreCase("none") ? null : name;
     }
 
     /** SERVER: queue a weapon cycle (+1 next / -1 previous), applied on the next tick. Called by the switch payload;
@@ -818,6 +850,105 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     public float rotorSpin() { return this.rotorSpin; }
     /** Previous-tick rotor/propeller spin angle, for render interpolation. */
     public float prevRotorSpin() { return this.prevRotorSpin; }
+
+    // ---- Entity radar (reference MCH_Radar + MCH_EntityAircraft.updateRadar) — CLIENT-only, drives the HUD radar dial ----
+    private static final double[] EMPTY_XZ = new double[0];
+    private int radarRotate;                 // sweep angle 0..360, advances radarSweepSpeed() per client tick
+    private int prevRadarRotate;             // last tick's sweep, for smooth interpolation of the sweep line
+    private double[] radarEntityXZ = EMPTY_XZ; // neutral blips: relative (x0,z0,x1,z1,…) in blocks from this vehicle
+    private double[] radarEnemyXZ = EMPTY_XZ;  // hostile blips (Monster), same layout
+
+    /** True if this vehicle's config mounts an entity radar ({@code EnableEntityRadar}) — the HUD {@code have_radar} gate
+     *  (reference {@code isEntityRadarMounted}). */
+    public boolean isRadarMounted() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null && info.isEnableEntityRadar;
+    }
+
+    /** Degrees the radar sweep advances per client tick — reference per-type {@code updateRadar} speed: heli/vehicle 5,
+     *  tank/plane 10. Both divide 360 so the sweep lands exactly on 0 (where the re-scan fires). */
+    protected int radarSweepSpeed() { return 5; }
+
+    /** Advance the radar sweep and, once per full rotation, re-scan nearby entities. Only runs while the vehicle is
+     *  ridden (the radar is a rider-only cockpit display), matching the reference calling {@code updateRadar} from the
+     *  client tick handler for the ridden aircraft. */
+    private void advanceRadar() {
+        if (!isRadarMounted() || getPassengers().isEmpty()) {
+            return;
+        }
+        this.prevRadarRotate = this.radarRotate;
+        this.radarRotate += radarSweepSpeed();
+        if (this.radarRotate >= 360) {
+            this.radarRotate = 0;
+        }
+        if (this.radarRotate == 0) {
+            scanRadar(64);
+        }
+    }
+
+    /** Port of {@code MCH_Radar.updateXZ}: collect every living entity within {@code range} blocks (circular) as a blip
+     *  at its position RELATIVE to this vehicle, split into hostile ({@code Monster}) and neutral, skipping any entity
+     *  buried under 5+ solid blocks (the reference's crude line-of-sight cull). Client-only. */
+    private void scanRadar(int range) {
+        java.util.List<Double> ent = new java.util.ArrayList<>();
+        java.util.List<Double> enm = new java.util.ArrayList<>();
+        net.minecraft.world.phys.AABB box = this.getBoundingBox().inflate(range);
+        net.minecraft.core.BlockPos.MutableBlockPos bp = new net.minecraft.core.BlockPos.MutableBlockPos();
+        for (Entity e : this.level().getEntities(this, box)) {
+            if (!(e instanceof LivingEntity)) {
+                continue;
+            }
+            double x = e.getX() - this.getX();
+            double z = e.getZ() - this.getZ();
+            if (x * x + z * z >= (double) range * range) {
+                continue;
+            }
+            int ex = (int) Math.floor(e.getX());
+            int ez = (int) Math.floor(e.getZ());
+            int y = Math.max(1, 1 + (int) e.getY());
+            int blocks = 0;
+            for (; y < 200 && blocks < 5; y++) {
+                if (!this.level().getBlockState(bp.set(ex, y, ez)).isAir()) {
+                    blocks++;
+                }
+            }
+            if (blocks >= 5) {
+                continue; // buried under thick cover — the reference hides it from the radar
+            }
+            java.util.List<Double> dst = e instanceof net.minecraft.world.entity.monster.Monster ? enm : ent;
+            dst.add(x);
+            dst.add(z);
+        }
+        this.radarEntityXZ = toXZArray(ent);
+        this.radarEnemyXZ = toXZArray(enm);
+    }
+
+    private static double[] toXZArray(java.util.List<Double> list) {
+        if (list.isEmpty()) {
+            return EMPTY_XZ;
+        }
+        double[] out = new double[list.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = list.get(i);
+        }
+        return out;
+    }
+
+    /** Interpolated radar sweep angle for the HUD sweep line (reference {@code getRadarRot}: smooth the tick sweep,
+     *  adding 360 across the 355→0 wrap so it never spins backwards). */
+    public float radarRotInterp(float partialTick) {
+        float rot = this.radarRotate;
+        float prev = this.prevRadarRotate;
+        if (rot < prev) {
+            rot += 360.0F;
+        }
+        return prev + (rot - prev) * partialTick;
+    }
+
+    /** Neutral radar blips (relative x,z pairs in blocks) for the HUD {@code DrawEntityRadar}. */
+    public double[] radarEntityXZ() { return this.radarEntityXZ; }
+    /** Hostile radar blips (relative x,z pairs) for the HUD {@code DrawEnemyRadar}. */
+    public double[] radarEnemyXZ() { return this.radarEnemyXZ; }
 
     /** The value synced into {@link #getThrottleInput} for the sound loop — the flight throttle by default. A tank adds
      *  its maneuver-rev term (reference {@code soundVolumeTarget}) so it revs when turning/reversing, not just forward. */
@@ -1104,6 +1235,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             this.gearAngle = this.entityData.get(DATA_GEAR); // read synced gear so the retract animates
             updateWheelTrackPhase();
             advanceRotorSpin(); // heli rotor / plane propeller spin — CONFIG rotorSpeed, no hardcoded rate
+            advanceRadar();     // entity-radar sweep + periodic entity scan (only while ridden), for the cockpit HUD
             clientAmbientEffects(); // rotor down-wash, damage smoke — the reference's onUpdate_Client particle spawns
             return;
         }

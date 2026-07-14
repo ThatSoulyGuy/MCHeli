@@ -3,8 +3,12 @@ package mcheli.dependent.client.hud;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
 import mcheli.MCHeli;
 import mcheli.agnostic.hud.HudRenderer;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.RenderType;
@@ -13,19 +17,37 @@ import org.joml.Matrix4f;
 
 /**
  * {@link HudRenderer} over {@link GuiGraphics}: text with shadow, filled rects, textured quads from
- * {@code mcheli:textures/gui/<name>.png} (all 256×256), and — since GuiGraphics has no line primitive — lines drawn as
- * thin rotated {@code fill} quads via the pose stack (so diagonal reticle/ladder lines work too).
+ * {@code mcheli:textures/gui/<name>.png}, and — since GuiGraphics has no line primitive — lines drawn as thin rotated
+ * {@code fill} quads via the pose stack (so diagonal reticle/ladder lines work too).
  */
 public final class NeoHudRenderer implements HudRenderer {
 
-    private static final int TEX = 256; // most mcheli HUD gui textures are 256×256 (height always 256)
+    /** Real {@code [width, height]} of each gui sheet, read once from its PNG header (IHDR) and cached — the reference
+     *  scaled UVs by the texture's actual size, so this must NOT be hardcoded (a 512-wide or non-256-tall custom/content
+     *  sheet would otherwise map its UVs wrong and render distorted). Falls back to 256×256 if the file can't be read. */
+    private static final Map<String, int[]> DIMS = new HashMap<>();
 
-    /** Full texture WIDTH for UV normalization — a few gui sheets are 512 wide (heights are all 256). */
-    private static int texWidth(String name) {
-        return switch (name) {
-            case "plane_hud_wwii", "civilian_aircraft", "bnr32_hud" -> 512;
-            default -> 256;
-        };
+    private static int[] dims(String name) {
+        return DIMS.computeIfAbsent(name, n -> {
+            ResourceLocation rl = ResourceLocation.fromNamespaceAndPath(MCHeli.MODID, "textures/gui/" + n + ".png");
+            try (InputStream in = Minecraft.getInstance().getResourceManager().open(rl)) {
+                byte[] head = in.readNBytes(24); // PNG: 8-byte sig + IHDR length/type, then width@16, height@20 (BE)
+                if (head.length >= 24) {
+                    int w = beInt(head, 16);
+                    int h = beInt(head, 20);
+                    if (w > 0 && h > 0) {
+                        return new int[]{w, h};
+                    }
+                }
+            } catch (Exception ignored) {
+                // missing/unreadable texture — fall through to the 256×256 default (blit will just show missing texture)
+            }
+            return new int[]{256, 256};
+        });
+    }
+
+    private static int beInt(byte[] b, int off) {
+        return ((b[off] & 0xFF) << 24) | ((b[off + 1] & 0xFF) << 16) | ((b[off + 2] & 0xFF) << 8) | (b[off + 3] & 0xFF);
     }
 
     private final GuiGraphics g;
@@ -94,6 +116,18 @@ public final class NeoHudRenderer implements HudRenderer {
     }
 
     @Override
+    public void points(double[] centers, int argb, double size) {
+        double half = Math.max(1.0, size) / 2.0;
+        for (int i = 0; i + 1 < centers.length; i += 2) {
+            int x1 = (int) Math.round(centers[i] - half);
+            int y1 = (int) Math.round(centers[i + 1] - half);
+            int x2 = (int) Math.round(centers[i] + half);
+            int y2 = (int) Math.round(centers[i + 1] + half);
+            g.fill(x1, y1, Math.max(x2, x1 + 1), Math.max(y2, y1 + 1), argb); // a >=1px square blip
+        }
+    }
+
+    @Override
     public void pushMatrix(double pivotX, double pivotY, double degrees) {
         PoseStack pose = g.pose();
         pose.pushPose();
@@ -156,8 +190,9 @@ public final class NeoHudRenderer implements HudRenderer {
             pose.mulPose(Axis.ZP.rotationDegrees((float) rot));
         }
         pose.translate(-w / 2.0, -h / 2.0, 0.0);
+        int[] d = dims(name); // real sheet size for correct UV normalization (not a hardcoded width/height)
         g.blit(rl, 0, 0, (int) Math.round(w), (int) Math.round(h),
-            (float) u, (float) v, (int) Math.round(uw), (int) Math.round(vh), texWidth(name), TEX);
+            (float) u, (float) v, (int) Math.round(uw), (int) Math.round(vh), d[0], d[1]);
         pose.popPose();
     }
 }

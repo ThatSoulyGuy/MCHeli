@@ -54,6 +54,6 @@ public final class MCH_HudManager {
                 log.warn("MCHeli: failed to parse hud/{} : {}", file, e.toString());
             }
         }
-        log.info("Read {} huds", this.map.size());
+        log.info("Read %d huds", this.map.size()); // printf-style like the other managers (the SPI logger is %-format)
     }
 }

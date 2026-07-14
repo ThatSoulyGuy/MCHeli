@@ -23,4 +23,13 @@ public interface HudState extends MchExpr.VarLookup {
 
     /** Line thickness in pixels (the reference used {@code glLineWidth(guiScale)}). */
     float lineWidth();
+
+    /** Neutral radar contacts as relative {@code (x0,z0,x1,z1,…)} block offsets from the vehicle, for
+     *  {@code DrawEntityRadar}. Default: none (a vehicle with no radar, or a headless stub). */
+    default double[] radarEntities() { return NO_BLIPS; }
+
+    /** Hostile radar contacts (same layout) for {@code DrawEnemyRadar}. Default: none. */
+    default double[] radarEnemies() { return NO_BLIPS; }
+
+    double[] NO_BLIPS = new double[0];
 }

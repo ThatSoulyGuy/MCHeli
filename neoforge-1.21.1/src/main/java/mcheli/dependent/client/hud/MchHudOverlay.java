@@ -47,7 +47,7 @@ public final class MchHudOverlay {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player != null
             && mc.player.getVehicle() instanceof AbstractMchVehicle vehicle
-            && vehicle.hudName(0) != null) {
+            && vehicle.hudName(Math.max(0, vehicle.seatIndexOf(mc.player))) != null) {
             event.setCanceled(true);
         }
     }
@@ -61,7 +61,10 @@ public final class MchHudOverlay {
         if (!(ridden instanceof AbstractMchVehicle vehicle)) {
             return;
         }
-        String hudName = vehicle.hudName(0); // seat 0 = pilot (multi-seat/gunner is a later feature)
+        // Draw the HUD for the seat the LOCAL player actually occupies — a gunner gets their gunner HUD (heli_gnr /
+        // gunner / mbt_gnr …), a pilot the pilot HUD; the per-seat names come from the vehicle's HUD = config list.
+        int seat = Math.max(0, vehicle.seatIndexOf(mc.player));
+        String hudName = vehicle.hudName(seat);
         if (hudName == null) {
             return;
         }
@@ -69,7 +72,8 @@ public final class MchHudOverlay {
         if (hud == null || hud.isEmpty()) {
             return;
         }
-        MchHudVarState state = new MchHudVarState(vehicle, mc.player, g.guiWidth(), g.guiHeight());
+        float partialTick = deltaTracker.getGameTimeDeltaPartialTick(false); // smooths the radar sweep line
+        MchHudVarState state = new MchHudVarState(vehicle, mc.player, g.guiWidth(), g.guiHeight(), partialTick);
         hud.draw(new NeoHudRenderer(g, mc.font), state, MCH_HudManager::get);
         g.setColor(1.0F, 1.0F, 1.0F, 1.0F); // reset in case a textured needle left a tint
     }

@@ -47,6 +47,7 @@ public final class DemoHudSelfTest {
         // 3. Draw each demo vehicle's real HUD into a capturing renderer against a stub state (exercises parse + eval
         //    + item execution + the Call recursion, for all four vehicle HUDs).
         boolean drew = true;
+        int radarPoints = 0; // blips emitted across the radar-equipped HUDs (have_radar=1 in the stub)
         Stub stub = new Stub();
         for (String h : new String[]{"heli", "plane", "mbt_hud", "vehicle"}) {
             MCH_Hud hud = MCH_HudManager.get(h);
@@ -56,10 +57,15 @@ public final class DemoHudSelfTest {
             Capture cap = new Capture();
             hud.draw(cap, stub, MCH_HudManager::get);
             int total = cap.strings + cap.fills + cap.lines + cap.textures;
-            LOG.info("[HUD-SELFTEST] {} HUD drew: strings={} fills={} lines={} textures={}",
-                h, cap.strings, cap.fills, cap.lines, cap.textures);
+            LOG.info("[HUD-SELFTEST] {} HUD drew: strings={} fills={} lines={} textures={} points={}",
+                h, cap.strings, cap.fills, cap.lines, cap.textures, cap.points);
             drew &= total > 0;
+            radarPoints += cap.points;
         }
+        // The stub reports have_radar=1 + sample contacts, so the radar dial's DrawEntityRadar/DrawEnemyRadar must have
+        // projected at least one blip into a point emission (proves the radar draw path executes end-to-end).
+        boolean radarOk = radarPoints > 0;
+        LOG.info("[HUD-SELFTEST] radar blips emitted across radar HUDs -> {} ({})", radarOk ? "OK" : "FAIL", radarPoints);
 
         // 4. Format-arg TYPES match their %-specs (the tank HUD's ungated x%.1f CAM_ZOOM + %02d MC_THOR would crash on
         //    a wrong type). Verify String.format succeeds AND produces the expected text.
@@ -72,9 +78,9 @@ public final class DemoHudSelfTest {
         }
         LOG.info("[HUD-SELFTEST] format-arg types (CAM_ZOOM %.1f, MC_THOR/MC_TMIN %02d) -> {}", fmtOk ? "OK" : "FAIL");
 
-        boolean pass = evalOk && loaded && drew && fmtOk;
-        LOG.info("[HUD-SELFTEST] RESULT: {} - eval={} configsLoaded={} pipelineDrew={} formatTypes={}",
-            pass ? "PASS" : "FAIL", evalOk, loaded, drew, fmtOk);
+        boolean pass = evalOk && loaded && drew && fmtOk && radarOk;
+        LOG.info("[HUD-SELFTEST] RESULT: {} - eval={} configsLoaded={} pipelineDrew={} formatTypes={} radar={}",
+            pass ? "PASS" : "FAIL", evalOk, loaded, drew, fmtOk, radarOk);
     }
 
     private static double ev(String expr, Map<String, Double> vars) {
@@ -91,12 +97,14 @@ public final class DemoHudSelfTest {
         int fills;
         int lines;
         int textures;
+        int points; // radar blips (each call may carry several)
 
         @Override public void string(String t, int x, int y, int argb, boolean c) { this.strings++; }
         @Override public void fill(int a, int b, int c, int d, int argb) { this.fills++; }
         @Override public void line(double[] p, int argb, int m, float w) { this.lines++; }
         @Override public void texture(String n, double x, double y, double w, double h, double u, double v,
                                       double uw, double vh, double r) { this.textures++; }
+        @Override public void points(double[] centers, int argb, double size) { this.points += centers.length / 2; }
     }
 
     /** A stub HudState with plausible flight values (everything else 0/""), enough to drive every expression. */
@@ -109,9 +117,15 @@ public final class DemoHudSelfTest {
                 case "plyr_pitch", "pitch" -> -5.0;
                 case "roll" -> 0.0;
                 case "speed" -> 0.3;
+                case "have_radar" -> 1.0;   // exercise the radar dial block
+                case "radar_rot" -> 30.0;
+                case "sight_type" -> 1.0;   // exercise the rocket-sight reticle in hud/sight.txt
                 default -> 0.0;
             };
         }
+        // Two in-range contacts (|x,z| well under the 64-block range) so the radar projection emits blips.
+        @Override public double[] radarEntities() { return new double[]{10.0, 20.0}; }
+        @Override public double[] radarEnemies() { return new double[]{-15.0, 5.0}; }
         @Override public Object formatArg(String argName) {
             // Types must match MchHudVarState (and thus the %-specs the configs use).
             return switch (argName.toUpperCase(java.util.Locale.ROOT)) {

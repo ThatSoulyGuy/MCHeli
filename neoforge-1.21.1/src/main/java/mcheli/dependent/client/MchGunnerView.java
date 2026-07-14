@@ -34,6 +34,9 @@ public final class MchGunnerView {
     private static float zoom = 1.0F;         // current optical zoom (>= 1)
     private static boolean wasGunnerMode;     // last tick's gunner-mode state, to reset zoom on the falling edge
 
+    /** The current optical zoom (&ge; 1) — the reference {@code camera.getCameraZoom()} for the HUD {@code cam_zoom}. */
+    public static float currentZoom() { return zoom; }
+
     /**
      * Step the zoom — the reference {@code zoomCamera} ({@code MCH_EntityAircraft:2506}): double each press, but CLAMP
      * to the max and only wrap back to 1 on the press AFTER reaching the max. So {@code CameraZoom = 3} cycles

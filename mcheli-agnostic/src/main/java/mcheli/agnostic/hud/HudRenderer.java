@@ -36,4 +36,8 @@ public interface HudRenderer {
     default void lineStipple(double[] points, int argb, int factor, int pattern, float width) {
         line(points, argb, 1, width);
     }
+
+    /** Draw radar blips: each (x,y) pair in {@code centers} as a filled {@code size}-pixel square centred on the point,
+     *  in 0xAARRGGBB (the reference's {@code drawPoints}/{@code GL_POINTS}). Default: no-op (headless capture ignores). */
+    default void points(double[] centers, int argb, double size) { }
 }

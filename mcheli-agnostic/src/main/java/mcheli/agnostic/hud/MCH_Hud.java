@@ -14,14 +14,14 @@ import mcheli.agnostic.eval.MchExpr;
  *
  * <p>Implements the cockpit commands: {@code Color}, {@code DrawString}/{@code DrawCenteredString}, {@code DrawLine},
  * {@code DrawLineStipple}, {@code DrawRect}, {@code DrawTexture}, {@code DrawGraduationYaw}/{@code Pitch1}/{@code Pitch2}/
- * {@code Pitch3} (the heading/pitch ladders, which bank with roll via a pushed rotation), {@code If}/{@code EndIf},
- * {@code Call}, {@code Exit}. Still parse-and-skipped: {@code DrawCameraRot} (a gunner-camera reticle — draws only with
- * an active camera, a #36 feature) and {@code DrawEntityRadar}/{@code DrawEnemyRadar} (config-gated off by
- * {@code have_radar}).
+ * {@code Pitch3} (the heading/pitch ladders, which bank with roll via a pushed rotation), {@code DrawEntityRadar}/
+ * {@code DrawEnemyRadar} (the radar dial's neutral/hostile blips), {@code If}/{@code EndIf}, {@code Call}, {@code Exit}.
+ * Still parse-and-skipped: {@code DrawCameraRot} (a gunner-camera reticle — draws only with an active {@code MCH_Camera}
+ * object the port does not yet have).
  */
 public final class MCH_Hud {
 
-    private enum Kind { COLOR1, COLOR4, STRING, TEXTURE, RECT, LINE, LINE_STIPPLE, GRADUATION, IF, ENDIF, EXIT, CALL }
+    private enum Kind { COLOR1, COLOR4, STRING, TEXTURE, RECT, LINE, LINE_STIPPLE, GRADUATION, RADAR, IF, ENDIF, EXIT, CALL }
 
     private static final class Item {
         final Kind kind;
@@ -136,11 +136,14 @@ public final class MCH_Hud {
             }
             it.num[8] = MchExpr.compile(p.length == 10 ? p[9] : "0"); // rotation
             items.add(it);
+        } else if ((cmd.equalsIgnoreCase("DrawEntityRadar") || cmd.equalsIgnoreCase("DrawEnemyRadar")) && p.length == 5) {
+            Item it = new Item(Kind.RADAR);                 // args: rot, left, top, width, height
+            it.aux = cmd.equalsIgnoreCase("DrawEnemyRadar") ? 1 : 0; // 0 = neutral list, 1 = hostile list
+            it.num = compileAll(p, 0, 5);
+            items.add(it);
         }
-        // else: DrawCameraRot/DrawEntityRadar/DrawEnemyRadar -> deferred (skipped).
-        // DrawCameraRot is the gunner-camera reticle: in the reference it draws ONLY when the vehicle has an active
-        // gunner camera (MCH_Camera != null), which the pilot never has — so, like the ladders/radar, it stays a
-        // parse-and-skip until multi-seat/gunner mode (that feature will re-add it gated on a real camera).
+        // else: DrawCameraRot -> deferred (skipped). It is the gunner-camera reticle: the reference draws it ONLY when
+        // the vehicle has an active gunner camera (MCH_Camera != null); the port has no such camera object yet.
     }
 
     private static MchExpr.Node[] compileAll(String[] p, int from, int to) {
@@ -231,6 +234,9 @@ public final class MCH_Hud {
                         it.num[2].eval(vars), it.num[3].eval(vars),
                         it.num[4].eval(vars), it.num[5].eval(vars), it.num[6].eval(vars), it.num[7].eval(vars),
                         it.num[8].eval(vars));
+                    case RADAR -> drawRadar(r, it.aux == 1 ? s.radarEnemies() : s.radarEntities(),
+                        it.num[0].eval(vars), cx + it.num[1].eval(vars), cy + it.num[2].eval(vars),
+                        it.num[3].eval(vars), it.num[4].eval(vars), color[0]);
                     case IF -> ifFalse = it.num[0].eval(vars) == 0.0;
                     case ENDIF -> ifFalse = false;
                     case EXIT -> {
@@ -370,6 +376,41 @@ public final class MCH_Hud {
                 r.string(Integer.toString(pitch), posX - 50 - 10, y - 4, color, true);
                 r.string(Integer.toString(pitch), posX + 50 + 10, y - 4, color, true);
             }
+        }
+    }
+
+    // ---- entity radar dial (DrawEntityRadar / DrawEnemyRadar), ported from MCH_HudItemRadar ----
+
+    /** Project a radar-contact list onto the dial and draw the visible blips. Each contact is a relative {@code (x,z)}
+     *  block offset from the vehicle; it is scaled so a 64-block range spans the dial (reference {@code w/64} factor),
+     *  rotated by {@code rot} (the config's {@code -plyr_yaw-180} = north-up), clipped to the dial box, and drawn as a
+     *  small square. {@code left}/{@code top} are the dial's centre-origin-resolved top-left. */
+    private static void drawRadar(HudRenderer r, double[] blips, double rot, double left, double top,
+                                  double w, double h, int color) {
+        if (blips.length < 2) {
+            return;
+        }
+        double rr = Math.toRadians(rot);
+        double cos = Math.cos(rr);
+        double sin = Math.sin(rr);
+        double wf = w / 64.0;
+        double hf = h / 64.0;
+        double halfW = w / 2.0;
+        double halfH = h / 2.0;
+        double[] out = new double[blips.length];
+        int n = 0;
+        for (int i = 0; i + 1 < blips.length; i += 2) {
+            double sx = blips[i] / 2.0 * wf;
+            double sy = blips[i + 1] / 2.0 * hf;
+            double px = sx * cos - sy * sin;   // MCH_Lib.rotatePoints
+            double py = sx * sin + sy * cos;
+            if (px > -halfW && px < halfW && py > -halfH && py < halfH) { // clip to the dial (reference bounds test)
+                out[n++] = left + halfW + px;
+                out[n++] = top + halfH + py;
+            }
+        }
+        if (n > 0) {
+            r.points(n == out.length ? out : java.util.Arrays.copyOf(out, n), color, 2.0);
         }
     }
 
