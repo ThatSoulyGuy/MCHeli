@@ -14,15 +14,16 @@ public final class DemoTankState implements TankState {
     /** Bound to the live entity's {@code isDestroyed()} — a destroyed tank stops driving (TankFlightModel gates on
      *  {@code !isDestroyed()}) and coasts to a wreck. */
     private final java.util.function.BooleanSupplier destroyed;
-    private boolean gunnerMode;
 
     private final AbstractMchVehicle owner;
     public DemoTankState(AbstractMchVehicle owner) { this.owner = owner; this.destroyed = owner::isDestroyed; }
 
     @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
-    @Override public boolean isGunnerMode() { return gunnerMode; }
+    // Gunner mode is server-authoritative + synced on the entity (reference isGunnerMode); the toggle path is
+    // AbstractMchVehicle.toggleGunnerMode. In gunner mode TankFlightModel stops steering and levels the hull.
+    @Override public boolean isGunnerMode() { return this.owner.isGunnerModeActive(); }
     @Override public boolean isTargetDrone() { return false; }
     @Override public boolean canUseFuel() { return this.owner.canUseFuel(false); }     // maxFuel <= 0
     @Override public boolean isCanopyClose() { return true; }   // partCanopy == null
-    @Override public void switchGunnerMode(boolean on) { this.gunnerMode = on; }
+    @Override public void switchGunnerMode(boolean on) { /* authoritative toggle lives on the entity */ }
 }

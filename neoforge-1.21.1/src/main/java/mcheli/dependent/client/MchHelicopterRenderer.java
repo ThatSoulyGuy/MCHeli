@@ -61,7 +61,7 @@ public class MchHelicopterRenderer extends MchModelEntityRenderer<MchHelicopter>
         HeliMeta m = meta(entity, model);
         int c = wreckColor(entity);
         // Rotor angle is accumulated on the entity from the synced engine power; interpolate with the short-path.
-        float spin = calcRot(entity.getRotorAngle(), entity.getPrevRotorAngle(), partialTick);
+        float spin = calcRot(entity.rotorSpin(), entity.prevRotorSpin(), partialTick);
         for (MCH_HeliInfo.Rotor rotor : m.rotors()) {
             String group = "$" + rotor.modelName;
             double hx = rotor.pos.x();

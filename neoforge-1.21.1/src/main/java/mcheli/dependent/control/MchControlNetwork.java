@@ -28,5 +28,13 @@ public final class MchControlNetwork {
             ServerboundVehicleGuiPayload.TYPE,
             ServerboundVehicleGuiPayload.STREAM_CODEC,
             ServerboundVehicleGuiPayload::handle);
+        registrar.playToServer(
+            ServerboundSeatSwitchPayload.TYPE,
+            ServerboundSeatSwitchPayload.STREAM_CODEC,
+            ServerboundSeatSwitchPayload::handle);
+        registrar.playToServer(
+            ServerboundGunnerModePayload.TYPE,
+            ServerboundGunnerModePayload.STREAM_CODEC,
+            ServerboundGunnerModePayload::handle);
     }
 }

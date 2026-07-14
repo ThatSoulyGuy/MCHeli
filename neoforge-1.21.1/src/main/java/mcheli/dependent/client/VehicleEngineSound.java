@@ -30,6 +30,17 @@ public class VehicleEngineSound extends AbstractTickableSoundInstance {
         return this.vehicle.getId();
     }
 
+    /**
+     * CRITICAL: a looping engine sound starts at volume 0 (silent at rest) and fades in via {@link #tick()}. Minecraft's
+     * {@code SoundEngine.play} SKIPS any sound whose volume is 0 at play time ("volume was zero") unless it opts in here —
+     * without this override the drone is culled at creation and its {@code tick()} never runs, so it never fades in and
+     * you hear nothing. This is the mechanism vanilla's own looping sounds (minecart, beacon) use.
+     */
+    @Override
+    public boolean canStartSilent() {
+        return true;
+    }
+
     public void forceStop() {
         this.stop();
     }
@@ -43,8 +54,9 @@ public class VehicleEngineSound extends AbstractTickableSoundInstance {
         this.x = this.vehicle.getX();
         this.y = this.vehicle.getY();
         this.z = this.vehicle.getZ();
-        float power = this.vehicle.getEnginePower();
-        this.volume = power * 0.75F;        // silent when off, up to 0.75 at full throttle
-        this.pitch = 0.7F + power * 0.55F;  // spools the pitch up with throttle
+        // Per-type volume/pitch from the reference (heli rotor / jet spool / tank engine), scaled by the config
+        // SoundVolume/SoundPitch — replaces the old generic 0.75/0.55 curve.
+        this.volume = Math.max(0.0F, this.vehicle.engineSoundVolume());
+        this.pitch = Math.max(0.05F, this.vehicle.engineSoundPitch());
     }
 }

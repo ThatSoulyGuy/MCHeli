@@ -10,6 +10,7 @@ import mcheli.agnostic.sim.TankControlMapping;
 import mcheli.agnostic.sim.TankFlightModel;
 import mcheli.agnostic.sim.TankState;
 import mcheli.agnostic.tank.MCH_TankInfo;
+import mcheli.dependent.control.MchControlState;
 import mcheli.agnostic.tank.MCH_TankInfoManager;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
@@ -45,6 +46,26 @@ public class MchTank extends AbstractMchVehicle {
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
     @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
+
+    // Reference MCH_EntityTank.getSoundVolume/getSoundPitch: volume = SoundVolume × T × 0.7; pitch = 0.5 + T×0.5, where
+    // T = max(forward throttle, maneuver term) — see soundThrottle() below. Default "prop" is the reference's
+    // copy-paste default, but every bundled tank sets Sound= so it never surfaces.
+    @Override protected String defaultEngineSound() { return "prop"; }
+    @Override public float engineSoundVolume() { return configSoundVolume() * getThrottleInput() * 0.7F; }
+    @Override public float engineSoundPitch() { return configSoundPitch() * (0.5F + getThrottleInput() * 0.5F); }
+
+    /** The tank revs when MANEUVERING, not just driving forward — the reference's {@code soundVolumeTarget} climbs to
+     *  0.75 whenever the hull is turning or reversing ({@code moveLeft/moveRight/throttleDown}). Synced as the sound
+     *  throttle so {@code getThrottleInput() = max(forwardThrottle, maneuver)} matches the reference's {@code max(...)}. */
+    @Override protected double soundThrottle() {
+        MchControlState c = getControlState();
+        boolean maneuvering = c.moveLeft || c.moveRight || c.throttleDown;
+        return Math.max(simThrottle(), maneuvering ? 0.75 : 0.0);
+    }
+
+    /** Reference {@code MCH_EntityTank.canSwitchGunnerMode}:159 hard-returns false — a tank pilot always aims the turret
+     *  by looking, so there is no separate gunner mode. (No bundled tank config sets {@code EnableGunnerMode} anyway.) */
+    @Override public boolean canSwitchGunnerMode() { return false; }
     /** Reference {@code MCH_EntityTank.setAngles:1119-1126}: the FIRST-PERSON rider's look pitch is clamped every frame
      *  to the hull-projected pitch + the config {@code MinRotationPitch/MaxRotationPitch}. */
     @Override public float[] riderPitchClampNow() {

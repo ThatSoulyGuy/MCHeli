@@ -45,6 +45,26 @@ public class MchPlane extends AbstractMchVehicle {
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
     @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
+
+    // Reference MCP_EntityPlane.getSoundVolume/getSoundPitch: volume = SoundVolume × slewedThrottle × 0.7; pitch [0.6,1.0].
+    // (The port's engine power is already spooled, so it stands in for the reference's separately-slewed soundVolume.)
+    @Override protected String defaultEngineSound() { return "plane"; }
+    @Override public float engineSoundVolume() { return configSoundVolume() * getThrottleInput() * 0.7F; }
+    @Override public float engineSoundPitch() { return configSoundPitch() * (0.6F + getThrottleInput() * 0.4F); }
+
+    /** Reference {@code MCP_EntityPlane.canSwitchGunnerMode}:140 — additionally requires a near-level attitude
+     *  (|roll|,|pitch| ≤ 40°), fast throttle ({@code > 0.6}), and being airborne, so you cannot gun a parked plane. */
+    @Override public boolean canSwitchGunnerMode() {
+        if (!super.canSwitchGunnerMode()) {
+            return false;
+        }
+        float roll = Math.abs(net.minecraft.util.Mth.wrapDegrees(getRollAngle()));
+        float pitch = Math.abs(net.minecraft.util.Mth.wrapDegrees(getXRot()));
+        if (roll > 40.0F || pitch > 40.0F) {
+            return false;
+        }
+        return simThrottle() > 0.6 && !onGround(); // airborne proxy for the reference getBlockIdY(this,3,-5)==0
+    }
     @Override protected RotationSolver.ControlMapping controlMapping() {
         if (this.mapping == null) {
             this.mapping = new PlaneControlMapping(this.ref, (MCP_PlaneInfo) weaponHostInfo(), this.rotState, this.planeState);

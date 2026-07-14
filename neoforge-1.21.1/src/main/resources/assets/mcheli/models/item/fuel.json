@@ -1,6 +1,6 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "mcheli:items/fuel"
+    "layer0": "mcheli:item/fuel"
   }
 }

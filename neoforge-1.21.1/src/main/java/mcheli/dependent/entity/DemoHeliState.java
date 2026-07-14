@@ -21,17 +21,17 @@ public final class DemoHeliState implements HeliState {
      *  on {@code !isDestroyed()}) and falls, which is the mechanism the wreck relies on. */
     private final java.util.function.BooleanSupplier destroyed;
     private boolean hoveringMode;
-    private boolean gunnerMode;
 
     private final AbstractMchVehicle owner;
     public DemoHeliState(AbstractMchVehicle owner) { this.owner = owner; this.destroyed = owner::isDestroyed; }
 
     @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
 
-    // isHovering() = isGunnerMode || isHoveringMode() — reference MCH_EntityAircraft.isHovering().
-    @Override public boolean isHovering() { return gunnerMode || hoveringMode; }
+    // isHovering() = isGunnerMode || isHoveringMode() — reference MCH_EntityAircraft.isHovering(). Gunner mode is
+    // server-authoritative + synced on the entity (reference isGunnerMode); the toggle path is on the entity.
+    @Override public boolean isHovering() { return this.owner.isGunnerModeActive() || hoveringMode; }
     @Override public boolean isHoveringMode() { return hoveringMode; }
-    @Override public boolean isGunnerMode() { return gunnerMode; }
+    @Override public boolean isGunnerMode() { return this.owner.isGunnerModeActive(); }
 
     // maxFuel <= 0 -> fuel never gates the control path (reference canUseFuel).
     @Override public boolean canUseFuel(boolean checkOtherSeat) { return this.owner.canUseFuel(checkOtherSeat); }
@@ -47,6 +47,6 @@ public final class DemoHeliState implements HeliState {
     // and the attitude term is moot here because the ONLY caller is HeliFlightModel's fuel-out branch, which never
     // fires while canUseFuel(true) is unconditionally true for a fuel-less heli. Whatever live-entity wiring
     // replaces this seam MUST honor the full attitude gate. switchGunnerMode is likewise ungated here.
-    @Override public void switchHoveringMode(boolean on) { if (!gunnerMode) { this.hoveringMode = on; } }
-    @Override public void switchGunnerMode(boolean on) { this.gunnerMode = on; }
+    @Override public void switchHoveringMode(boolean on) { if (!this.owner.isGunnerModeActive()) { this.hoveringMode = on; } }
+    @Override public void switchGunnerMode(boolean on) { /* authoritative toggle lives on the entity */ }
 }

@@ -66,6 +66,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     private static final EntityDataAccessor<Float> DATA_ROLL =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
     /** Spooled engine power 0..1 (server-authored, synced) so clients can drive rotor RPM / sounds. */
+    /** The real flight throttle (0 at rest, 1 spooled up) — the port of the reference {@code getCurrentThrottle()},
+     *  synced for the CLIENT sound loop + rotor down-wash. Distinct from {@link #DATA_THROTTLE} (the rotor-spin signal
+     *  that idles at 0.5 while merely ridden). */
+    private static final EntityDataAccessor<Float> DATA_SIM_THROTTLE =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
     private static final EntityDataAccessor<Float> DATA_THROTTLE =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
     private float enginePower; // server-side spool accumulator
@@ -93,6 +98,12 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Fuel in the tank (synced for the HUD gauge). A vehicle with {@code MaxFuel = 0} never burns fuel. */
     private static final EntityDataAccessor<Integer> DATA_FUEL =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
+    /** True while the PILOT has toggled gunner mode (reference {@code isGunnerMode}) — server-authoritative and synced:
+     *  the flight sim reads it (a heli hovers, a plane/tank levels off and stops steering), and clients read it for the
+     *  gunner camera + scope zoom + the seat-pitch view clamp. Only ever set for a pilot; gunner SEATS are "always in
+     *  gunner mode" structurally (see {@link #isSeatGunnerMode}). */
+    private static final EntityDataAccessor<Boolean> DATA_GUNNER_MODE =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.BOOLEAN);
     /** True while the PILOT has the resupply GUI open (plus the reference's 20-tick tail) — the port of
      *  {@code isPilotReloading}. The HUD blanks the weapon name/ammo while it is set, and the reference kills pilot
      *  control input for the same window. */
@@ -480,26 +491,24 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         double vz = Mth.lerp((double) partialTick, this.zo, this.getZ());
         org.joml.Quaternionf body = bodyRotation(partialTick);
 
-        if (usesConfigCameraEye() && !info.cameraPosition.isEmpty()) {
-            // getCameraPosInfo:685-699 — seat 0, cameraId 0 -> cameraPosition[0]; per-seat camPos/invCamPos never
-            // applies to seat 0 (sid>0 only) — a multi-seat seam.
-            mcheli.agnostic.value.Vec3d cp = info.cameraPosition.get(0).pos;
+        // GUNNER CAMERA (getCameraPosInfo:685-699, the sid>0 branch): a gunner seat with its OWN camera position
+        // (AddGunnerSeat sets invCamPos + a CameraPosition) renders from that camera while the seat is in gunner mode,
+        // orbiting the turret if the seat is rotSeat. This is what detaches the view to the gun sight.
+        int sid = seatIndexOf(rider);
+        MCH_SeatInfo seat = info.seatList != null && sid > 0 && sid < info.seatList.size()
+            ? info.seatList.get(sid) : null;
+        if (seat != null && seat.invCamPos && seat.getCamPos() != null && isSeatGunnerMode(sid)) {
+            return configCameraEye(seat.getCamPos().pos, seat.rotSeat, info, vx, vy, vz, body, partialTick);
+        }
+
+        // The pilot uses CameraPosition[0] either when the config forces the camera view (alwaysCameraView) OR when the
+        // pilot has entered gunner mode — the reference renders through the camera dummy for (isPilot && alwaysCameraView)
+        // || getIsGunnerMode (MCH_Client*TickHandler:~110), and getCameraPosInfo returns cameraPosition[0] for seat 0.
+        boolean pilotGunnerCam = sid == 0 && isSeatGunnerMode(0);
+        if ((usesConfigCameraEye() || pilotGunnerCam) && !info.cameraPosition.isEmpty()) {
             MCH_SeatInfo seat0 = info.seatList == null || info.seatList.isEmpty() ? null : info.seatList.get(0);
-            org.joml.Vector3f off;
-            if (seat0 != null && seat0.rotSeat) {
-                org.joml.Vector3f tp = new org.joml.Vector3f(
-                    (float) info.turretPosition.x(),
-                    (float) (info.turretPosition.y() + cp.y()),
-                    (float) info.turretPosition.z());
-                float riderYaw = Mth.rotLerp(partialTick, rider.yRotO, rider.getYRot());
-                off = new org.joml.Vector3f((float) cp.x(), (float) cp.y(), (float) cp.z())
-                    .sub(tp)
-                    .rotateY((float) Math.toRadians(-riderYaw))
-                    .add(tp.rotate(body));
-            } else {
-                off = new org.joml.Vector3f((float) cp.x(), (float) cp.y(), (float) cp.z()).rotate(body);
-            }
-            return new Vec3(vx + off.x, vy + (double) off.y - modelMinY(), vz + off.z);
+            return configCameraEye(info.cameraPosition.get(0).pos, seat0 != null && seat0.rotSeat,
+                info, vx, vy, vz, body, partialTick);
         }
 
         // Seat eye — for BOTH locked view and free-look-without-config-camera: eye = attachment (rotSeat-orbited,
@@ -510,6 +519,43 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         Vec3 att = getPassengerAttachmentPoint(rider, rider.getDimensions(rider.getPose()), partialTick);
         org.joml.Vector3f up = new org.joml.Vector3f(0.0F, rider.getEyeHeight(), 0.0F).rotate(body);
         return new Vec3(vx + att.x + up.x, vy + att.y + up.y, vz + att.z + up.z);
+    }
+
+    /** The eye at a config {@code CameraPosition} {@code cp} — the shared body of {@link #firstPersonEye}'s pilot and
+     *  gunner camera branches ({@code setupAllRiderRenderPosition:3266-3276} + {@code calcOnTurretPos:3218-3232}). A
+     *  {@code rotSeat} camera orbits {@code turretPosition} by the rider's absolute look yaw; otherwise it is fixed to
+     *  the hull. {@code cp} IS the eye (no player eye height added); both carry the port's {@code -minY} lift. */
+    private Vec3 configCameraEye(mcheli.agnostic.value.Vec3d cp, boolean rotSeat, MCH_AircraftInfo info,
+                                 double vx, double vy, double vz, org.joml.Quaternionf body, float partialTick) {
+        org.joml.Vector3f off;
+        if (rotSeat) {
+            org.joml.Vector3f tp = new org.joml.Vector3f(
+                (float) info.turretPosition.x(),
+                (float) (info.turretPosition.y() + cp.y()),
+                (float) info.turretPosition.z());
+            // The orbit is the PILOT's turret yaw (reference calcOnTurretPos ry = getRiddenByEntity().rotationYaw), NOT
+            // the camera-owner's — a gunner's cupola camera stays fixed to the turret and only its VIEW rotates, exactly
+            // like the gunner's rotSeat SEAT (which also orbits by the pilot's look). For the pilot's own camera the two
+            // are the same rider.
+            float orbitYaw = cameraOrbitYaw(partialTick);
+            off = new org.joml.Vector3f((float) cp.x(), (float) cp.y(), (float) cp.z())
+                .sub(tp)
+                .rotateY((float) Math.toRadians(-orbitYaw))
+                .add(tp.rotate(body));
+        } else {
+            off = new org.joml.Vector3f((float) cp.x(), (float) cp.y(), (float) cp.z()).rotate(body);
+        }
+        return new Vec3(vx + off.x, vy + (double) off.y - modelMinY(), vz + off.z);
+    }
+
+    /** The camera turret-orbit yaw (reference {@code calcOnTurretPos} {@code ry}): the PILOT's interpolated body yaw, or
+     *  the aim latch if no pilot rides. Both the pilot's own turret camera and a gunner's cupola camera orbit by this. */
+    private float cameraOrbitYaw(float partialTick) {
+        Entity p = pilot();
+        if (p != null) {
+            return Mth.rotLerp(partialTick, p.yRotO, p.getYRot());
+        }
+        return this.aimLatched ? Mth.rotLerp(partialTick, this.prevLastRiderYaw, this.lastRiderYaw) : this.getYRot();
     }
 
     /** Config-driven dismount — reference {@code setUnmountPosition:3787-3802}: the config {@code UnmountPosition}
@@ -604,8 +650,10 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     @Override protected void defineSynchedData(SynchedEntityData.Builder builder) {
         builder.define(DATA_ROLL, 0.0F);
         builder.define(DATA_THROTTLE, 0.0F);
+        builder.define(DATA_SIM_THROTTLE, 0.0F);
         builder.define(DATA_SKIN, 0);
         builder.define(DATA_GEAR, 0.0F);
+        builder.define(DATA_GUNNER_MODE, false);
         builder.define(DATA_WEAPON, -1);
         builder.define(DATA_AMMO, -1);
         builder.define(DATA_RELOAD, 0.0F);
@@ -740,6 +788,76 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Spooled engine power 0..1 (synced). Full when a rider holds throttle-up, idles at 0.5 while ridden, 0 when
      *  abandoned — clients read it for rotor RPM / sound. */
     public float getEnginePower() { return this.entityData.get(DATA_THROTTLE); }
+
+    /** The real flight throttle 0..1 (synced) — the port of {@code getCurrentThrottle()}: 0 at rest, rising as you spool
+     *  up. Drives the engine sound loop + rotor down-wash (NOT {@link #getEnginePower}, which idles at 0.5 when ridden). */
+    public float getThrottleInput() { return this.entityData.get(DATA_SIM_THROTTLE); }
+
+    // ---- Rotor / propeller spin (reference rotationRotor) — CLIENT-only, driven by the CONFIG rotorSpeed ----
+    private float rotorSpin;
+    private float prevRotorSpin;
+
+    /** Advance the rotor/propeller spin angle this client tick — the port of the reference {@code rotationRotor +=
+     *  throttle × info.rotorSpeed} ({@code MCP_EntityPlane}:173, heli equivalent). The per-tick rate is the config
+     *  {@code RotorSpeed} (heli 79.99, prop plane 47.94; 0 for jets/tanks so nothing spins) scaled by the engine power,
+     *  so a running engine idles the blades and full throttle spins them fast. NOTHING is hardcoded — the rate is the
+     *  vehicle's own config value. */
+    private void advanceRotorSpin() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        float speed = info != null ? info.rotorSpeed : 0.0F;
+        this.prevRotorSpin = this.rotorSpin;
+        if (speed != 0.0F) {
+            this.rotorSpin = (this.rotorSpin + getEnginePower() * speed) % 360.0F;
+        }
+    }
+
+    /** Current rotor/propeller spin angle (degrees), for the renderer. */
+    public float rotorSpin() { return this.rotorSpin; }
+    /** Previous-tick rotor/propeller spin angle, for render interpolation. */
+    public float prevRotorSpin() { return this.prevRotorSpin; }
+
+    /** The value synced into {@link #getThrottleInput} for the sound loop — the flight throttle by default. A tank adds
+     *  its maneuver-rev term (reference {@code soundVolumeTarget}) so it revs when turning/reversing, not just forward. */
+    protected double soundThrottle() { return simThrottle(); }
+
+    // ---- Engine loop sound (reference MCH_SoundUpdater + per-type getSoundVolume/getSoundPitch/getSoundName) ----
+
+    /** The engine-loop sound basename — the config {@code Sound=} ({@code soundMove}) if set, else the per-type
+     *  default; {@code ""} means NO engine loop (the reference {@code getSoundName}). */
+    public String engineSoundName() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info != null && info.soundMove != null && !info.soundMove.isEmpty()) {
+            return info.soundMove;
+        }
+        return defaultEngineSound();
+    }
+
+    /** Per-type default engine sound ({@code heli}/{@code plane}/{@code prop}); {@code ""} == silent (base + ground). */
+    protected String defaultEngineSound() {
+        return "";
+    }
+
+    /** Loop VOLUME 0..1 — the reference per-type {@code getSoundVolume() × info.soundVolume}. Base 0 (silent). */
+    public float engineSoundVolume() {
+        return 0.0F;
+    }
+
+    /** Loop PITCH multiplier — the reference per-type {@code getSoundPitch() × info.soundPitch}. Base 1.0. */
+    public float engineSoundPitch() {
+        return 1.0F;
+    }
+
+    /** Config {@code SoundVolume} (default 1.0) — the per-type volume/pitch multiply by this. */
+    protected float configSoundVolume() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null ? info.soundVolume : 1.0F;
+    }
+
+    /** Config {@code SoundPitch} (default 1.0). */
+    protected float configSoundPitch() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null ? info.soundPitch : 1.0F;
+    }
 
     /** Selected paint-scheme index (synced). The renderer resolves it to a texture via {@link #skinTextureName()}. */
     public int getSkinIndex() { return this.entityData.get(DATA_SKIN); }
@@ -982,6 +1100,8 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             }
             this.gearAngle = this.entityData.get(DATA_GEAR); // read synced gear so the retract animates
             updateWheelTrackPhase();
+            advanceRotorSpin(); // heli rotor / plane propeller spin — CONFIG rotorSpeed, no hardcoded rate
+            clientAmbientEffects(); // rotor down-wash, damage smoke — the reference's onUpdate_Client particle spawns
             return;
         }
 
@@ -1053,10 +1173,15 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         this.lastBBDamageFactor = 1.0F; // clear any unread part factor so it can't leak to a later hit (reference :1363)
 
         // Engine power: full while a rider holds throttle-up, idle (0.5) while ridden, spooling to 0 when abandoned.
-        // Gradual so rotor RPM / sound ramp up and down instead of snapping.
+        // Gradual so rotor RPM / sound ramp up and down instead of snapping. This is the ROTOR-SPIN signal (idles at 0.5
+        // so a boarded heli's blades keep turning) — it is deliberately NOT the sound/particle signal (see below).
         float target = pilot() == null ? 0.0F : (getControlState().throttleUp ? 1.0F : 0.5F);
         this.enginePower += (target - this.enginePower) * 0.05F;
         this.entityData.set(DATA_THROTTLE, this.enginePower);
+        // Sync the ACTUAL flight throttle (the port of the reference getCurrentThrottle) — 0 at rest, rising only as you
+        // spool up. The sound loop volume/pitch and the rotor down-wash key off THIS, not the 0.5-idle rotor spin, so a
+        // parked heli is silent with no dust until you throttle up (reference MCH_SoundUpdater / onUpdate_ParticleSandCloud).
+        this.entityData.set(DATA_SIM_THROTTLE, (float) Math.max(0.0, Math.min(1.0, soundThrottle())));
 
         // Landing gear: deployed (0) on the ground, retracting toward 90 once airborne. Cosmetic; planes with an
         // AddPartLG list animate it, others just carry the value.
@@ -1131,6 +1256,58 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             e = pilot();
         }
         return e instanceof Player ? e : null;
+    }
+
+    // ---- GUNNER MODE (#36b) — reference isGunnerMode (pilot toggle) + the structural gunner-seat mode ----
+
+    /** The PILOT's toggled gunner mode (synced). The flight sim reads this; clients read it for camera/zoom. */
+    public boolean isGunnerModeActive() {
+        return this.entityData.get(DATA_GUNNER_MODE);
+    }
+
+    /**
+     * Is {@code seat}'s occupant in gunner mode right now — the port of {@code getIsGunnerMode}
+     * ({@code MCH_EntityAircraft:5349}): the pilot iff {@link #isGunnerModeActive}; a gunner SEAT is permanently in
+     * gunner mode unless it is {@code switchgunner} (the switchable toggle is not ported — a switchable seat reads as
+     * NOT in gunner mode until toggled, which the port leaves off). Drives the gunner camera + seat-pitch clamp.
+     */
+    public boolean isSeatGunnerMode(int seat) {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null || seat < 0) {
+            return false;
+        }
+        if (seat == 0) {
+            return info.isEnableGunnerMode && isGunnerModeActive();
+        }
+        MCH_SeatInfo si = seat < info.seatList.size() ? info.seatList.get(seat) : null;
+        return si != null && si.gunner && !si.switchgunner; // a dedicated gunner seat is always "in gunner mode"
+    }
+
+    /** May the pilot toggle gunner mode — the port of {@code canSwitchGunnerMode} ({@code MCH_EntityAircraft:5294}):
+     *  the config must enable it, and (unless it enables CONCURRENT gunner mode) seat 1 must be empty so a seat-1 gunner
+     *  and the pilot-gunner never fight over the same weapon. (Canopy/hovering gates collapse — the port has no canopy
+     *  state and the manual-hover mode is unported.) */
+    public boolean canSwitchGunnerMode() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null || !info.isEnableGunnerMode) {
+            return false;
+        }
+        // Reference MCH_EntityAircraft:5300 blocks only on a PLAYER in seat 1 (a mob gunner does not contend for the
+        // weapon), unless concurrent gunner mode is enabled. Per-type attitude/throttle gates are added in overrides.
+        return info.isEnableConcurrentGunnerMode || !(seatPassenger(1) instanceof Player);
+    }
+
+    /** Toggle the pilot's gunner mode (server-authoritative). Only the pilot may, and only when {@link
+     *  #canSwitchGunnerMode}. Turning it ON is always allowed OFF again (the gate only blocks entering). */
+    public void toggleGunnerMode(Player player) {
+        if (this.level().isClientSide || seatIndexOf(player) != 0) {
+            return;
+        }
+        boolean now = isGunnerModeActive();
+        if (!now && !canSwitchGunnerMode()) {
+            return; // entering is gated; leaving is always allowed
+        }
+        this.entityData.set(DATA_GUNNER_MODE, !now);
     }
 
     /** Who is sitting in {@code seat}, or null. */
@@ -1248,9 +1425,115 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         if (seat != null) {
             clearSeatControls(seat);
         }
+        resetGunnerModeIfNoPilot(); // the pilot left -> drop their gunner mode (reference switchGunnerMode(false) on unmount)
         if (this.weapons != null) {
             this.weapons.refreshEligibility(s -> seatPassenger(s) instanceof Player);
             this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex(0)); // a departing gunner frees his weapon
+        }
+    }
+
+    /** Is passenger seat {@code i} unoccupied? Racks are outside the {@code 0..seatCount()-1} range (the port captures
+     *  {@code mobSeatNum} before racks are appended), so iterating this range is already rack-free. */
+    private boolean isSeatEmpty(int i) {
+        return i >= 0 && i < seatCount() && seatPassenger(i) == null;
+    }
+
+    /**
+     * Move to the next-higher empty PASSENGER seat, wrapping — the port of {@code switchNextSeat}
+     * ({@code MCH_EntityAircraft:4419}). Seats 1..N only (the pilot seat is reachable only via {@link #grabPilotSeat}).
+     * A pilot caller (seat 0) lands in the lowest empty passenger seat, vacating seat 0.
+     */
+    public void switchSeatNext(Player player) {
+        if (this.level().isClientSide || seatCount() <= 1) {
+            return;
+        }
+        int cur = seatIndexOf(player);
+        if (cur < 0) {
+            return;
+        }
+        int to = nextSeatTarget(cur, seatCount(), this::isSeatEmpty);
+        if (to >= 0) {
+            moveToSeat(player, cur, to);
+        }
+    }
+
+    /** The next-higher empty PASSENGER seat from {@code cur}, wrapping to the lowest empty; -1 if none. Seat 0 is never
+     *  a next/prev target (only {@link #grabPilotSeat} reaches it). Pure so the seat-cycle logic can be unit-tested. */
+    public static int nextSeatTarget(int cur, int count, java.util.function.IntPredicate empty) {
+        for (int i = cur + 1; i < count; i++) {   // next-higher empty (for a pilot caller this scans all of 1..N-1)
+            if (empty.test(i)) { return i; }
+        }
+        for (int i = 1; i < cur; i++) {           // wrap to lowest empty passenger seat
+            if (empty.test(i)) { return i; }
+        }
+        return -1;
+    }
+
+    /** The next-lower empty PASSENGER seat from {@code cur}, wrapping to the highest empty; -1 if none. Pure/testable. */
+    public static int prevSeatTarget(int cur, int count, java.util.function.IntPredicate empty) {
+        for (int i = cur - 1; i >= 1; i--) {      // next-lower empty (excludes seat 0)
+            if (empty.test(i)) { return i; }
+        }
+        for (int i = count - 1; i > cur; i--) {   // wrap to highest empty passenger seat
+            if (empty.test(i)) { return i; }
+        }
+        return -1;
+    }
+
+    /**
+     * Move to the next-lower empty PASSENGER seat, wrapping — the port of {@code switchPrevSeat}
+     * ({@code MCH_EntityAircraft:4462}). A pilot caller lands in the highest empty passenger seat.
+     */
+    public void switchSeatPrev(Player player) {
+        if (this.level().isClientSide || seatCount() <= 1) {
+            return;
+        }
+        int cur = seatIndexOf(player);
+        if (cur < 0) {
+            return;
+        }
+        int to = prevSeatTarget(cur, seatCount(), this::isSeatEmpty);
+        if (to >= 0) {
+            moveToSeat(player, cur, to);
+        }
+    }
+
+    /**
+     * Take the pilot seat if it is free — the useful case of the reference's {@code switchSeat==3} path
+     * ({@code MCH_AircraftPacketHandler:300-304}, which dismounts then re-boards as pilot when seat 0 is empty). A
+     * gunner promotes to pilot; if the pilot seat is taken (or the config forbids riding), this is a no-op.
+     */
+    public void grabPilotSeat(Player player) {
+        if (this.level().isClientSide) {
+            return;
+        }
+        MCH_AircraftInfo info = weaponHostInfo();
+        int cur = seatIndexOf(player);
+        if (cur <= 0 || info == null || !info.canRide || !canOccupySeat(0)) {
+            return;
+        }
+        moveToSeat(player, cur, 0);
+    }
+
+    /** Re-key a rider from {@code from} to {@code to} in the seat map, running the same side effects as boarding: clear
+     *  the old seat's stale controls, resync the map, and refresh weapon eligibility + the HUD selection. The rider is
+     *  ALREADY a passenger, so no vanilla remount happens (unlike the reference's seat-entity juggling). */
+    private void moveToSeat(Player player, int from, int to) {
+        this.seatByUuid.put(player.getUUID(), to);
+        clearSeatControls(from);   // a key held in the old seat must not linger (e.g. the pilot's throttle on leaving)
+        syncSeatTag();
+        resetGunnerModeIfNoPilot(); // a pilot who switches to a gunner seat drops their gunner mode
+        if (this.weapons != null) {
+            this.weapons.refreshEligibility(s -> seatPassenger(s) instanceof Player);
+            this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex(0));
+        }
+    }
+
+    /** Gunner mode belongs to the pilot; if seat 0 is now empty, drop it (reference resets {@code switchGunnerMode(false)}
+     *  when the operator leaves — otherwise a pilotless heli would hover forever). */
+    private void resetGunnerModeIfNoPilot() {
+        if (seatPassenger(0) == null && isGunnerModeActive()) {
+            this.entityData.set(DATA_GUNNER_MODE, false);
         }
     }
 
@@ -1779,6 +2062,51 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         spawnFireCosmetics(muzzle, dir, wi, yaw + mount.yaw, pitch + mount.pitch);
     }
 
+    // ---- Client ambient particle effects (reference onUpdate_Client / onUpdate_Particle*) — CLIENT-ONLY ----
+
+    /** Spawn this vehicle's ambient particles this client tick. Base: the damage smoke every vehicle shares; helicopters
+     *  add the rotor down-wash. All spawns go through {@code level().addParticle}, a no-op on the server. */
+    protected void clientAmbientEffects() {
+        spawnDamageSmoke();
+    }
+
+    /**
+     * Dark smoke from a wounded vehicle — the port of the shared {@code onUpdate_Particle2} (heli
+     * {@code MCH_EntityHeli}:677, plane/tank equivalents): only below 50 % HP, with an emission probability that rises
+     * as HP falls (reference {@code p < rand/2}, so it stays rare near 50 % and pours out near 0). Grey {@code SMOKE}
+     * approximates the reference's {@code 0.2..0.5}-grey {@code smoke.png} billboard.
+     */
+    protected void spawnDamageSmoke() {
+        int maxHp = getMaxHp();
+        if (maxHp <= 0) {
+            return;
+        }
+        float p = getHp() / (float) maxHp;
+        if (p > 0.5F || !(p < this.random.nextFloat() / 2.0F)) {
+            return; // above 50% HP, or the HP-scaled emission roll didn't fire this tick
+        }
+        int burst = 2; // the reference emits a trail per rotor; a small burst approximates that density
+        for (int i = 0; i < burst; i++) {
+            double x = getX() + (this.random.nextDouble() - 0.5) * getBbWidth();
+            double y = getY() + getBbHeight() * 0.6 + (this.random.nextDouble() - 0.5) * 0.5;
+            double z = getZ() + (this.random.nextDouble() - 0.5) * getBbWidth();
+            this.level().addParticle(net.minecraft.core.particles.ParticleTypes.LARGE_SMOKE, x, y, z,
+                (this.random.nextDouble() - 0.5) * 0.3, this.random.nextDouble() * 0.1, (this.random.nextDouble() - 0.5) * 0.3);
+        }
+    }
+
+    /** Play a registered MCHeli sound (by {@code .ogg} basename) at this vehicle, server-side so every nearby client
+     *  hears it — the port of the reference's {@code MOD_playSoundAtEntity}. No-op if the name isn't registered. */
+    public void playMchSound(String name, float volume, float pitch) {
+        if (this.level().isClientSide) {
+            return;
+        }
+        SoundEvent event = MchSounds.byName(name);
+        if (event != null) {
+            this.level().playSound(null, this.getX(), this.getY(), this.getZ(), event, SoundSource.NEUTRAL, volume, pitch);
+        }
+    }
+
     /**
      * Config-driven fire cosmetics at the barrel — nothing hardcoded per weapon:
      * <ul>
@@ -1915,6 +2243,12 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             return false;   // a rider can't damage the craft they ride (reference isMountedEntity guard :848)
         }
         if (onFire) this.mchTimeSinceHit = 10;                                    // (reference :852)
+
+        // Damage SFX (reference :861-882 ping / :959-960 thud): a PLAYER attacker -> the "hit" ping; anything else
+        // (crash, collision, explosion, fall) -> the "helidmg" metal thud with a randomised pitch. The reference plays
+        // these OUTSIDE its !isDestroyed()/break gates, so a burning wreck still thuds and a creative salvage still pings.
+        boolean byPlayer = src.getEntity() instanceof Player;
+        playMchSound(byPlayer ? "hit" : "helidmg", 1.0F, byPlayer ? 1.0F : 0.9F + this.random.nextFloat() * 0.1F);
 
         boolean playerBreak = isPlayerBreak(src);
         MCH_AircraftInfo info = weaponHostInfo();

@@ -311,6 +311,100 @@ public final class DemoCrewFuelSelfTest {
         LOG.info("[CREW/FUEL SELF-TEST] G3 fuel refill recipe OK (per-slot coal, full can rejected)");
 
         testAmmoItemSupply(level);
+        testSeatCycle();
+        testGunnerMode(level);
+        testEngineSound(level);
+    }
+
+    /**
+     * G7: engine-loop sound wiring (reference {@code getSoundName}/{@code getSoundVolume}/{@code getSoundPitch}). Each
+     * vehicle type resolves a REGISTERED engine sound (config {@code Sound=} else the per-type default), and its loop
+     * volume/pitch follow the per-type formula (volume 0 at zero throttle; pitch in the type's band).
+     */
+    private void testEngineSound(ServerLevel level) {
+        MchHelicopter heli = MchRegistries.HELI.get().create(level);
+        heli.setConfigName("ah-64");
+        heli.setPos(360.5, 80.0, 360.5);
+        level.addFreshEntity(heli);
+        heli.tick();
+        req(!heli.engineSoundName().isEmpty(), "a helicopter resolves an engine sound name");
+        req(mcheli.dependent.registry.MchSounds.byName(heli.engineSoundName()) != null,
+            "the heli engine sound '" + heli.engineSoundName() + "' is registered");
+        req(heli.engineSoundVolume() == 0.0F, "engine is silent at zero throttle (vol=SoundVolume*0*2)");
+        req(Math.abs(heli.engineSoundPitch() - 0.2F * heli.hostInfo().soundPitch) < 1.0e-4F,
+            "heli idle pitch is SoundPitch*0.2, got " + heli.engineSoundPitch());
+        heli.discard();
+
+        MchTank tank = MchRegistries.TANK.get().create(level);
+        tank.setConfigName("m1a2");
+        tank.setPos(360.5, 80.0, 362.5);
+        level.addFreshEntity(tank);
+        tank.tick();
+        req(!tank.engineSoundName().isEmpty(), "a tank resolves an engine sound name (config Sound=)");
+        req(mcheli.dependent.registry.MchSounds.byName(tank.engineSoundName()) != null,
+            "the tank engine sound '" + tank.engineSoundName() + "' is registered");
+        LOG.info("[CREW/FUEL SELF-TEST] G7 engine sound OK (heli='{}', tank='{}', per-type volume/pitch)",
+            heli.engineSoundName(), tank.engineSoundName());
+        tank.discard();
+    }
+
+    /**
+     * G5: the pure seat-cycle logic (reference {@code switchNextSeat}/{@code switchPrevSeat}). A 4-seat vehicle
+     * (0=pilot, 1..3 passengers) with seat 2 occupied. Verifies next-higher/next-lower with wrap-around, that seat 0 is
+     * never a next/prev target, and the pilot-caller wrap behaviour.
+     */
+    private void testSeatCycle() {
+        int count = 4;
+        boolean[] occupied = {true, false, true, false}; // pilot in 0, gunner in 2; seats 1 and 3 free
+        java.util.function.IntPredicate empty = i -> i >= 0 && i < count && !occupied[i];
+
+        // From seat 1: next -> 3 (skips occupied 2), prev -> 3 (wrap, no lower empty passenger seat).
+        req(AbstractMchVehicle.nextSeatTarget(1, count, empty) == 3, "next from 1 skips occupied 2 -> 3");
+        req(AbstractMchVehicle.prevSeatTarget(1, count, empty) == 3, "prev from 1 wraps to highest empty -> 3");
+        // From seat 3: next -> 1 (wrap to lowest empty), prev -> 1 (next-lower empty).
+        req(AbstractMchVehicle.nextSeatTarget(3, count, empty) == 1, "next from 3 wraps to lowest empty -> 1");
+        req(AbstractMchVehicle.prevSeatTarget(3, count, empty) == 1, "prev from 3 -> 1");
+        // From seat 2 (occupied by our mover): next -> 3, prev -> 1.
+        req(AbstractMchVehicle.nextSeatTarget(2, count, empty) == 3, "next from 2 -> 3");
+        req(AbstractMchVehicle.prevSeatTarget(2, count, empty) == 1, "prev from 2 -> 1");
+        // Pilot caller (seat 0): next -> lowest empty passenger seat (1), prev -> highest empty (3). Never targets 0.
+        req(AbstractMchVehicle.nextSeatTarget(0, count, empty) == 1, "pilot next -> lowest empty passenger seat 1");
+        req(AbstractMchVehicle.prevSeatTarget(0, count, empty) == 3, "pilot prev -> highest empty passenger seat 3");
+        // No empty passenger seat -> -1 (full vehicle).
+        java.util.function.IntPredicate none = i -> false;
+        req(AbstractMchVehicle.nextSeatTarget(1, count, none) == -1, "next returns -1 when nothing is empty");
+        req(AbstractMchVehicle.prevSeatTarget(1, count, none) == -1, "prev returns -1 when nothing is empty");
+        LOG.info("[CREW/FUEL SELF-TEST] G5 seat cycle OK (next/prev wrap-around, pilot wrap, seat 0 never targeted)");
+    }
+
+    /**
+     * G6: the gunner-mode gate (reference {@code canSwitchGunnerMode}/{@code getIsGunnerMode}). Uses a config with a
+     * gunner seat if one is bundled; otherwise asserts the default (disabled) behaviour on the m1a2.
+     */
+    private void testGunnerMode(ServerLevel level) {
+        MchTank t = MchRegistries.TANK.get().create(level);
+        t.setConfigName("m1a2");
+        t.setPos(340.5, 80.0, 340.5);
+        level.addFreshEntity(t);
+        MCH_AircraftInfo info = t.hostInfo();
+
+        // A config that does NOT enable gunner mode can never switch it, and its pilot is never "in gunner mode".
+        if (info != null && !info.isEnableGunnerMode) {
+            req(!t.canSwitchGunnerMode(), "a config without EnableGunnerMode cannot toggle gunner mode");
+            req(!t.isSeatGunnerMode(0), "the pilot of such a config is never in gunner mode");
+            req(!t.isGunnerModeActive(), "gunner mode defaults OFF");
+        }
+        // A dedicated (non-switchable) gunner seat reports "always in gunner mode" (reference getIsGunnerMode).
+        if (info != null) {
+            for (int s = 1; s < info.seatList.size(); s++) {
+                mcheli.agnostic.aircraft.MCH_SeatInfo si = info.seatList.get(s);
+                if (si.gunner && !si.switchgunner) {
+                    req(t.isSeatGunnerMode(s), "a dedicated gunner seat " + s + " is always in gunner mode");
+                }
+            }
+        }
+        LOG.info("[CREW/FUEL SELF-TEST] G6 gunner-mode gate OK (config-gated toggle, dedicated seats always-on)");
+        t.discard();
     }
 
     /**

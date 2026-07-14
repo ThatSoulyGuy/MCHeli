@@ -49,7 +49,6 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
     /** Resource directory for this category's models/textures ({@code helicopters}/{@code planes}/{@code tanks}/{@code vehicles}). */
     private final String categoryDir;
     private final Map<String, MchModel> modelCache = new HashMap<>();
-    private final Map<String, Set<String>> hiddenCache = new HashMap<>();
     private final Map<String, Set<String>> declaredCache = new HashMap<>();
     private final Map<String, ResourceLocation> textureCache = new HashMap<>();
 
@@ -79,19 +78,12 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
      *  exempt: the reference draws declared parts, and the name-substring veto must not delete them (it cost six planes
      *  their whole canopy + the mxtmv its door). Cached per config name. */
     protected Set<String> hiddenGroups(T entity, MchModel model) {
-        return this.hiddenCache.computeIfAbsent(entity.configName(), n -> {
-            Set<String> hidden = new HashSet<>();
-            Set<String> declared = declaredGroups(entity);
-            for (ModelGroup g : model.groups()) {
-                if (g != null) {
-                    String gn = g.name.toLowerCase(Locale.ROOT);
-                    if ((gn.contains("glass") || gn.contains("canopy")) && !declared.contains(gn)) {
-                        hidden.add(gn);
-                    }
-                }
-            }
-            return hidden;
-        });
+        // The reference hides NO group by name — cockpit glass is DRAWN (translucent via its texture alpha), and the
+        // pilot looks through it. The port used to hide "glass"/"canopy" groups because they rendered OPAQUE in the
+        // cutout pipeline and walled off the cockpit; now that the model draws in the blended entityTranslucentCull
+        // pass (see render()), glass renders see-through from the texture alpha and must NOT be hidden. Nothing is
+        // hidden here anymore; the method stays so span drawing keeps its (now-empty) skip set.
+        return java.util.Collections.emptySet();
     }
 
     @Override
@@ -134,7 +126,12 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             pose.mulPose(Axis.XP.rotationDegrees(pitch));
             pose.mulPose(Axis.ZP.rotationDegrees(roll));
 
-            VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(getTextureLocation(entity)));
+            // The whole model draws in ONE blended pass — the reference's technique (W_Render.setCommonRenderParam:
+            // glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); cull on; depth-write on). Cockpit
+            // GLASS is translucent purely from the body texture's ALPHA channel (glass texels have alpha < 1), NOT from
+            // any material or name — so entityTranslucentCull (alpha-blend + backface cull + depth-write) reproduces it
+            // exactly. The old entityCutoutNoCull alpha-TESTED (binary), rendering any glass texel fully opaque.
+            VertexConsumer consumer = buffers.getBuffer(RenderType.entityTranslucentCull(getTextureLocation(entity)));
             // Destroyed wreck: darken the whole hull to a scorched near-black (reference 0.15·255 ≈ 38).
             int c = entity.isDestroyed() ? 38 : 255;
             Set<String> dynamic = dynamicGroupsLower(entity, model);

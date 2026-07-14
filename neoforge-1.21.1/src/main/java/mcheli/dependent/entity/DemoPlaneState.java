@@ -20,20 +20,20 @@ public final class DemoPlaneState implements PlaneState {
     /** Bound to the live entity's {@code isDestroyed()} — a destroyed plane loses wing thrust (PlaneFlightModel gates
      *  on {@code !isDestroyed()}) and falls into its death spiral. */
     private final java.util.function.BooleanSupplier destroyed;
-    private boolean gunnerMode;
 
     private final AbstractMchVehicle owner;
     public DemoPlaneState(AbstractMchVehicle owner) { this.owner = owner; this.destroyed = owner::isDestroyed; }
 
     @Override public boolean isDestroyed() { return this.destroyed.getAsBoolean(); }
-    @Override public boolean isGunnerMode() { return gunnerMode; }
+    // Gunner mode is server-authoritative + synced on the entity (reference isGunnerMode); toggle via the entity.
+    @Override public boolean isGunnerMode() { return this.owner.isGunnerModeActive(); }
     // isHovering = isGunnerMode || isHoveringMode; the demo plane has no hovering mode, so it collapses to gunner.
-    @Override public boolean isHovering() { return gunnerMode; }
+    @Override public boolean isHovering() { return this.owner.isGunnerModeActive(); }
     @Override public boolean isTargetDrone() { return false; }
     @Override public boolean canUseFuel() { return this.owner.canUseFuel(false); }       // maxFuel <= 0
     @Override public boolean canUseWing() { return true; }        // partWing == null
     @Override public boolean isCanopyClose() { return true; }     // partCanopy == null
-    @Override public void switchGunnerMode(boolean on) { this.gunnerMode = on; }
+    @Override public void switchGunnerMode(boolean on) { /* authoritative toggle lives on the entity */ }
 
     @Override public float getNozzleRotation() { return 0.0F; }   // partNozzle == null -> level thrust
     @Override public int getVtolMode() { return 0; }              // nozzle rotation <= 0.005 -> mode 0
