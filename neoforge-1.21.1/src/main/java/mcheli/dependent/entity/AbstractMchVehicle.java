@@ -207,9 +207,9 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     private void updateAimLatch() {
         Entity p = pilot();
         if (p != null && p.isAlive() && !isDestroyed()) {
-            this.prevLastRiderYaw = this.aimLatched ? this.lastRiderYaw : p.getYHeadRot();
+            this.prevLastRiderYaw = this.aimLatched ? this.lastRiderYaw : p.getYRot();
             this.prevLastRiderPitch = this.aimLatched ? this.lastRiderPitch : p.getXRot();
-            this.lastRiderYaw = p.getYHeadRot();
+            this.lastRiderYaw = p.getYRot();
             this.lastRiderPitch = p.getXRot();
             this.aimLatched = true;
         } else {
@@ -228,11 +228,14 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     public float turretOrbitYaw(float partialTick) {
         Entity p = pilot();
         if (p != null) {
-            // LIVE, render-time sample — the same clock the weapons' own aim uses (op.getYHeadRot()), so the ring, the
+            // LIVE, render-time sample — the same clock the weapons' own aim uses (op.getYRot()), so the ring, the
             // rotSeat crew seats and each gun all agree within a frame. Sampling the ring from the TICK latch while the
-            // guns read the live head detached the guns from the turret they ride.
-            float hy = p.getYHeadRot();
-            float hyO = p instanceof LivingEntity le ? le.yHeadRotO : hy;
+            // guns read the live body yaw detached the guns from the turret they ride.
+            //   BODY yaw (getYRot()), NOT head yaw (getYHeadRot()): the reference reads the rider's rotationYaw
+            // (MCH_EntityAircraft:1488 lastRiderYaw = e.rotationYaw), and only rotationYaw is synced to the server —
+            // a passenger's move packet runs absMoveTo, which sets getYRot() but leaves yHeadRot stale server-side.
+            float hy = p.getYRot();
+            float hyO = p.yRotO;
             return shortLerpDeg(Mth.wrapDegrees(hy - this.getYRot()),
                 Mth.wrapDegrees(hyO - this.yRotO), partialTick);
         }
@@ -1955,6 +1958,17 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     }
 
     /**
+     * The body yaw the fire rotates the muzzle position and projectile direction by. Aircraft/tanks use the hull
+     * ({@code getYRot()}). {@link MchGroundVehicle} (the reference {@code MCH_EntityVehicle}) overrides this to the
+     * operator's LOOK for a no-traverse weapon, so a fixed emplacement launcher fires where the gunner aims — the port
+     * of {@code MCH_EntityVehicle.useCurrentWeapon}, which snaps the body to {@code prm.user.rotationYaw} for the shot.
+     */
+    protected float fireBodyYaw(Entity shooter, MCH_AircraftInfo.Weapon mount) { return this.getYRot(); }
+
+    /** Elevation counterpart of {@link #fireBodyYaw} (reference snaps {@code rotationPitch = prm.user.rotationPitch}). */
+    protected float fireBodyPitch(Entity shooter, MCH_AircraftInfo.Weapon mount) { return this.getXRot(); }
+
+    /**
      * Fire ONE shot of the selected weapon this tick, if its fire-control allows. Picks the next mount round-robin,
      * places the muzzle and aims it in world space with the port's orientation convention
      * ({@code Ry(-yaw)·Rx(pitch)·Rz(roll)}, forward = model +Z — the same transform that seats the pilot and renders
@@ -1981,19 +1995,29 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             this.firedCooldownTicks = 4; // reference MCH_WeaponSet.WAIT_CLEAR_USED_COUNT — barrel stays "used" ~4 ticks
         }
 
-        float hullYaw = this.getYRot();
-        float hullPitch = this.getXRot();
+        // The BODY angles the muzzle position AND the fire direction rotate by. For an aircraft/tank this is the hull.
+        // An EMPLACEMENT ({@link MchGroundVehicle}) OVERRIDES these to the operator's LOOK for a no-traverse weapon —
+        // the port of {@code MCH_EntityVehicle.useCurrentWeapon}, which snaps {@code this.rotationYaw/Pitch} to
+        // {@code prm.user.rotationYaw/Pitch} for the shot so a fixed forward launcher (searam, Phalanx) fires exactly
+        // where the gunner looks. A weapon WITH a real yaw range keeps the hull here and traverses per-weapon below.
+        float hullYaw = fireBodyYaw(shooter, mount);
+        float hullPitch = fireBodyPitch(shooter, mount);
         float roll = this.getRollAngle();
         float yaw = hullYaw;
         float pitch = hullPitch;
 
-        // Turret vehicles (free mouse-look, hull steered separately) aim along the OPERATOR's look — a gunner's gun
-        // follows the gunner, not the pilot. Aircraft keep the hull angles (the mouse already aims the airframe).
-        // The look is CLAMPED to the mount's config traverse/elevation limits, exactly as the renderer clamps the gun:
-        // without this the bullet leaves along the raw crosshair while the barrel is pinned at its limit, so a gun that
-        // physically cannot point behind you still shoots behind you.
-        if (!this.locksViewToVehicle() || seat > 0) {
-            float relYaw = Mth.wrapDegrees(shooter.getYHeadRot() - hullYaw);
+        // Fire along the OPERATOR's look, clamped to the mount's config traverse/elevation limits — the SAME computation
+        // the RENDERER uses to orient the weapon model ({@code MchModelEntityRenderer.weaponYaw/weaponPitch}), so the
+        // projectile leaves EXACTLY where the barrel visually points. A no-traverse weapon has 0 limits, so the clamp
+        // pins {@code relYaw} to whatever {@code hullYaw} already is — the hull for an aircraft (fires forward), or the
+        // gunner's look for an emplacement (via the body-snap above). An aiming weapon (chin gun, tank turret) traverses.
+        //   AIM SOURCE = the operator's BODY yaw ({@code getYRot()}), NOT the head yaw ({@code getYHeadRot()}). This is
+        // the reference's field ({@code MCH_WeaponSet.use} reads {@code entity.rotationYaw}; {@code updateWeaponsRotation}
+        // and {@code lastRiderYaw} likewise) AND the ONLY one that survives to the server: this fire runs server-side,
+        // where a passenger's rotation arrives via {@code ServerboundMovePlayerPacket.Rot} → {@code absMoveTo}, which
+        // sets {@code getYRot()}/{@code getXRot()} but NEVER {@code yHeadRot}.
+        {
+            float relYaw = Mth.wrapDegrees(shooter.getYRot() - hullYaw);
             float relPitch = Mth.wrapDegrees(shooter.getXRot() - hullPitch);
             boolean finiteYaw = Math.abs((int) mount.minYaw) < 360 && Math.abs((int) mount.maxYaw) < 360;
             if (finiteYaw) {

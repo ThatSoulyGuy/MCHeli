@@ -19,7 +19,6 @@ import mcheli.agnostic.spi.ModelHandle;
 import mcheli.agnostic.value.Vec3d;
 import mcheli.agnostic.vehicle.MCH_VehicleInfo;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
 import org.joml.Quaternionf;
 import mcheli.dependent.entity.AbstractMchVehicle;
 import mcheli.dependent.port.NeoResourceSource;
@@ -335,8 +334,12 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             // Each operator aims by their OWN look, relative to the hull (the model is already hull-rotated).
             float relYaw = 0.0F, relYawO = 0.0F, relPitch = 0.0F, relPitchO = 0.0F;
             if (operated) {
-                float hy = op.getYHeadRot();
-                float hyO = op instanceof LivingEntity le ? le.yHeadRotO : hy;
+                // BODY yaw (getYRot()/yRotO), NOT head yaw: matches the reference (renderWeapon reads w.rotationYaw,
+                // fed by the rider's rotationYaw) AND — crucially — the SAME field the server-side fire reads, so the
+                // barrel and the projectile can never diverge. getYHeadRot() is not synced to the server for a
+                // passenger, so aiming the model by it while firing by the body yaw is exactly what split them.
+                float hy = op.getYRot();
+                float hyO = op.yRotO;
                 relYaw = Mth.wrapDegrees(hy - entity.getYRot());
                 relYawO = Mth.wrapDegrees(hyO - entity.yRotO);
                 relPitch = Mth.wrapDegrees(op.getXRot() - entity.getXRot());

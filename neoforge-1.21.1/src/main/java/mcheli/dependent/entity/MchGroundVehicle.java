@@ -8,6 +8,7 @@ import mcheli.agnostic.sim.ControlInput;
 import mcheli.agnostic.sim.FlightModel;
 import mcheli.agnostic.sim.VehicleFlightModel;
 import mcheli.agnostic.vehicle.MCH_VehicleInfo;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.Level;
 
@@ -43,9 +44,27 @@ public class MchGroundVehicle extends AbstractMchVehicle {
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
     @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
     /** Free the rider's look so an emplacement (Phalanx / VADS / 46cm / SAM) can be AIMED with the mouse: the gun renders
-     *  toward {@code getYHeadRot()/getXRot()} and {@code fireSelectedWeapon} launches along that same free look — the
+     *  toward the rider's look and {@link #fireBodyYaw}/{@link #fireBodyPitch} launch along that same free look — the
      *  reference {@code MCH_EntityVehicle} rider aims a static mount exactly as the tank rider aims the turret. */
     @Override public boolean locksViewToVehicle() { return false; }
+
+    /**
+     * Port of {@code MCH_EntityVehicle.useCurrentWeapon}: an emplacement weapon with NO real yaw traverse
+     * ({@code minYaw==0 || maxYaw==0} — the searam missiles, a fixed Phalanx) fires along the operator's LOOK, because
+     * the reference momentarily snaps the whole body to {@code prm.user.rotationYaw/Pitch} for the shot. The shared
+     * {@code fireSelectedWeapon} then rotates the muzzle position AND direction by this look, so the round leaves the
+     * launcher exactly where the gunner aims (the mount's own 0..0 clamp adds nothing). A mount WITH a real yaw range
+     * keeps the hull here and traverses per-weapon, matching the reference's {@code maxYaw!=0 && minYaw!=0} guard.
+     */
+    @Override protected float fireBodyYaw(Entity shooter, MCH_AircraftInfo.Weapon mount) {
+        return firesAlongLook(mount) ? shooter.getYRot() : super.fireBodyYaw(shooter, mount);
+    }
+    @Override protected float fireBodyPitch(Entity shooter, MCH_AircraftInfo.Weapon mount) {
+        return firesAlongLook(mount) ? shooter.getXRot() : super.fireBodyPitch(shooter, mount);
+    }
+    private static boolean firesAlongLook(MCH_AircraftInfo.Weapon mount) {
+        return mount != null && (mount.minYaw == 0.0F || mount.maxYaw == 0.0F);
+    }
 
     /** Reference {@code MCH_ClientVehicleTickHandler:98} — emplacement riders ALWAYS render from the config camera. */
     @Override public boolean usesConfigCameraEye() { return weaponHostInfo() != null; }
