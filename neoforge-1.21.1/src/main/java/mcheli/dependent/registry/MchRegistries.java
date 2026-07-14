@@ -176,6 +176,17 @@ public final class MchRegistries {
             }
         });
 
+    /** The big config-scaled explosion fireball (port of {@code MCH_EntityParticleExplode}). */
+    public static final Supplier<ParticleType<mcheli.dependent.particle.MchExplodeOptions>> EXPLODE_FX =
+        PARTICLES.register("explode_fx", () -> new ParticleType<mcheli.dependent.particle.MchExplodeOptions>(false) {
+            @Override public MapCodec<mcheli.dependent.particle.MchExplodeOptions> codec() {
+                return mcheli.dependent.particle.MchExplodeOptions.CODEC;
+            }
+            @Override public StreamCodec<? super RegistryFriendlyByteBuf, mcheli.dependent.particle.MchExplodeOptions> streamCodec() {
+                return mcheli.dependent.particle.MchExplodeOptions.STREAM_CODEC;
+            }
+        });
+
     // Flat "original" 2D icons for the TAB BUTTONS only — a plain item per category with an item/generated model
     // pointing at a representative vehicle's original sprite (textures/items/<name>.png). The vehicle SPAWN items keep
     // their 3D-model icons; these tab icons render flat. Never added to a tab's displayItems, so they never appear as

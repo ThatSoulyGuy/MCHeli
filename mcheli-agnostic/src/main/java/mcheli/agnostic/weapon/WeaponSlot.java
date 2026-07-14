@@ -23,8 +23,9 @@ import mcheli.agnostic.aircraft.MCH_AircraftInfo;
  *
  * <p><b>Deferred (documented, not faked):</b> the ammo <em>reserve</em> economy ({@code MaxAmmo}/{@code SuppliedNum}/
  * ammo items / dispensers) is not modelled — the magazine simply refills after each reload, so the visible cadence
- * (rate of fire, burst size, reload pause) is fully config-driven while a demo craft never runs permanently dry. Heat/
- * overheat, recoil, and shared-group cooldown are likewise deferred behind this same object.
+ * (rate of fire, burst size, reload pause) is fully config-driven while a demo craft never runs permanently dry. Recoil
+ * and shared-group cooldown are likewise deferred behind this same object; barrel <b>heat/overheat</b> IS modelled now
+ * ({@code currentHeat}/{@code cooldownSpeed}, config {@code HeatCount}/{@code MaxHeatCount}).
  */
 public final class WeaponSlot {
 
@@ -39,11 +40,17 @@ public final class WeaponSlot {
     /** True when this weapon tracks a finite RESERVE ({@code MaxAmmo > 0}) — the reference ammo economy. When false the
      *  magazine simply refills on reload (the pre-economy behaviour) and {@link #restAllAmmo} is meaningless. */
     private final boolean economy;
+    /** Heat added per shot. The reference {@code MCH_WeaponCreator} forces this to at least 2 for ANY heat-capable
+     *  weapon ({@code maxHeatCount > 0 && heatCount < 2 -> 2}), so a rapid low-heat gun (a Phalanx: {@code HeatCount=1})
+     *  still out-gains the ~1/tick cooldown and its bar fills. */
+    private final int heatPerShot;
     private int barrel;      // round-robin index over mounts
     private int countWait;   // per-shot cooldown (ticks)
     private int reloadWait;  // reload countdown (ticks); >0 == reloading
     private int magazine;    // rounds left in the current burst
     private int restAllAmmo; // RESERVE behind the magazine; a fresh vehicle spawns DRY (reference MCH_WeaponSet:51-52)
+    private int currentHeat;       // accumulated barrel heat (reference MCH_WeaponSet.currentHeat)
+    private int cooldownSpeed = 1; // ramps the cooldown rate the longer the barrel goes un-fired (reference)
 
     public WeaponSlot(String weaponName, MCH_WeaponInfo info, List<MCH_AircraftInfo.Weapon> mounts) {
         if (mounts == null || mounts.isEmpty()) {
@@ -55,6 +62,7 @@ public final class WeaponSlot {
         this.infiniteMagazine = magSize() <= 0;
         this.economy = info.maxAmmo > 0;
         this.magazine = this.infiniteMagazine ? Integer.MAX_VALUE : (this.economy ? 0 : magSize());
+        this.heatPerShot = info.maxHeatCount > 0 && info.heatCount < 2 ? 2 : info.heatCount;
     }
 
     /** The seat that operates this weapon ({@code AddWeapon}'s seat id; {@code <=0} == the pilot's). */
@@ -131,8 +139,20 @@ public final class WeaponSlot {
         return this.info.maxAmmo; // 0 => treated as infinite (see infiniteMagazine)
     }
 
-    /** Advance the fire-control counters one tick (cooldown + reload). Call once per server tick. */
+    /** Advance the fire-control counters one tick (cooldown + reload + heat). Call once per server tick. */
     public void tick() {
+        // Barrel cooldown (reference MCH_WeaponSet.update:233-241): bleed off heat, accelerating the longer the barrel
+        // stays below its cap (cooldownSpeed ramps, is reset to 1 on each shot). The +30 overheat penalty parked above
+        // the cap bleeds at the base rate first, so an overheated gun stays locked ~1.5s before it can fire again.
+        if (this.currentHeat > 0) {
+            if (this.currentHeat < this.info.maxHeatCount) {
+                this.cooldownSpeed++;
+            }
+            this.currentHeat -= this.cooldownSpeed / 20 + 1;
+            if (this.currentHeat < 0) {
+                this.currentHeat = 0;
+            }
+        }
         if (this.countWait > 0) {
             this.countWait--;
         }
@@ -148,9 +168,15 @@ public final class WeaponSlot {
         }
     }
 
-    /** True if the trigger can fire this tick: cooldown elapsed, not mid-reload, and ammo in the magazine. */
+    /** True if the trigger can fire this tick: cooldown elapsed, not mid-reload, ammo in the magazine, and not overheated
+     *  (reference {@code MCH_WeaponSet.use} gate {@code currentHeat < maxHeatCount}). */
     public boolean canFire() {
-        return this.countWait == 0 && this.reloadWait == 0 && this.magazine > 0;
+        return this.countWait == 0 && this.reloadWait == 0 && this.magazine > 0 && !overheated();
+    }
+
+    /** True while a heat-capable weapon is at/over its cap and must cool before it can fire again. */
+    public boolean overheated() {
+        return this.info.maxHeatCount > 0 && this.currentHeat >= this.info.maxHeatCount;
     }
 
     /**
@@ -171,6 +197,15 @@ public final class WeaponSlot {
         MCH_AircraftInfo.Weapon mount = this.mounts.get(this.barrel);
         this.barrel = (this.barrel + 1) % this.mounts.size();
         this.countWait = Math.max(1, this.info.delay);
+        // Barrel heat (reference MCH_WeaponSet.use:358-363): each shot adds heatPerShot and resets the cooldown ramp;
+        // the shot that reaches the cap parks +30 above it, forcing an extra ~1.5s of cooldown (the overheat penalty).
+        if (this.info.maxHeatCount > 0) {
+            this.cooldownSpeed = 1;
+            this.currentHeat += this.heatPerShot;
+            if (this.currentHeat >= this.info.maxHeatCount) {
+                this.currentHeat += 30;
+            }
+        }
         if (!this.infiniteMagazine) {
             this.magazine--;
             if (this.magazine <= 0) {
@@ -194,6 +229,20 @@ public final class WeaponSlot {
 
     public boolean reloading() {
         return this.reloadWait > 0;
+    }
+
+    /** True if this weapon overheats at all (config {@code MaxHeatCount > 0}) — gates the HUD heat gauge. */
+    public boolean hasHeat() {
+        return this.info.maxHeatCount > 0;
+    }
+
+    /** Barrel heat 0..1 for the HUD {@code wpn_heat} gauge (reference {@code currentHeat / maxHeatCount}, capped). */
+    public float heatFraction() {
+        if (this.info.maxHeatCount <= 0) {
+            return 0.0F;
+        }
+        float f = (float) this.currentHeat / this.info.maxHeatCount;
+        return f > 1.0F ? 1.0F : f;
     }
 
     /**

@@ -91,6 +91,9 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Reload/cooldown progress 0..1 of the selected weapon (synced for the HUD cooldown bar); 0 == ready to fire. */
     private static final EntityDataAccessor<Float> DATA_RELOAD =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+    /** Barrel heat 0..1 of the selected weapon (synced for the HUD overheat gauge); 1 == overheated (fire locked out). */
+    private static final EntityDataAccessor<Float> DATA_HEAT =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
     /** True while a weapon RECENTLY fired (within {@code firedCooldownTicks}) — synced so the gatling barrel spins on
      *  every client (the port of the reference {@code useWeaponStat}/{@code MCH_WeaponSet.isUsed} bit). */
     private static final EntityDataAccessor<Boolean> DATA_FIRING =
@@ -660,6 +663,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_WEAPON, -1);
         builder.define(DATA_AMMO, -1);
         builder.define(DATA_RELOAD, 0.0F);
+        builder.define(DATA_HEAT, 0.0F);
         builder.define(DATA_FIRING, false);
         builder.define(DATA_FUEL, 0);
         builder.define(DATA_SEATS, new CompoundTag());
@@ -786,6 +790,9 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** The selected weapon's reload/cooldown progress 0..1 (synced), for the HUD {@code reload_time}/{@code reloading}
      *  bar; 0 == ready to fire. */
     public float getSelectedReload() { return this.entityData.get(DATA_RELOAD); }
+
+    /** The selected weapon's barrel heat 0..1 (synced), for the HUD {@code wpn_heat} overheat gauge; 1 == overheated. */
+    public float getSelectedHeat() { return this.entityData.get(DATA_HEAT); }
 
     /** The selected weapon's remaining cooldown in SECONDS — the synced fraction × the config interval (delay/reload)
      *  ÷ 20 tps — for the HUD's {@code RELOAD_SEC} readout. Computed client-side from the config interval. */
@@ -2083,6 +2090,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         WeaponSlot sel = this.weapons.selected(0);
         this.entityData.set(DATA_AMMO, sel != null ? sel.magazine() : -1);
         this.entityData.set(DATA_RELOAD, sel != null ? sel.reloadFraction() : 0.0F);
+        this.entityData.set(DATA_HEAT, sel != null ? sel.heatFraction() : 0.0F);
         // Publish the "recently fired" bit (the reference useWeaponStat) so the gatling barrel spins on every client.
         this.entityData.set(DATA_FIRING, this.firedCooldownTicks > 0);
         publishAllAmmo();

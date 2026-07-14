@@ -65,6 +65,9 @@ public class MCHeli {
             //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoParticleSelfTest());
             //// Config-driven HUD proof: the eval engine, the hud/* configs, and the draw pipeline.
             //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHudSelfTest());
+            //// Barrel heat/overheat proof: the Phalanx gun's heat fills under sustained fire, locks out at the cap,
+            //// then cools + re-enables (the HUD wpn_heat gauge).
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHeatSelfTest());
             //// Vehicle HP/armor/destruction proof: damage accumulation + int truncation, the per-part armor formula
             //// (m1a2 zones), the lava/onFire/inWall gates, and the faithful eject-explode-fall-despawn wreck.
             //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHpSelfTest());

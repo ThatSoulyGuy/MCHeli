@@ -43,6 +43,8 @@ public final class MchClientEvents {
     @SubscribeEvent
     public static void onRegisterParticleProviders(RegisterParticleProvidersEvent event) {
         event.registerSpriteSet(MchRegistries.WEAPON_FX.get(), MuzzleFxParticle.Provider::new);
+        event.registerSpriteSet(MchRegistries.EXPLODE_FX.get(),
+            mcheli.dependent.client.particle.MchExplodeParticle.Provider::new);
     }
 
     /** Every vehicle spawn item renders its 3D model as its inventory icon (needs a {@code builtin/entity} item model). */

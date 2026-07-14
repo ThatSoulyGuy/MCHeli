@@ -96,6 +96,8 @@ public final class MchHudVarState implements HudState {
             case "radar_rot" -> this.vehicle.radarRotInterp(this.partialTick);
             case "is_uav" -> this.vehicle.hostInfo() != null && this.vehicle.hostInfo().isUAV ? 1.0 : 0.0;
             case "is_heat_wpn" -> this.vehicle.isSelectedWeaponHeat() ? 1.0 : 0.0;
+            // Barrel heat 0..1 fills the overheat gauge as you fire; the weapon locks out at 1 until it cools.
+            case "wpn_heat" -> this.vehicle.getSelectedHeat();
             // Selected-weapon aiming reticle: 1 = rocket/gun move-sight, 2 = lock-on missile sight (drives hud/sight.txt).
             case "sight_type" -> this.vehicle.selectedWeaponSightType();
             // Mortar range readout gate (config DisplayMortarDistance); mt_dist (the ballistic range) is unported -> 0,
