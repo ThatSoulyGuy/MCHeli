@@ -120,8 +120,10 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             pose.translate(0.0, -model.minY, 0.0);
             // Reference order: yaw about -Y, pitch about X, roll about Z (MCH_RenderHeli.renderAircraft). No scale.
             pose.mulPose(Axis.YP.rotationDegrees(-entityYaw));
-            float pitch = Mth.lerp(partialTick, entity.xRotO, entity.getXRot());
-            float roll = calcRot(entity.getRollAngle(), entity.getPrevRollAngle(), partialTick);
+            // Weapon recoil adds a transient pitch/roll kick to the MODEL (visible to everyone, incl. the rider in
+            // third person). The first-person camera gets the same kick in CameraMixin, so the pilot feels it too.
+            float pitch = Mth.lerp(partialTick, entity.xRotO, entity.getXRot()) + entity.recoilPitchDeg(partialTick);
+            float roll = calcRot(entity.getRollAngle(), entity.getPrevRollAngle(), partialTick) + entity.recoilRollDeg(partialTick);
             pose.mulPose(Axis.XP.rotationDegrees(pitch));
             pose.mulPose(Axis.ZP.rotationDegrees(roll));
 
@@ -350,6 +352,11 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             // HideGM hides a weapon ONLY for the player who OPERATES it, in first person (reference: the skip fires on
             // isClientPlayer(getWeaponUserByWeaponName) — a gun a different crew member mans stays visible to you).
             if (w.hideGM && firstPerson && op == mc.player) {
+                continue;
+            }
+            // A fired MISSILE part vanishes from its rail until the weapon reloads (reference renderWeapon isMissile +
+            // isWeaponNotCooldown gate) — so an emptied pylon reads as empty.
+            if (w.isMissile && entity.isMissilePartHidden(w.name[0])) {
                 continue;
             }
             pose.pushPose();

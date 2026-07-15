@@ -2,10 +2,12 @@ package mcheli.dependent.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import mcheli.MCHeli;
+import mcheli.dependent.control.ServerboundFoldBladePayload;
 import mcheli.dependent.control.ServerboundGunnerModePayload;
 import mcheli.dependent.control.ServerboundSeatSwitchPayload;
 import mcheli.dependent.control.ServerboundVehicleGuiPayload;
 import mcheli.dependent.entity.AbstractMchVehicle;
+import mcheli.dependent.entity.MchHelicopter;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
@@ -42,6 +44,9 @@ public final class MchKeybinds {
     public static final KeyMapping GUNNER_MODE = key("gunner_mode", org.lwjgl.glfw.GLFW.GLFW_KEY_R);
     public static final KeyMapping ZOOM = key("zoom", org.lwjgl.glfw.GLFW.GLFW_KEY_C);
 
+    /** Client debounce: ticks left before another gunner-mode toggle may be sent (blocks a double-tap double-send). */
+    private static int gunnerToggleCooldown;
+
     private static KeyMapping key(String name, int code) {
         return new KeyMapping("key.mcheli." + name, KeyConflictContext.IN_GAME,
             InputConstants.Type.KEYSYM, code, "key.categories.mcheli");
@@ -65,6 +70,9 @@ public final class MchKeybinds {
         boolean prev = drain(SEAT_PREV);
         boolean gunnerToggle = drain(GUNNER_MODE);
         boolean zoom = drain(ZOOM);
+        if (gunnerToggleCooldown > 0) {
+            gunnerToggleCooldown--; // tick down every client frame, even off a vehicle
+        }
         if (mc.player == null || mc.screen != null || !(mc.player.getVehicle() instanceof AbstractMchVehicle v)) {
             return;
         }
@@ -72,9 +80,32 @@ public final class MchKeybinds {
         boolean pilot = seat == 0;
         boolean freeLook = FREE_LOOK.isDown(); // held modifier, not edge-triggered
 
-        // Gunner-mode toggle (pilot only; the server re-checks the seat + canSwitchGunnerMode). Reference KeySwitchMode.
-        if (gunnerToggle && pilot) {
-            PacketDistributor.sendToServer(new ServerboundGunnerModePayload(v.getId()));
+        // The reference KeySwitchMode state machine (MCP_ClientPlaneTickHandler:148-168): one key walks the pilot through
+        // gunner mode and the configured camera viewpoints. Gunner mode is serverbound (re-checked server-side); the
+        // camera index (cameraId) is a local view state. Order matters — it reproduces the reference exactly:
+        //   in gunner mode + has alt cameras -> leave gunner mode, jump to camera 1
+        //   already on an alt camera         -> advance to the next (wrapping back to the default eye)
+        //   can enter gunner mode            -> enter it, reset to the default eye
+        //   otherwise has alt cameras        -> jump to camera 1
+        //   (nothing switchable: the reference just plays a decline sound)
+        // The cooldown gate blocks a fast double-tap from sending a SECOND gunner-mode toggle before the first syncs back
+        // (gunner mode is server-authoritative with no client prediction, so isSeatGunnerMode(0) reads stale for ~1-2
+        // ticks — a second press would re-evaluate branch 1/3 on the old state and cancel the toggle).
+        if (gunnerToggle && pilot && gunnerToggleCooldown == 0) {
+            if (v.isSeatGunnerMode(0) && v.canSwitchCameraPos()) {
+                PacketDistributor.sendToServer(new ServerboundGunnerModePayload(v.getId())); // leave gunner mode
+                v.setViewCameraId(1);
+                gunnerToggleCooldown = 5;
+            } else if (v.getViewCameraId() > 0) {
+                int next = v.getViewCameraId() + 1;
+                v.setViewCameraId(next >= v.cameraPosCount() ? 0 : next);
+            } else if (v.canSwitchGunnerMode()) {
+                PacketDistributor.sendToServer(new ServerboundGunnerModePayload(v.getId())); // enter gunner mode
+                v.setViewCameraId(0);
+                gunnerToggleCooldown = 5;
+            } else if (v.canSwitchCameraPos()) {
+                v.setViewCameraId(1);
+            }
         }
         // Zoom is client-only (a scope FOV), and only while this seat is in gunner mode (reference gates KeyZoom on
         // getIsGunnerMode). MchGunnerView owns the doubling zoom state + the FOV modifier.
@@ -91,15 +122,20 @@ public final class MchKeybinds {
             }
             return;
         }
-        // Plain keys: a gunner cycles seats; the pilot's GUI opens the resupply menu (prev does nothing for a pilot).
+        // Plain keys: a gunner cycles seats; the pilot's GUI opens the resupply menu, and a heli pilot's PREV key folds
+        // or unfolds the rotor (reference KeyExtra) while parked — the server re-checks canSwitchFoldBlades.
         if (gui) {
             if (pilot) {
                 PacketDistributor.sendToServer(ServerboundVehicleGuiPayload.open(v.getId()));
             } else {
                 send(v, ServerboundSeatSwitchPayload.NEXT);
             }
-        } else if (prev && !pilot) {
-            send(v, ServerboundSeatSwitchPayload.PREV);
+        } else if (prev) {
+            if (!pilot) {
+                send(v, ServerboundSeatSwitchPayload.PREV);
+            } else if (v instanceof MchHelicopter h && h.canSwitchFoldBlades()) {
+                PacketDistributor.sendToServer(new ServerboundFoldBladePayload(v.getId()));
+            }
         }
     }
 

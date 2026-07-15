@@ -17,7 +17,8 @@ import mcheli.agnostic.value.Vec3d;
  * is sampled), on-ground friction + attitude damping, and the {@code 0.95}/{@code 0.99} post-move drag. Uses the
  * MC-faithful LUT trig ({@link MchMath#sin}/{@link MchMath#cos}); operand types are preserved exactly.
  *
- * <p>Deferred (edge cases, marked TODO): fold-blade-on-ground control, and the client throttle interpolation
+ * <p>Fold-blade-on-ground control is wired via {@link HeliState#canUseBlades} (folded → no lift) and
+ * {@link HeliState#isFoldedOnGround} (the parked taxi nudge). Deferred: the client throttle interpolation
  * (server-authoritative only). The synced-throttle publish stays a host-adapter concern.
  */
 public final class HeliFlightModel implements FlightModel {
@@ -33,8 +34,9 @@ public final class HeliFlightModel implements FlightModel {
             h.switchGunnerMode(false);
         }
 
-        boolean hasRider = !self.passengers().isEmpty();
-        if (!h.isDestroyed() && (hasRider || h.isHoveringMode()) && h.canUseBlades() && h.isCanopyClose() && h.canUseFuel(true)) {
+        // Reference gates on getRiddenByEntity() != null — the seat-0 PILOT, not any passenger. A gunner-only heli must
+        // fall through to the throttle-decay branch, not keep its collective.
+        if (!h.isDestroyed() && (h.hasPilot() || h.isHoveringMode()) && h.canUseBlades() && h.isCanopyClose() && h.canUseFuel(true)) {
             if (!h.isHovering()) {
                 controlNotHovering(self, info, st, in);
             } else {
@@ -46,7 +48,31 @@ public final class HeliFlightModel implements FlightModel {
             } else {
                 st.setCurrentThrottle(0.0);
             }
-            // TODO(post-slice): onUpdate_ControlFoldBladeAndOnGround (needs foldBladeStat/rotor-count seam).
+            // A folded heli makes no lift (canUseBlades is false above, so we land here), but it can still crawl along
+            // the ground: throttle-up drives it forward, throttle-down backward, at a fixed 0.03/tick nudge along the
+            // hull heading — the port of onUpdate_ControlFoldBladeAndOnGround (MCH_EntityHeli:530).
+            if (h.isFoldedOnGround()) {
+                boolean move = false;
+                double x = 0.0;
+                double z = 0.0;
+                if (in.throttleUp()) {
+                    float yaw = self.yaw();
+                    x += Math.sin(yaw * Math.PI / 180.0);
+                    z += Math.cos(yaw * Math.PI / 180.0);
+                    move = true;
+                }
+                if (in.throttleDown()) {
+                    float yaw = self.yaw() - 180.0F;
+                    x += Math.sin(yaw * Math.PI / 180.0);
+                    z += Math.cos(yaw * Math.PI / 180.0);
+                    move = true;
+                }
+                if (move) {
+                    double d = Math.sqrt(x * x + z * z);
+                    Vec3d m = self.motion();
+                    self.setMotion(new Vec3d(m.x() - x / d * 0.03F, m.y(), m.z() + z / d * 0.03F));
+                }
+            }
         }
         // (client throttle lerp + server setThrottle publish are host-adapter concerns.)
 

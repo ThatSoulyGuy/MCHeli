@@ -185,6 +185,15 @@ public final class MchExplosion {
         int cloud = Math.min(size * 2, 40);
         blast(level, ParticleTypes.LARGE_SMOKE, c.x, c.y + 0.5, c.z, cloud, r, r * 0.6, r, 0.02);
         blast(level, ParticleTypes.FLAME, c.x, c.y, c.z, cloud, r * 0.7, r * 0.5, r * 0.7, 0.05);
+
+        // Block debris: chips of the ground the blast tore up, flung outward and falling (reference spawnParticleTileDust).
+        net.minecraft.core.BlockPos ground = net.minecraft.core.BlockPos.containing(c.x, c.y - 0.5, c.z);
+        net.minecraft.world.level.block.state.BlockState hit = level.getBlockState(ground);
+        if (!hit.isAir()) {
+            int chips = Math.min(size * 4, 70);
+            blast(level, new net.minecraft.core.particles.BlockParticleOption(ParticleTypes.BLOCK, hit),
+                c.x, c.y + 0.3, c.z, chips, r, r, r, 0.6); // count>0: scatter chips over the radius with an outward toss
+        }
     }
 
     /**

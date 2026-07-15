@@ -168,6 +168,13 @@ public final class MchRegistries {
             EntityType.Builder.<MchCartridge>of(MchCartridge::new, MobCategory.MISC)
                 .sized(0.15F, 0.15F).clientTrackingRange(4).updateInterval(3).noSave().noSummon().build("cartridge"));
 
+    /** The cargo container — a placeable 54-slot storage entity (reference {@code MCH_EntityContainer}). */
+    public static final Supplier<EntityType<mcheli.dependent.entity.MchContainer>> CONTAINER =
+        ENTITY_TYPES.register("container", () ->
+            EntityType.Builder.<mcheli.dependent.entity.MchContainer>of(
+                    mcheli.dependent.entity.MchContainer::new, MobCategory.MISC)
+                .sized(2.0F, 1.0F).clientTrackingRange(8).build("container"));
+
     public static final Supplier<ParticleType<MuzzleFxOptions>> WEAPON_FX =
         PARTICLES.register("weapon_fx", () -> new ParticleType<MuzzleFxOptions>(false) {
             @Override public MapCodec<MuzzleFxOptions> codec() { return MuzzleFxOptions.CODEC; }
@@ -187,6 +194,17 @@ public final class MchRegistries {
             }
         });
 
+    /** The soft grey→white smoke billboard (port of {@code MCH_EntityParticleSmoke}) — rotor down-wash + damage smoke. */
+    public static final Supplier<ParticleType<mcheli.dependent.particle.MchSmokeOptions>> SMOKE_FX =
+        PARTICLES.register("smoke_fx", () -> new ParticleType<mcheli.dependent.particle.MchSmokeOptions>(false) {
+            @Override public MapCodec<mcheli.dependent.particle.MchSmokeOptions> codec() {
+                return mcheli.dependent.particle.MchSmokeOptions.CODEC;
+            }
+            @Override public StreamCodec<? super RegistryFriendlyByteBuf, mcheli.dependent.particle.MchSmokeOptions> streamCodec() {
+                return mcheli.dependent.particle.MchSmokeOptions.STREAM_CODEC;
+            }
+        });
+
     // Flat "original" 2D icons for the TAB BUTTONS only — a plain item per category with an item/generated model
     // pointing at a representative vehicle's original sprite (textures/items/<name>.png). The vehicle SPAWN items keep
     // their 3D-model icons; these tab icons render flat. Never added to a tab's displayItems, so they never appear as
@@ -194,6 +212,14 @@ public final class MchRegistries {
     /** The fuel canister — put it in a vehicle's fuel slot (the riding GUI) and the vehicle siphons it into its tank. */
     public static final DeferredItem<mcheli.dependent.item.MchFuelItem> FUEL =
         ITEMS.registerItem("fuel", mcheli.dependent.item.MchFuelItem::new, new Item.Properties());
+
+    /** The maintenance wrench — hold right-click on a damaged vehicle to mend it (reference {@code MCH_ItemWrench}). */
+    public static final DeferredItem<mcheli.dependent.item.MchWrench> WRENCH =
+        ITEMS.registerItem("wrench", mcheli.dependent.item.MchWrench::new, new Item.Properties().durability(250));
+
+    /** Places a {@link mcheli.dependent.entity.MchContainer} cargo box (reference {@code MCH_ItemContainer}). */
+    public static final DeferredItem<mcheli.dependent.item.MchContainerItem> CONTAINER_ITEM =
+        ITEMS.registerItem("container", mcheli.dependent.item.MchContainerItem::new, new Item.Properties());
 
     /** Refill a used fuel can by crafting it with coal (reference {@code MCH_RecipeFuel}). */
     public static final Supplier<net.minecraft.world.item.crafting.RecipeSerializer<mcheli.dependent.item.MchFuelRefillRecipe>> FUEL_REFILL =
@@ -229,7 +255,9 @@ public final class MchRegistries {
                         output.accept(it);
                     }
                 }
-                output.accept(new ItemStack(FUEL.get())); // every category burns fuel, so every tab offers the can
+                output.accept(new ItemStack(FUEL.get()));        // every category burns fuel, so every tab offers the can
+                output.accept(new ItemStack(WRENCH.get()));      // ...and every vehicle can be mended with the wrench
+                output.accept(new ItemStack(CONTAINER_ITEM.get())); // ...and the cargo box rides with any of them
             })
             .build());
     }

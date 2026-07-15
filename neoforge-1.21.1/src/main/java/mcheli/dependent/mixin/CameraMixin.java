@@ -51,21 +51,30 @@ public abstract class CameraMixin {
             return;
         }
         Vec3 eye = v.firstPersonEye(cam, partialTick); // null -> the vanilla player camera is the reference answer
-        boolean locked = v.supportsMouseRotation() && v.locksViewToVehicle();
+        // The hull-locked camera is ONLY for the PILOT flying normally (mouse drives the airframe). A GUNNER — or the
+        // pilot in gunner mode — free-looks to aim, so their camera must follow their own look, not weld to the hull
+        // (else the gun tracks the mouse but the view stays frozen, the Apache-gunner bug). firstPersonEye already
+        // detaches their eye POSITION to the gun-sight camera; this keeps the ROTATION theirs too.
+        int camSeat = v.seatIndexOf(cam);
+        boolean locked = v.supportsMouseRotation() && v.locksViewToVehicle()
+            && camSeat == 0 && !v.isSeatGunnerMode(0);
         float hullYaw = Mth.rotLerp(partialTick, v.yRotO, v.getYRot());
         float hullRoll = mcheli$shortLerp(v.getRollAngle(), v.getPrevRollAngle(), partialTick);
 
         Camera self = (Camera) (Object) this;
+        // Weapon recoil kicks the first-person view too (the reference recoil perturbs the hull the camera is locked to).
+        float rP = v.recoilPitchDeg(partialTick);
+        float rR = v.recoilRollDeg(partialTick);
         if (!detached) {
             if (locked) {
                 // Reference locks the PLAYER to the hull (setAngles:1265-1288) -> camera shows the full hull attitude.
                 float hullPitch = Mth.lerp(partialTick, v.xRotO, v.getXRot());
-                this.setRotation(hullYaw, hullPitch, hullRoll);
+                this.setRotation(hullYaw, hullPitch + rP, hullRoll + rR);
             } else if (v.cameraRollFade()) {
                 // Free look on a tank: camera roll fades as the player looks away from the hull axis.
                 float yawDiff = Mth.wrapDegrees(hullYaw - self.getYRot());
                 float roll = Mth.wrapDegrees(hullRoll) * Mth.cos(yawDiff * Mth.DEG_TO_RAD);
-                this.setRotation(self.getYRot(), self.getXRot(), roll);
+                this.setRotation(self.getYRot(), self.getXRot() + rP, roll + rR);
             }
             if (eye != null) {
                 this.setPosition(eye);

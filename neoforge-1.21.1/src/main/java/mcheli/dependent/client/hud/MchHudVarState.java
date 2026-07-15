@@ -184,4 +184,14 @@ public final class MchHudVarState implements HudState {
     @Override public float lineWidth() { return 1.0F; }
     @Override public double[] radarEntities() { return this.vehicle.radarEntityXZ(); }
     @Override public double[] radarEnemies() { return this.vehicle.radarEnemyXZ(); }
+
+    // DrawCameraRot: the port has no MCH_Camera object, so an "active gunner camera" is the local viewer being in a
+    // gunner view — a gunner seat, or the pilot with gunner mode engaged. The marker then tracks the viewer's own look.
+    @Override public boolean hasGunnerCamera() {
+        return this.vehicle.isSeatGunnerMode(Math.max(0, this.vehicle.seatIndexOf(this.player)));
+    }
+    @Override public double cameraPitchDeg() { return this.player.getXRot(); }
+    @Override public double cameraYawDiffDeg() {
+        return Mth.wrapDegrees(this.player.getYRot() - this.vehicle.getYRot());
+    }
 }

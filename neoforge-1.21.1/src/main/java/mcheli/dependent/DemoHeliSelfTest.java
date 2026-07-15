@@ -78,6 +78,10 @@ public final class DemoHeliSelfTest {
         pilotless.setYRot(0.0F);
         level.addFreshEntity(pilotless);
 
+        // Fuel it: the ah-64 has MaxFuel=1200 and spawns empty, so canUseFuel(true) would otherwise gate lift off. A
+        // real player would board a spawn-item heli that arrives fueled; here we prime it directly.
+        piloted.setFuel(piloted.getMaxFuel());
+
         pilot = EntityType.PIG.create(level);
         boolean mounted = false;
         if (pilot != null) {
@@ -87,6 +91,10 @@ public final class DemoHeliSelfTest {
             pilot.setPos(xPiloted, y, z);
             pilot.setYRot(0.0F);
             level.addFreshEntity(pilot);
+            // The automatic seat rule reserves the PILOT seat (0) for players, so a mob would default to a crew seat and
+            // pilot() would be null (which clears the injected throttle). Request seat 0 explicitly so this stand-in
+            // pilot actually drives — the same seat a real player takes automatically.
+            piloted.preferSeat(pilot, 0);
             mounted = pilot.startRiding(piloted, true); // ONLY the piloted heli gets a rider -> only it spools/climbs
         }
 
@@ -97,8 +105,9 @@ public final class DemoHeliSelfTest {
         startPiloted = piloted.position();
         startPilotless = pilotless.position();
         ticks = 0;
-        LOG.info("[HELI-SELFTEST] spawned piloted id={} (mounted={}, passengers={}) + pilotless id={} at y={}",
-            piloted.getId(), mounted, piloted.getPassengers().size(), pilotless.getId(), fmt(y));
+        LOG.info("[HELI-SELFTEST] spawned piloted id={} (mounted={}, passengers={}, pilotSeat={}) + pilotless id={} at y={}",
+            piloted.getId(), mounted, piloted.getPassengers().size(),
+            pilot != null ? piloted.seatIndexOf(pilot) : -1, pilotless.getId(), fmt(y));
     }
 
     @SubscribeEvent

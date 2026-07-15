@@ -64,6 +64,10 @@ public class MchBullet extends Entity {
     /** Tick before which the trail is suppressed (config {@code TrajectoryParticleStartTick}). */
     private static final EntityDataAccessor<Integer> DATA_TRAIL_START =
         SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.INT);
+    /** Marker-rocket state (reference {@code MCH_EntityMarkerRocket} status): 0 = not a marker, 1 = flying, 2 = planted
+     *  (a beacon pulses on the client while the server counts down to the airstrike). */
+    private static final EntityDataAccessor<Byte> DATA_MARKER =
+        SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.BYTE);
 
     /** Squared horizontal despawn distance from the shooter (5820², reference {@code checkValid}). */
     private static final double MAX_DIST_SQ = 3.38724E7;
@@ -78,6 +82,7 @@ public class MchBullet extends Entity {
     private int delayFuseCounter;       // live countdown; 0 == unarmed (bounces off blocks)
     private int sprinkleTime;           // ticks until a cluster round splits (0 == not a cluster carrier)
     private boolean isBomblet;          // a sprinkled child (never re-splits)
+    private int markerCountdown;        // marker rocket: ticks from plant to the airstrike + despawn (reference countDown)
 
     public MchBullet(EntityType<? extends MchBullet> type, Level level) {
         super(type, level);
@@ -121,6 +126,9 @@ public class MchBullet extends Entity {
                 b.entityData.set(DATA_TRAIL_START, wi.trajectoryParticleStartTick);
             }
         }
+        if (wi != null && !isBomblet && "mkrocket".equalsIgnoreCase(wi.type)) {
+            b.entityData.set(DATA_MARKER, (byte) 1); // a marker rocket: flies, plants a spotting marker, then calls a strike
+        }
         b.entityData.set(DATA_MODEL, modelName == null ? "" : modelName);
         b.entityData.set(DATA_COLOR, color);
         b.entityData.set(DATA_GRAVITY, gravity);
@@ -158,6 +166,11 @@ public class MchBullet extends Entity {
     public void tick() {
         super.tick();
         this.age++;
+
+        if (this.entityData.get(DATA_MARKER) == 2) { // planted marker: pulse the beacon / count down to the airstrike
+            tickMarked();
+            return;
+        }
 
         Vec3 motion = this.getDeltaMovement();
         float gravity = this.entityData.get(DATA_GRAVITY);
@@ -228,6 +241,10 @@ public class MchBullet extends Entity {
                 }
             }
 
+            if (this.entityData.get(DATA_MARKER) == 1) {
+                entityHit = null; // a marker rocket flies through entities; it only reacts to blocks (reference onImpact)
+            }
+
             if (this.weaponInfo != null && this.weaponInfo.delayFuse > 0) {
                 // delayFuse rounds IGNORE entities entirely — they only ricochet off blocks and self-detonate when the
                 // armed countdown reaches 0 (reference: the entity search lives inside the non-delayFuse else branch).
@@ -259,6 +276,10 @@ public class MchBullet extends Entity {
                     return;
                 }
             } else if (blockHit) {
+                if (this.entityData.get(DATA_MARKER) == 1) {
+                    plantMarker(block); // stops here: it becomes a planted marker instead of detonating
+                    return;
+                }
                 spawnBlockImpact(block);
                 onImpact(block.getLocation(), null);
                 if (this.isRemoved()) {
@@ -351,6 +372,101 @@ public class MchBullet extends Entity {
             }
         }
         this.discard();
+    }
+
+    // ---- marker rocket (reference MCH_EntityMarkerRocket) ----
+
+    /** Planted-marker tick: a pulsing beacon on the client; on the server, count down and call in the airstrike, then
+     *  despawn (reference {@code onUpdate} status-2 branch). */
+    private void tickMarked() {
+        if (this.level().isClientSide) {
+            spawnBeacon();
+            return;
+        }
+        if (this.isInWater()) {
+            this.discard();
+            return;
+        }
+        if (this.markerCountdown > 0) {
+            this.markerCountdown--;
+            if (this.markerCountdown == 40) {
+                spawnAirstrike();
+            }
+        } else {
+            this.discard();
+        }
+    }
+
+    /** A marker rocket hit a block: seat the marker on the open block just outside the struck face (unless buried under
+     *  5+ blocks with no line to the sky) and start the airstrike countdown (reference {@code onImpact}). */
+    private void plantMarker(BlockHitResult block) {
+        net.minecraft.core.BlockPos open = block.getBlockPos().relative(block.getDirection());
+        if (!this.level().getBlockState(open).isAir()) {
+            this.discard();
+            return;
+        }
+        int covered = 0;
+        for (int y = open.getY() + 1; y < this.level().getMaxBuildHeight() && covered < 5; y++) {
+            if (!this.level().getBlockState(new net.minecraft.core.BlockPos(open.getX(), y, open.getZ())).isAir()) {
+                covered++;
+            }
+        }
+        if (covered >= 5) {
+            this.discard();
+            return;
+        }
+        this.entityData.set(DATA_MARKER, (byte) 2);
+        this.setPos(open.getX() + 0.5, open.getY() + 1.1, open.getZ() + 0.5);
+        this.setDeltaMovement(Vec3.ZERO);
+        this.markerCountdown = 100;
+    }
+
+    /** Call in the bombing run: 6-8 bombs rain from high above the marked point, scattered, each exploding on impact
+     *  (reference: {@code 6+rand(2)} {@code MCH_EntityBomb}, explosionPower 3-4). Reuses the projectile path. */
+    private void spawnAirstrike() {
+        if (!(this.level() instanceof ServerLevel sl)) {
+            return;
+        }
+        int num = 6 + this.random.nextInt(2);
+        double ceiling = sl.getMaxBuildHeight() - 2;
+        for (int i = 0; i < num; i++) {
+            double bx = this.getX() + (this.random.nextFloat() - 0.5F) * 15.0F;
+            double by = Math.min(this.getY() + 140.0 + this.random.nextFloat() * 10.0F + i * 15, ceiling);
+            double bz = this.getZ() + (this.random.nextFloat() - 0.5F) * 15.0F;
+            MCH_WeaponInfo bombWi = airstrikeBombInfo();
+            spawnWeapon(sl, new Vec3(bx, by, bz), new Vec3(0.0, -1.0, 0.0), 0.5F, 1.0F, -0.05F,
+                bombWi.power, 1200, this.shooter, "bullet", 0xFF303030, bombWi);
+        }
+    }
+
+    /** A synthetic weapon info for the called-in bombs — explosion 3-4 with light block cratering, no per-config file. */
+    private MCH_WeaponInfo airstrikeBombInfo() {
+        MCH_WeaponInfo wi = new MCH_WeaponInfo("mch_airstrike_bomb");
+        wi.type = "bomb";
+        int p = 3 + this.random.nextInt(2);
+        wi.explosion = p;
+        wi.explosionBlock = p;
+        wi.explosionInWater = 0;
+        wi.flaming = false;
+        wi.power = 30;
+        wi.piercing = 0;
+        return wi;
+    }
+
+    /** CLIENT: the pulsing red spotting beacon at the marked point — a few small reddish explosion puffs per tick that
+     *  rise, mirroring the reference status-2 {@code "explode"} particles. */
+    private void spawnBeacon() {
+        for (int i = 0; i < 3; i++) {
+            float g = this.random.nextFloat() * 0.3F;
+            int argb = 0xFF000000
+                | ((int) ((this.random.nextFloat() * 0.2F + 0.8F) * 255) << 16)
+                | ((int) (g * 255) << 8)
+                | (int) (g * 255);
+            this.level().addParticle(
+                new mcheli.dependent.particle.MchExplodeOptions(2.0F + this.random.nextFloat(), argb, 10 + this.random.nextInt(4)),
+                this.getX(), this.getY(), this.getZ(),
+                (this.random.nextFloat() - 0.5F) * 0.7F, 0.3F + this.random.nextFloat() * 0.3F, (this.random.nextFloat() - 0.5F) * 0.7F);
+        }
     }
 
     /** Reflect the motion off the hit block face, scaled by the weapon's restitution (reference {@code boundBullet}). */
@@ -486,11 +602,18 @@ public class MchBullet extends Entity {
         builder.define(DATA_TRAIL_KIND, 0);
         builder.define(DATA_TRAIL_SIZE, 0.2F);
         builder.define(DATA_TRAIL_START, 0);
+        builder.define(DATA_MARKER, (byte) 0);
     }
     @Override protected void readAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {}
     @Override protected void addAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {}
 
     @Override public boolean isPickable() { return false; }
     @Override public boolean shouldRenderAtSqrDistance(double d) { return d < 4096.0; }
-    @Override public void lerpTo(double x, double y, double z, float yr, float xr, int steps) { }
+    @Override public void lerpTo(double x, double y, double z, float yr, float xr, int steps) {
+        // In-flight rounds dead-reckon (no lerp), but a PLANTED marker must accept the server's snap-to-block position
+        // so the client beacon renders on the actual strike point instead of the dead-reckoned spot past the wall.
+        if (this.entityData.get(DATA_MARKER) == 2) {
+            this.setPos(x, y, z);
+        }
+    }
 }

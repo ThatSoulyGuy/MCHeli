@@ -17,8 +17,9 @@ import mcheli.agnostic.value.Vec3d;
  * {@code motionFactor} damping + attitude trim, and the post-move {@code 0.95}(y)/{@code motionFactor}(x,z) drag
  * (NOTE: plane horizontal drag is {@code motionFactor}, not {@code 0.99} like the vehicle/heli).
  *
- * <p>Deferred (TODO, niche): the {@code isTargetDrone} ground-avoidance auto-steer in {@code onUpdate_Server}
- * (needs a landing-gear seam) — target drones currently fly with normal physics + forced throttle.
+ * <p>Target drones ({@code TargetDrone=true}) self-pilot: forced throttle (in {@link #updateThrottle}) plus the
+ * ground-avoidance auto-steer in {@link #integrateForces} (probe 40/5 blocks down, bank by {@code autoPilotRot},
+ * ease the nose down or level off). The reference's cosmetic landing-gear fold on level-off has no sim seam.
  */
 public final class PlaneFlightModel implements FlightModel {
 
@@ -119,8 +120,19 @@ public final class PlaneFlightModel implements FlightModel {
 
         boolean levelOff = p.isGunnerMode();
         if (dp == 0.0) {
-            // TODO(drone-autopilot): the isTargetDrone ground-avoidance auto-steer (getBlockY(3,-40)/(3,-5),
-            // autoPilotRot, foldLandingGear) is deferred — needs a landing-gear seam. Drones fly normal physics.
+            // Target-drone ground avoidance (reference MCP_EntityPlane.onUpdate_Server:714-733): an unmanned drone probes
+            // for terrain below and steers to loiter without flying into the ground.
+            if (p.isTargetDrone() && p.canUseFuel() && !p.isDestroyed()) {
+                if (GroundProbe.blockIdInColumn(self, 3, -40) != 0) {      // terrain within 40 blocks below
+                    if (GroundProbe.blockIdInColumn(self, 3, -5) == 0) {   // ...but not yet within 5 (5–40 below)
+                        float newPitch = self.pitch() > -20.0F ? self.pitch() - 0.5F : self.pitch(); // ease the nose down
+                        self.setRotation(self.yaw() + info.autoPilotRot * 2.0F, newPitch);            // and bank away
+                    }
+                } else {                                                   // open air below (void / high up)
+                    self.setRotation(self.yaw() + info.autoPilotRot * 1.0F, self.pitch() * 0.95F);    // level + gentle bank
+                    levelOff = true; // reference also folds the landing gear here — no gear seam in the sim (cosmetic only)
+                }
+            }
             if (!levelOff) {
                 motionY = motionY + (0.04 + (!self.isInWater() ? info.gravity : info.gravityInWater));
                 motionY = motionY + -0.047 * (1.0 - st.getCurrentThrottle());

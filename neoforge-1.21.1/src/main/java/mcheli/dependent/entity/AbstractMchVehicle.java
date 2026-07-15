@@ -94,6 +94,16 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Barrel heat 0..1 of the selected weapon (synced for the HUD overheat gauge); 1 == overheated (fire locked out). */
     private static final EntityDataAccessor<Float> DATA_HEAT =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+    /** Recoil trigger: bumped once per shot of a weapon with config {@code Recoil > 0}. A client watches it for a rising
+     *  edge and runs its own 30-tick kick from {@link #DATA_RECOIL_VALUE}/{@link #DATA_RECOIL_YAW} (reference recoilCount). */
+    private static final EntityDataAccessor<Integer> DATA_RECOIL_SEQ =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
+    /** The firing weapon's config {@code Recoil} magnitude (degrees) for the kick. */
+    private static final EntityDataAccessor<Float> DATA_RECOIL_VALUE =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+    /** The firing weapon's aim yaw RELATIVE TO THE HULL — splits the kick into pitch (forward gun) vs roll (side gun). */
+    private static final EntityDataAccessor<Float> DATA_RECOIL_YAW =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
     /** True while a weapon RECENTLY fired (within {@code firedCooldownTicks}) — synced so the gatling barrel spins on
      *  every client (the port of the reference {@code useWeaponStat}/{@code MCH_WeaponSet.isUsed} bit). */
     private static final EntityDataAccessor<Boolean> DATA_FIRING =
@@ -119,6 +129,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
      *  weapon that is not the one selected. The HUD's {@link #DATA_AMMO} carries only the SELECTED weapon's magazine. */
     private static final EntityDataAccessor<CompoundTag> DATA_AMMO_ALL =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.COMPOUND_TAG);
+    /** Per-weapon-slot "spent" bitmask (synced): bit i set while slot i is mid-reload, so a just-fired MISSILE part
+     *  vanishes from its rack until it reloads — the reference {@code useWeaponStat} + {@code renderWeapon} isMissile
+     *  gate. Up to 32 slots. */
+    private static final EntityDataAccessor<Integer> DATA_WEAPON_SPENT =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.INT);
     /** seatIndex → passenger ENTITY ID. The client mirror of the server's seat map — the same information the reference
      *  shipped in {@code MCH_PacketSeatListResponse}, but auto-resynced. {@code getPassengers()} order is mount order
      *  and compacts on dismount, so it can NEVER be used as a seat map. */
@@ -288,6 +303,33 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     /** CLIENT: called by MchClientRotation to mark/unmark this as the local rider's mouse-controlled aircraft. */
     public void setLocalRotationOwned(boolean owned) { this.localRotationOwned = owned; }
+
+    // CLIENT: the pilot's selected config CameraPosition index (reference MCH_EntityAircraft.cameraId). Purely a local
+    // view state — the reference only ever reads it through the client player (getCameraPosInfo), so it is never synced.
+    // 0 = the default eye (cameraPosition[0]); >0 = an alternate configured viewpoint, cycled by the gunner/view key.
+    private int viewCameraId;
+
+    /** CLIENT: how many config {@code CameraPosition} entries this vehicle has (reference {@code getCameraPosNum}). */
+    public int cameraPosCount() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null && !info.cameraPosition.isEmpty() ? info.cameraPosition.size() : 1;
+    }
+
+    /** CLIENT: at least two configured viewpoints, so the view key can cycle them (reference {@code canSwitchCameraPos}). */
+    public boolean canSwitchCameraPos() {
+        return cameraPosCount() >= 2;
+    }
+
+    /** CLIENT: the pilot's currently-selected {@code CameraPosition} index, clamped into range. */
+    public int getViewCameraId() {
+        int n = cameraPosCount();
+        return this.viewCameraId > 0 && this.viewCameraId < n ? this.viewCameraId : 0;
+    }
+
+    /** CLIENT: select a config {@code CameraPosition} index (out-of-range collapses to 0, the default eye). */
+    public void setViewCameraId(int id) {
+        this.viewCameraId = id > 0 && id < cameraPosCount() ? id : 0;
+    }
 
     // SERVER: the rider's last-sent client-authoritative rotation, re-asserted after each physics tick (see tick())
     // so the flight model's on-ground/water attitude damping — which the pilot's client never applies — cannot
@@ -507,14 +549,17 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             return configCameraEye(seat.getCamPos().pos, seat.rotSeat, info, vx, vy, vz, body, partialTick);
         }
 
-        // The pilot uses CameraPosition[0] either when the config forces the camera view (alwaysCameraView) OR when the
-        // pilot has entered gunner mode — the reference renders through the camera dummy for (isPilot && alwaysCameraView)
-        // || getIsGunnerMode (MCH_Client*TickHandler:~110), and getCameraPosInfo returns cameraPosition[0] for seat 0.
+        // The pilot uses CameraPosition[camIdx] when the config forces the camera view (alwaysCameraView), when the pilot
+        // has entered gunner mode, OR when they have cycled to an alternate viewpoint (cameraId>0). The reference renders
+        // through the camera dummy for (isPilot && alwaysCameraView) || getIsGunnerMode || cameraId>0
+        // (MCH_Client*TickHandler:~110), and getCameraPosInfo returns cameraPosition[cameraId] for seat 0. Gunner mode
+        // resets cameraId to 0 (see the view-key handler), so it always shows cameraPosition[0].
+        int camIdx = sid == 0 ? getViewCameraId() : 0;
         boolean pilotGunnerCam = sid == 0 && isSeatGunnerMode(0);
-        if ((usesConfigCameraEye() || pilotGunnerCam) && !info.cameraPosition.isEmpty()) {
+        if ((usesConfigCameraEye() || pilotGunnerCam || camIdx > 0) && !info.cameraPosition.isEmpty()) {
             MCH_SeatInfo seat0 = info.seatList == null || info.seatList.isEmpty() ? null : info.seatList.get(0);
-            return configCameraEye(info.cameraPosition.get(0).pos, seat0 != null && seat0.rotSeat,
-                info, vx, vy, vz, body, partialTick);
+            return configCameraEye(info.cameraPosition.get(pilotGunnerCam ? 0 : camIdx).pos,
+                seat0 != null && seat0.rotSeat, info, vx, vy, vz, body, partialTick);
         }
 
         // Seat eye — for BOTH locked view and free-look-without-config-camera: eye = attachment (rotSeat-orbited,
@@ -664,10 +709,14 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_AMMO, -1);
         builder.define(DATA_RELOAD, 0.0F);
         builder.define(DATA_HEAT, 0.0F);
+        builder.define(DATA_RECOIL_SEQ, 0);
+        builder.define(DATA_RECOIL_VALUE, 0.0F);
+        builder.define(DATA_RECOIL_YAW, 0.0F);
         builder.define(DATA_FIRING, false);
         builder.define(DATA_FUEL, 0);
         builder.define(DATA_SEATS, new CompoundTag());
         builder.define(DATA_AMMO_ALL, new CompoundTag());
+        builder.define(DATA_WEAPON_SPENT, 0);
         builder.define(DATA_RELOADING, false);
         builder.define(DATA_DAMAGE_TAKEN, 0);
         builder.define(DATA_DESTROYED, false);
@@ -698,6 +747,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         this.extraBoxes = null;
         this.minYResolved = false;
         this.hideGmGroups = null;
+        this.viewCameraId = 0; // a different config may have fewer camera positions — fall back to the default eye
         onConfigChanged();
     }
 
@@ -728,16 +778,47 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     // Client-side lazy weapon list, used only to resolve the synced selected index to a display NAME for the HUD.
     private VehicleWeapons hudWeapons;
 
-    /** The selected weapon's slot (from the synced index), for HUD name/ammo display; null if none. */
-    private WeaponSlot selectedHudSlot() {
+    /** The client-side weapon list (config-resolved, ammo lives in the synced fields), built lazily; null if no info. */
+    private VehicleWeapons clientWeapons() {
         if (weaponHostInfo() == null) {
             return null;
         }
         if (this.hudWeapons == null) {
             this.hudWeapons = VehicleWeapons.build(weaponHostInfo(), MCH_WeaponInfoManager::get);
         }
+        return this.hudWeapons;
+    }
+
+    /** The selected weapon's slot (from the synced index), for HUD name/ammo display; null if none. */
+    private WeaponSlot selectedHudSlot() {
+        VehicleWeapons vw = clientWeapons();
+        if (vw == null) {
+            return null;
+        }
         int idx = getSelectedWeaponIndex();
-        return idx >= 0 && idx < this.hudWeapons.size() ? this.hudWeapons.get(idx) : null;
+        return idx >= 0 && idx < vw.size() ? vw.get(idx) : null;
+    }
+
+    /** True if the MISSILE part for the weapon {@code weaponName} should be hidden this frame — its round is spent and
+     *  reloading (synced {@link #DATA_WEAPON_SPENT}), so the fired rail reads as empty (reference renderWeapon gate). */
+    public boolean isMissilePartHidden(String weaponName) {
+        if (weaponName == null) {
+            return false;
+        }
+        int mask = this.entityData.get(DATA_WEAPON_SPENT);
+        if (mask == 0) {
+            return false;
+        }
+        VehicleWeapons vw = clientWeapons();
+        if (vw == null) {
+            return false;
+        }
+        for (int i = 0; i < vw.size() && i < 32; i++) {
+            if (weaponName.equalsIgnoreCase(vw.get(i).weaponName)) {
+                return (mask & 1 << i) != 0;
+            }
+        }
+        return false;
     }
 
     /** The selected weapon's display name (for the HUD), resolved from the synced index; "" if none. */
@@ -858,6 +939,15 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Previous-tick rotor/propeller spin angle, for render interpolation. */
     public float prevRotorSpin() { return this.prevRotorSpin; }
 
+    /** Whether the rotor can currently generate lift — the port of {@code MCH_EntityHeli.canUseBlades}. True for every
+     *  vehicle without a foldable rotor; {@link MchHelicopter} overrides it to gate lift while the blades are folded or
+     *  mid-fold. The heli flight model reads this through {@link mcheli.agnostic.sim.HeliState#canUseBlades}. */
+    public boolean canUseBlades() { return true; }
+
+    /** Whether this is a fold-capable heli that is currently folded AND resting on the ground — gates the parked-taxi
+     *  nudge in the heli flight model ({@code onUpdate_ControlFoldBladeAndOnGround}). False for everything else. */
+    public boolean isFoldedOnGround() { return false; }
+
     // ---- Entity radar (reference MCH_Radar + MCH_EntityAircraft.updateRadar) — CLIENT-only, drives the HUD radar dial ----
     private static final double[] EMPTY_XZ = new double[0];
     private int radarRotate;                 // sweep angle 0..360, advances radarSweepSpeed() per client tick
@@ -956,6 +1046,61 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     public double[] radarEntityXZ() { return this.radarEntityXZ; }
     /** Hostile radar blips (relative x,z pairs) for the HUD {@code DrawEnemyRadar}. */
     public double[] radarEnemyXZ() { return this.radarEnemyXZ; }
+
+    // ---- Weapon recoil kick (reference MCH_EntityAircraft.updateRecoil) — CLIENT-only visual, driven by DATA_RECOIL_SEQ ----
+    private int lastRecoilSeq = -1;
+    private int clientRecoilCount;
+    private int prevClientRecoilCount;
+    private float clientRecoilValue;
+    private float clientRecoilYaw;
+
+    /** Advance the client recoil kick each client tick: a new shot (seq bump) restarts the 30-tick countdown; else decay. */
+    private void advanceRecoil() {
+        int seq = this.entityData.get(DATA_RECOIL_SEQ);
+        if (seq != this.lastRecoilSeq) {
+            // First tick tracking this entity (lastRecoilSeq still -1): ADOPT the already-synced seq without firing a
+            // kick, else a vehicle that fired before we came into render range plays a phantom recoil on our first tick.
+            boolean firstObserve = this.lastRecoilSeq < 0;
+            this.lastRecoilSeq = seq;
+            if (seq != 0 && !firstObserve) {
+                this.clientRecoilCount = 30;
+                this.clientRecoilValue = this.entityData.get(DATA_RECOIL_VALUE);
+                this.clientRecoilYaw = this.entityData.get(DATA_RECOIL_YAW);
+            }
+        }
+        this.prevClientRecoilCount = this.clientRecoilCount;
+        if (this.clientRecoilCount > 0) {
+            this.clientRecoilCount--;
+        }
+    }
+
+    /** Recoil PITCH offset (degrees) this frame — a nose-up kick for a forward gun (reference splits the kick by the
+     *  weapon aim: pitch = cos(recoilYaw), roll = sin(recoilYaw)), easing out over the count. Added to the model render
+     *  and the first-person camera, NOT the physics — so it never fights the client-authored rotation sync. */
+    public float recoilPitchDeg(float partialTick) {
+        float k = recoilEnvelope(partialTick);
+        return k == 0.0F ? 0.0F : -k * Mth.cos(this.clientRecoilYaw * Mth.DEG_TO_RAD);
+    }
+
+    /** Recoil ROLL offset (degrees) this frame — the side-gun component. */
+    public float recoilRollDeg(float partialTick) {
+        float k = recoilEnvelope(partialTick);
+        return k == 0.0F ? 0.0F : k * Mth.sin(this.clientRecoilYaw * Mth.DEG_TO_RAD);
+    }
+
+    /** Peak-kick multiplier on the config {@code Recoil} value. The reference ACCUMULATES its per-tick impulse over the
+     *  30→12 window (a small per-tick value integrates into a much larger displacement the flight model then returns);
+     *  this port applies a single non-accumulating visual offset, so it multiplies up to a comparable felt jolt. Tune
+     *  here if the kick reads too strong/weak. */
+    private static final float RECOIL_GAIN = 3.0F;
+
+    private float recoilEnvelope(float partialTick) {
+        float count = Mth.lerp(partialTick, this.prevClientRecoilCount, this.clientRecoilCount);
+        if (count < 12.0F) {
+            return 0.0F; // reference gate: the kick applies over count 30..12 only
+        }
+        return (count - 12.0F) / 18.0F * this.clientRecoilValue * RECOIL_GAIN; // full kick at the shot, easing to 0
+    }
 
     /** The value synced into {@link #getThrottleInput} for the sound loop — the flight throttle by default. A tank adds
      *  its maneuver-rev term (reference {@code soundVolumeTarget}) so it revs when turning/reversing, not just forward. */
@@ -1243,6 +1388,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             updateWheelTrackPhase();
             advanceRotorSpin(); // heli rotor / plane propeller spin — CONFIG rotorSpeed, no hardcoded rate
             advanceRadar();     // entity-radar sweep + periodic entity scan (only while ridden), for the cockpit HUD
+            advanceRecoil();    // weapon recoil kick countdown (model + first-person camera), from the synced trigger
             clientAmbientEffects(); // rotor down-wash, damage smoke — the reference's onUpdate_Client particle spawns
             return;
         }
@@ -1522,6 +1668,16 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             }
         }
         return -1;
+    }
+
+    /** Programmatically request that {@code rider} take a specific {@code seat} on its NEXT boarding — the code-path
+     *  equivalent of clicking that seat's box ({@link #interactAt}), for mounts that never go through an interact:
+     *  scripted crew, NPCs, or the headless self-tests. Server-side; honored by {@link #firstFreeSeatFor} exactly like
+     *  a clicked seat (so it can seat a non-player in the pilot seat, which the automatic rule reserves for players). */
+    public void preferSeat(Entity rider, int seat) {
+        if (!this.level().isClientSide) {
+            this.pendingSeat.put(rider.getUUID(), seat);
+        }
     }
 
     @Override
@@ -1842,13 +1998,18 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
      *  marks dirty, so an unchanged map costs no packets. */
     private void publishAllAmmo() {
         CompoundTag t = new CompoundTag();
+        int spent = 0;
         for (int i = 0; i < this.weapons.size(); i++) {
             WeaponSlot w = this.weapons.get(i);
             if (w.hasEconomy()) {
                 t.putInt(Integer.toString(i), w.totalAmmo());
             }
+            if (i < 32 && w.reloading()) {
+                spent |= 1 << i; // this slot just fired and is reloading -> its missile part hides
+            }
         }
         this.entityData.set(DATA_AMMO_ALL, t);
+        this.entityData.set(DATA_WEAPON_SPENT, spent);
     }
 
     /** Total ammo (magazine + reserve) of weapon {@code i} — CLIENT-readable, for the riding GUI. -1 == infinite. */
@@ -2224,6 +2385,15 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         }
 
         spawnFireCosmetics(muzzle, dir, wi, yaw + mount.yaw, pitch + mount.pitch);
+
+        // Recoil kick: on a weapon with config Recoil>0, bump the synced trigger so every client runs the visual kick
+        // (reference sets recoilCount=30/value/yaw on the firing rising edge). The direction is the weapon's aim
+        // relative to the hull, so a forward gun kicks pitch (nose up) and a side gun kicks roll.
+        if (wi.recoil > 0.0F) {
+            this.entityData.set(DATA_RECOIL_SEQ, this.entityData.get(DATA_RECOIL_SEQ) + 1);
+            this.entityData.set(DATA_RECOIL_VALUE, wi.recoil);
+            this.entityData.set(DATA_RECOIL_YAW, Mth.wrapDegrees(yaw - hullYaw));
+        }
     }
 
     // ---- Client ambient particle effects (reference onUpdate_Client / onUpdate_Particle*) — CLIENT-ONLY ----
@@ -2254,7 +2424,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             double x = getX() + (this.random.nextDouble() - 0.5) * getBbWidth();
             double y = getY() + getBbHeight() * 0.6 + (this.random.nextDouble() - 0.5) * 0.5;
             double z = getZ() + (this.random.nextDouble() - 0.5) * getBbWidth();
-            this.level().addParticle(net.minecraft.core.particles.ParticleTypes.LARGE_SMOKE, x, y, z,
+            // Dark damage smoke — the MCHeli smoke.png billboard (port of MCH_EntityParticleSmoke), which rises and
+            // lightens as it dissipates, in place of the vanilla LARGE_SMOKE stand-in.
+            this.level().addParticle(
+                new mcheli.dependent.particle.MchSmokeOptions(0.9F, 0xC0343434, 24 + this.random.nextInt(16)),
+                x, y, z,
                 (this.random.nextDouble() - 0.5) * 0.3, this.random.nextDouble() * 0.1, (this.random.nextDouble() - 0.5) * 0.3);
         }
     }
@@ -2342,6 +2516,13 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Public read of this vehicle's parsed config (armor/HP/hitboxes), or null; for HUD + diagnostics/self-test. */
     public MCH_AircraftInfo hostInfo() { return weaponHostInfo(); }
 
+    /** Whether this vehicle is an unmanned target drone (config {@code TargetDrone=true}) — it flies/drives itself with
+     *  forced throttle + the ground-avoidance auto-steer instead of waiting for a pilot (reference {@code isTargetDrone}). */
+    public boolean isTargetDrone() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null && info.isTargetDrone;
+    }
+
     /** The vehicle's human name — the config's {@code DisplayName}, falling back to the config name. */
     public String displayName() {
         MCH_AircraftInfo info = weaponHostInfo();
@@ -2366,6 +2547,19 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     /** Current hit points = {@code maxHp - damageTaken}, floored at 0 (reference {@code getHP}). */
     public int getHp() { return Math.max(0, getMaxHp() - getDamageTaken()); }
+
+    /** Mend {@code tpd} HP of accumulated damage (reference {@code MCH_EntityAircraft.repair}) — the wrench's per-tick
+     *  heal. Returns whether there was damage to mend, so the tool only spends durability + plays its sound when it
+     *  actually repairs something. Server-authoritative; a no-op (but truthful) read on the client. */
+    public boolean repair(int tpd) {
+        if (getDamageTaken() <= 0) {
+            return false;
+        }
+        if (!this.level().isClientSide) {
+            setDamageTaken(getDamageTaken() - Math.max(1, tpd));
+        }
+        return true;
+    }
 
     /** True once the craft is a wreck (synced). Weapon damage no-ops from here; only crash/despawn act (reference). */
     public boolean isDestroyed() { return this.entityData.get(DATA_DESTROYED); }

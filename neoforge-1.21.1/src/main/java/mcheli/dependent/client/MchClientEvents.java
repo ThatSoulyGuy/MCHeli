@@ -32,6 +32,7 @@ public final class MchClientEvents {
         event.registerEntityRenderer(MchRegistries.TANK.get(), MchTankRenderer::new);
         event.registerEntityRenderer(MchRegistries.DEMO_BULLET.get(), MchBulletRenderer::new);
         event.registerEntityRenderer(MchRegistries.CARTRIDGE.get(), MchCartridgeRenderer::new);
+        event.registerEntityRenderer(MchRegistries.CONTAINER.get(), MchContainerRenderer::new);
     }
 
     /** The riding GUI (fuel slots + reload) — bound to the menu type registered in {@link MchRegistries}. */
@@ -45,6 +46,8 @@ public final class MchClientEvents {
         event.registerSpriteSet(MchRegistries.WEAPON_FX.get(), MuzzleFxParticle.Provider::new);
         event.registerSpriteSet(MchRegistries.EXPLODE_FX.get(),
             mcheli.dependent.client.particle.MchExplodeParticle.Provider::new);
+        event.registerSpriteSet(MchRegistries.SMOKE_FX.get(),
+            mcheli.dependent.client.particle.MchSmokeParticle.Provider::new);
     }
 
     /** Every vehicle spawn item renders its 3D model as its inventory icon (needs a {@code builtin/entity} item model). */

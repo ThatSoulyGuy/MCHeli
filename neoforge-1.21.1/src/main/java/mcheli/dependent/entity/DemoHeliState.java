@@ -36,8 +36,15 @@ public final class DemoHeliState implements HeliState {
     // maxFuel <= 0 -> fuel never gates the control path (reference canUseFuel).
     @Override public boolean canUseFuel(boolean checkOtherSeat) { return this.owner.canUseFuel(checkOtherSeat); }
     @Override public boolean canUseFuel() { return this.owner.canUseFuel(false); }
-    // rotors.length <= 0 -> blades always usable (reference MCH_EntityHeli.canUseBlades).
-    @Override public boolean canUseBlades() { return true; }
+    // Blades gate lift: true for a heli with no foldable rotor, false while folded / mid-fold. The fold-aware value
+    // lives on the entity (MchHelicopter.canUseBlades); routing it here makes the sim wind the rotor down + skip
+    // flight when the blades are stowed (reference MCH_EntityHeli.canUseBlades feeding onUpdate_Control).
+    @Override public boolean canUseBlades() { return this.owner.canUseBlades(); }
+    // Folded + grounded -> the sim's parked-taxi nudge (onUpdate_ControlFoldBladeAndOnGround) may run.
+    @Override public boolean isFoldedOnGround() { return this.owner.isFoldedOnGround(); }
+    // Powered flight requires the SEAT-0 pilot (reference getRiddenByEntity), not merely any rider — else a heli
+    // abandoned by its pilot but still holding a gunner would hover forever instead of settling.
+    @Override public boolean hasPilot() { return this.owner.pilot() != null; }
     // partCanopy == null -> always "closed" (reference MCH_EntityAircraft.isCanopyClose).
     @Override public boolean isCanopyClose() { return true; }
 

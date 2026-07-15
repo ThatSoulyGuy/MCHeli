@@ -31,5 +31,16 @@ public interface HudState extends MchExpr.VarLookup {
     /** Hostile radar contacts (same layout) for {@code DrawEnemyRadar}. Default: none. */
     default double[] radarEnemies() { return NO_BLIPS; }
 
+    /** Whether an active gunner camera exists — gates {@code DrawCameraRot} (reference {@code ac.camera != null}).
+     *  In the port this is the local viewer being in a gunner view (gunner seat, or pilot in gunner mode). */
+    default boolean hasGunnerCamera() { return false; }
+
+    /** The gunner camera's pitch in degrees (the viewer's look pitch), for the {@code DrawCameraRot} marker. */
+    default double cameraPitchDeg() { return 0.0; }
+
+    /** The gunner camera's yaw relative to the hull in degrees ({@code cameraYaw − hullYaw}, normalized), for the
+     *  {@code DrawCameraRot} marker. */
+    default double cameraYawDiffDeg() { return 0.0; }
+
     double[] NO_BLIPS = new double[0];
 }

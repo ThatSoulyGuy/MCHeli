@@ -21,7 +21,7 @@ import mcheli.agnostic.eval.MchExpr;
  */
 public final class MCH_Hud {
 
-    private enum Kind { COLOR1, COLOR4, STRING, TEXTURE, RECT, LINE, LINE_STIPPLE, GRADUATION, RADAR, IF, ENDIF, EXIT, CALL }
+    private enum Kind { COLOR1, COLOR4, STRING, TEXTURE, RECT, LINE, LINE_STIPPLE, GRADUATION, RADAR, CAMERA_ROT, IF, ENDIF, EXIT, CALL }
 
     private static final class Item {
         final Kind kind;
@@ -141,9 +141,11 @@ public final class MCH_Hud {
             it.aux = cmd.equalsIgnoreCase("DrawEnemyRadar") ? 1 : 0; // 0 = neutral list, 1 = hostile list
             it.num = compileAll(p, 0, 5);
             items.add(it);
+        } else if (cmd.equalsIgnoreCase("DrawCameraRot") && p.length == 2) {
+            Item it = new Item(Kind.CAMERA_ROT);            // args: posX, posY — the gunner-camera direction indicator
+            it.num = compileAll(p, 0, 2);
+            items.add(it);
         }
-        // else: DrawCameraRot -> deferred (skipped). It is the gunner-camera reticle: the reference draws it ONLY when
-        // the vehicle has an active gunner camera (MCH_Camera != null); the port has no such camera object yet.
     }
 
     private static MchExpr.Node[] compileAll(String[] p, int from, int to) {
@@ -237,6 +239,11 @@ public final class MCH_Hud {
                     case RADAR -> drawRadar(r, it.aux == 1 ? s.radarEnemies() : s.radarEntities(),
                         it.num[0].eval(vars), cx + it.num[1].eval(vars), cy + it.num[2].eval(vars),
                         it.num[3].eval(vars), it.num[4].eval(vars), color[0]);
+                    case CAMERA_ROT -> {
+                        if (s.hasGunnerCamera()) {
+                            drawCameraRot(r, s, cx + it.num[0].eval(vars), cy + it.num[1].eval(vars), color[0]);
+                        }
+                    }
                     case IF -> ifFalse = it.num[0].eval(vars) == 0.0;
                     case ENDIF -> ifFalse = false;
                     case EXIT -> {
@@ -412,6 +419,28 @@ public final class MCH_Hud {
         if (n > 0) {
             r.points(n == out.length ? out : java.util.Arrays.copyOf(out, n), color, 2.0);
         }
+    }
+
+    /**
+     * The gunner-camera direction indicator (reference {@code MCH_HudItemCameraRot.drawCommonGunnerCamera}): a
+     * {@code 42×22} outline box with a stippled crosshair, plus a small marker box whose offset shows where the
+     * gunner's camera looks relative to the hull. Drawn only while an active gunner camera exists (gated by the caller).
+     */
+    private static void drawCameraRot(HudRenderer r, HudState s, double px, double py, int color) {
+        float w = s.lineWidth();
+        // Frame: a closed loop (GL_LINE_LOOP, mode 2), ±21 wide / ±11 tall.
+        r.line(new double[]{ px - 21, py - 11, px + 21, py - 11, px + 21, py + 11, px - 21, py + 11 }, color, 2, w);
+        // Crosshair: four disjoint spokes to the centre, stippled 0xCCCC (reference drawLineStipple factor 1).
+        r.lineStipple(new double[]{
+            px - 21, py, px, py,   px + 21, py, px, py,
+            px, py - 11, px, py,   px, py + 11, px, py
+        }, color, 1, 52428, w);
+        // Marker: camera pitch → vertical, hull-relative camera yaw → horizontal (reference clamps + scales).
+        double pitch = (Math.max(-30.0, Math.min(70.0, s.cameraPitchDeg())) - 20.0) * 0.16;
+        double yaw = Math.max(-50.0, Math.min(50.0, s.cameraYawDiffDeg() * 2.0)) * 0.34;
+        double mx = px + yaw;
+        double my = py + pitch;
+        r.line(new double[]{ mx - 3, my - 2, mx + 3, my - 2, mx + 3, my + 2, mx - 3, my + 2 }, color, 2, w);
     }
 
     /** Normalize an angle to [0,360) (reference {@code MCH_Lib.getRotate360}). */

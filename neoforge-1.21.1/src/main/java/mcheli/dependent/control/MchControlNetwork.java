@@ -36,5 +36,9 @@ public final class MchControlNetwork {
             ServerboundGunnerModePayload.TYPE,
             ServerboundGunnerModePayload.STREAM_CODEC,
             ServerboundGunnerModePayload::handle);
+        registrar.playToServer(
+            ServerboundFoldBladePayload.TYPE,
+            ServerboundFoldBladePayload.STREAM_CODEC,
+            ServerboundFoldBladePayload::handle);
     }
 }

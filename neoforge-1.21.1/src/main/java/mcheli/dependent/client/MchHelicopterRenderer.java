@@ -62,7 +62,12 @@ public class MchHelicopterRenderer extends MchModelEntityRenderer<MchHelicopter>
         int c = wreckColor(entity);
         // Rotor angle is accumulated on the entity from the synced engine power; interpolate with the short-path.
         float spin = calcRot(entity.rotorSpin(), entity.prevRotorSpin(), partialTick);
-        for (MCH_HeliInfo.Rotor rotor : m.rotors()) {
+        // A fold-capable heli drives each blade individually off the fold animator (reference rotationRotor + MCH_Rotor)
+        // so the blades tuck/spread while folding; every other heli keeps the single shared spin, unchanged.
+        boolean fold = entity.foldActive();
+        List<MCH_HeliInfo.Rotor> rotors = m.rotors();
+        for (int ri = 0; ri < rotors.size(); ri++) {
+            MCH_HeliInfo.Rotor rotor = rotors.get(ri);
             String group = "$" + rotor.modelName;
             double hx = rotor.pos.x();
             double hy = rotor.pos.y();
@@ -71,7 +76,9 @@ public class MchHelicopterRenderer extends MchModelEntityRenderer<MchHelicopter>
             float ay = (float) rotor.rot.y();
             float az = (float) rotor.rot.z();
             for (int i = 0; i < rotor.bladeNum; i++) {
-                float angle = spin + i * rotor.bladeRot;
+                float angle = fold
+                    ? calcRot(entity.bladeAngle(ri, i), entity.prevBladeAngle(ri, i), partialTick)
+                    : spin + i * rotor.bladeRot;
                 pose.pushPose();
                 pose.translate(hx, hy, hz);
                 pose.mulPose(new Quaternionf().rotateAxis((float) Math.toRadians(angle), ax, ay, az));

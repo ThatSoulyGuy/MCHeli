@@ -22,7 +22,7 @@ public final class DemoTankState implements TankState {
     // Gunner mode is server-authoritative + synced on the entity (reference isGunnerMode); the toggle path is
     // AbstractMchVehicle.toggleGunnerMode. In gunner mode TankFlightModel stops steering and levels the hull.
     @Override public boolean isGunnerMode() { return this.owner.isGunnerModeActive(); }
-    @Override public boolean isTargetDrone() { return false; }
+    @Override public boolean isTargetDrone() { return this.owner.isTargetDrone(); }
     @Override public boolean canUseFuel() { return this.owner.canUseFuel(false); }     // maxFuel <= 0
     @Override public boolean isCanopyClose() { return true; }   // partCanopy == null
     @Override public void switchGunnerMode(boolean on) { /* authoritative toggle lives on the entity */ }
