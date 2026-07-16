@@ -11,6 +11,8 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.InputEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 /**
@@ -86,6 +88,9 @@ public final class MchClientInput {
         if (o.keyDown.isDown())   bits |= ServerboundControlPayload.THROTTLE_DOWN;
         if (o.keyLeft.isDown())   bits |= ServerboundControlPayload.MOVE_LEFT;
         if (o.keyRight.isDown())  bits |= ServerboundControlPayload.MOVE_RIGHT;
+        // Free-look parity: the airframe already holds heading client-authoritatively (MchClientRotation), so this is
+        // not load-bearing — it just keeps the server sim's MchControlState.freeLook consistent (e.g. plane ground-yaw).
+        if (MchFreeLook.active()) bits |= ServerboundControlPayload.FREE_LOOK;
         // Raw left-mouse-button state — reliable while riding (vanilla attack handling can consume keyAttack). Gated
         // by 'controlling' above (no GUI, mouse grabbed), so it only reads while actually piloting.
         if (armed && org.lwjgl.glfw.GLFW.glfwGetMouseButton(
@@ -101,5 +106,35 @@ public final class MchClientInput {
             lastBits = bits;
             lastVehicleId = vid;
         }
+    }
+
+    // ---- Suppress vanilla left-click while seated in a vehicle ---------------------------------------------------
+    // While aboard an MCHeli vehicle the left mouse button IS the weapon-fire control (read raw via GLFW in
+    // onClientTick, which does NOT go through the keybind/event path). Vanilla still treats that same click as
+    // "attack", so without this a pilot holding fire near terrain also mines blocks (instantly in creative) and
+    // swings at nearby mobs. We cancel BOTH vanilla left-click paths only while riding; normal play is untouched.
+
+    /** The initial attack keybind press (arm swing + start-mining + entity melee). */
+    @SubscribeEvent
+    public static void onAttackInput(InputEvent.InteractionKeyMappingTriggered event) {
+        if (event.isAttack() && ridingMchVehicle()) {
+            event.setSwingHand(false);
+            event.setCanceled(true);
+        }
+    }
+
+    /** Held / creative-instant block breaking is driven through this event (from MultiPlayerGameMode.startDestroyBlock),
+     *  which the attack-key cancel above does not cover. Dist.CLIENT subscriber, so this only cancels the local player. */
+    @SubscribeEvent
+    public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
+        if (ridingMchVehicle()) {
+            event.setCanceled(true);
+        }
+    }
+
+    private static boolean ridingMchVehicle() {
+        Minecraft mc = Minecraft.getInstance();
+        return mc.player != null
+            && mc.player.getVehicle() instanceof mcheli.dependent.entity.AbstractMchVehicle;
     }
 }

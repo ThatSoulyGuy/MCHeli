@@ -58,6 +58,7 @@ public final class MchClientRotation {
     private static void doRotation(Minecraft mc, float pt) {
         Entity vehicle = mc.player.getVehicle();
         if (!(vehicle instanceof AbstractMchVehicle v)) {
+            MchFreeLook.clear(); // dismounted -> free-look must not survive onto the next vehicle/rider
             reset();
             return;
         }
@@ -81,6 +82,7 @@ public final class MchClientRotation {
         }
         // Only the PILOT flies: a gunner keeps free vanilla look (within their clamps) and never drives the hull.
         if (!v.supportsMouseRotation() || v.pilot() != mc.player) {
+            MchFreeLook.clear(); // no longer the pilot of a mouse-flown aircraft -> drop pilot free-look
             reset();
             return;
         }
@@ -105,6 +107,23 @@ public final class MchClientRotation {
             v.applyClientRotation(new ControlInput(0, 0, 0, 0,
                 mc.options.keyUp.isDown(), mc.options.keyDown.isDown(),
                 mc.options.keyLeft.isDown(), mc.options.keyRight.isDown(), false, false, false, false, false, pt));
+            return;
+        }
+
+        // FREE-LOOK: the pilot sweeps the camera/head around the cockpit while the airframe HOLDS its heading (the
+        // reference isFreeLookMode). Zero the virtual stick so the mouse no longer steers, and pass freeLook=true so
+        // RotationSolver DROPS the stick but still runs onUpdateAngles (auto-level, A/D air-bank, plane ground-yaw) —
+        // the hull holds its heading. Crucially, do NOT lockCamera: vanilla mouse-look then turns the player's head
+        // freely. Forcing lastVehicleId=-1 makes the frame AFTER free-look is released take the reseed branch below,
+        // which zeros the stick and re-welds the camera to the hull with no spurious delta — the reference instant
+        // snap-back. Ownership stays true (set above), so this frame's held heading still ships to the server.
+        if (MchFreeLook.active()) {
+            stickX = 0.0;
+            stickY = 0.0;
+            v.applyClientRotation(new ControlInput(0, 0, 0, 0,
+                false, false, mc.options.keyLeft.isDown(), mc.options.keyRight.isDown(), false,
+                true, false, false, false, pt));
+            lastVehicleId = -1;
             return;
         }
 
@@ -213,6 +232,9 @@ public final class MchClientRotation {
         lastVehicleId = -1;
         stickX = 0.0;
         stickY = 0.0;
+        // NOTE: free-look is deliberately NOT cleared here. reset() also runs every frame a screen is open (see
+        // onRenderFrame), and the reference free-look persists across the pause/chat/inventory/resupply GUIs. It is
+        // cleared instead at the genuine "no longer a free-lookable pilot" exits in doRotation (dismount / lost seat).
     }
 
     // ---- HUD control-stick indicator ----

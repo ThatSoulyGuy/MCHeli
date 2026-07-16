@@ -31,6 +31,7 @@
   "heli_k": { "sounds": [ { "name": "mcheli:heli_k", "stream": false } ] },
   "helidmg": { "sounds": [ { "name": "mcheli:helidmg", "stream": false } ] },
   "hit": { "sounds": [ { "name": "mcheli:hit", "stream": false } ] },
+  "lau-68_snd": { "sounds": [ { "name": "mcheli:rocket_snd", "stream": false } ] },
   "locked": { "sounds": [ { "name": "mcheli:locked", "stream": false } ] },
   "lockon": { "sounds": [ { "name": "mcheli:lockon", "stream": false } ] },
   "mbt_run": { "sounds": [ { "name": "mcheli:mbt_run", "stream": false } ] },

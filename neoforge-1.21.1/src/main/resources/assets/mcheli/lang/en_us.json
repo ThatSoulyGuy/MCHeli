@@ -10,6 +10,12 @@
   "item.mcheli.fuel": "Fuel",
   "item.mcheli.wrench": "Wrench",
   "item.mcheli.container": "Cargo Container",
+  "entity.mcheli.helicopter": "Helicopter",
+  "entity.mcheli.plane": "Plane",
+  "entity.mcheli.tank": "Tank",
+  "entity.mcheli.vehicle": "Vehicle",
+  "entity.mcheli.demo_bullet": "Round",
+  "entity.mcheli.cartridge": "Cartridge",
   "entity.mcheli.container": "Cargo Container",
   "key.categories.mcheli": "MCHeli",
   "key.mcheli.gui": "Vehicle Menu",
@@ -19,5 +25,6 @@
   "key.mcheli.seat_prev": "Previous Seat",
   "key.mcheli.free_look": "Free Look (hold)",
   "key.mcheli.gunner_mode": "Toggle Gunner Mode",
-  "key.mcheli.zoom": "Gunner Zoom"
+  "key.mcheli.zoom": "Gunner Zoom",
+  "key.mcheli.free_look_toggle": "Free Look (toggle)"
 }

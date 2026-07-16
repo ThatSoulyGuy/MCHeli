@@ -221,6 +221,14 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     private float lastRiderPitch, prevLastRiderPitch;
     private boolean aimLatched;
 
+    // Turret slew (reference updateWeaponsRotation ±15°/tick): the shared turret ring EASES toward the operator's aim at
+    // a capped rate instead of snapping. Tracked in WORLD space (so a hull turn does not drag it — only a change in the
+    // operator's own look slews it), stepped once per tick on BOTH sides; turretOrbitYaw() derives the rel-hull angle.
+    // render, the rotSeat crew orbit, and the ring-mounted muzzle + shot all read that one angle, so they stay locked.
+    private static final float TURRET_SLEW_MAX = 15.0F;
+    private float turretSlewYaw, prevTurretSlewYaw;
+    private boolean turretSlewInit;
+
     /** Refresh the pilot-aim latch once per tick (call from the entity tick, both sides). */
     private void updateAimLatch() {
         Entity p = pilot();
@@ -234,6 +242,28 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             this.prevLastRiderYaw = this.lastRiderYaw;   // no pilot: HOLD the last aim (reference latch)
             this.prevLastRiderPitch = this.lastRiderPitch;
         }
+        updateTurretSlew();
+    }
+
+    /** Step the world-space turret yaw toward the operator's look by at most {@link #TURRET_SLEW_MAX}° this tick — the
+     *  reference {@code updateWeaponsRotation} rate cap. Runs both sides from the (synced) operator look, so the render
+     *  slew and the server's fire-time turret agree within a step. */
+    private void updateTurretSlew() {
+        float target = this.aimLatched ? this.lastRiderYaw : this.getYRot(); // operator world look, else hull-forward
+        if (!this.turretSlewInit) {
+            this.turretSlewYaw = this.prevTurretSlewYaw = Mth.wrapDegrees(target); // snap on the first tick (no start jerk)
+            this.turretSlewInit = true;
+            return;
+        }
+        this.prevTurretSlewYaw = this.turretSlewYaw;
+        float diff = Mth.wrapDegrees(target - this.turretSlewYaw);
+        if (diff > TURRET_SLEW_MAX) {
+            this.turretSlewYaw = Mth.wrapDegrees(this.turretSlewYaw + TURRET_SLEW_MAX);
+        } else if (diff < -TURRET_SLEW_MAX) {
+            this.turretSlewYaw = Mth.wrapDegrees(this.turretSlewYaw - TURRET_SLEW_MAX);
+        } else {
+            this.turretSlewYaw = Mth.wrapDegrees(target);
+        }
     }
 
     public boolean hasAimLatch() { return this.aimLatched; }
@@ -244,24 +274,15 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
      * or a crewed tank shears: seat, turret mesh and camera would each follow a different angle.
      */
     public float turretOrbitYaw(float partialTick) {
-        Entity p = pilot();
-        if (p != null) {
-            // LIVE, render-time sample — the same clock the weapons' own aim uses (op.getYRot()), so the ring, the
-            // rotSeat crew seats and each gun all agree within a frame. Sampling the ring from the TICK latch while the
-            // guns read the live body yaw detached the guns from the turret they ride.
-            //   BODY yaw (getYRot()), NOT head yaw (getYHeadRot()): the reference reads the rider's rotationYaw
-            // (MCH_EntityAircraft:1488 lastRiderYaw = e.rotationYaw), and only rotationYaw is synced to the server —
-            // a passenger's move packet runs absMoveTo, which sets getYRot() but leaves yHeadRot stale server-side.
-            float hy = p.getYRot();
-            float hyO = p.yRotO;
-            return shortLerpDeg(Mth.wrapDegrees(hy - this.getYRot()),
-                Mth.wrapDegrees(hyO - this.yRotO), partialTick);
+        if (!this.turretSlewInit) {
+            return 0.0F; // never ticked -> hull-forward
         }
-        if (!this.aimLatched) {
-            return 0.0F;
-        }
-        return shortLerpDeg(Mth.wrapDegrees(this.lastRiderYaw - this.getYRot()),
-            Mth.wrapDegrees(this.prevLastRiderYaw - this.yRotO), partialTick); // no pilot: HOLD the last aim
+        // The rate-limited world-space turret yaw (updateTurretSlew), render-interpolated, expressed relative to the
+        // interpolated hull. Deriving rel-hull here (rather than slewing a rel-hull value) keeps a hull turn from
+        // dragging the turret: the world slew target is the operator's look, unaffected by the hull spinning under it.
+        float worldYaw = shortLerpDeg(this.turretSlewYaw, this.prevTurretSlewYaw, partialTick);
+        float hullYaw = Mth.rotLerp(partialTick, this.yRotO, this.getYRot());
+        return Mth.wrapDegrees(worldYaw - hullYaw);
     }
 
     /** The pilot's look PITCH (absolute) — live while piloted, latched after dismount. The emplacement/turret elevation. */
@@ -2318,7 +2339,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         // where a passenger's rotation arrives via {@code ServerboundMovePlayerPacket.Rot} → {@code absMoveTo}, which
         // sets {@code getYRot()}/{@code getXRot()} but NEVER {@code yHeadRot}.
         {
-            float relYaw = Mth.wrapDegrees(shooter.getYRot() - hullYaw);
+            // A ring-mounted gun fires along the RATE-LIMITED turret (the same slewed angle its muzzle orbits by below),
+            // so the shot leaves the barrel instead of the operator's instant look; a fixed gun still tracks the look.
+            float relYaw = mount.turret
+                ? turretOrbitYaw(1.0F)
+                : Mth.wrapDegrees(shooter.getYRot() - hullYaw);
             float relPitch = Mth.wrapDegrees(shooter.getXRot() - hullPitch);
             boolean finiteYaw = Math.abs((int) mount.minYaw) < 360 && Math.abs((int) mount.maxYaw) < 360;
             if (finiteYaw) {

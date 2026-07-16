@@ -89,6 +89,10 @@ public final class MchHudVarState implements HudState {
             // (reference MCH_HudItem.updateVarMap). Genuinely-unported subsystems (vtol_stat, auto_pilot, free_look,
             // radar, tv-missile) stay 0, so their blocks cleanly stay hidden until those features land.
             case "cam_zoom" -> mcheli.dependent.client.MchGunnerView.currentZoom();
+            // FREE LOOK cue (reference MCH_HudItem.getFreeLook, pilot-only): lit while the pilot is free-looking, or on
+            // a permanently-free-look ground vehicle (locksViewToVehicle()==false, the reference defaultFreelook case).
+            case "free_look" -> this.vehicle.seatIndexOf(this.player) == 0
+                && (mcheli.dependent.client.MchFreeLook.active() || !this.vehicle.locksViewToVehicle()) ? 1.0 : 0.0;
             case "gunner_mode" -> this.vehicle.isSeatGunnerMode(Math.max(0, this.vehicle.seatIndexOf(this.player)))
                 ? 1.0 : 0.0;
             // Entity radar: have_radar gates the whole dial block; radar_rot spins the sweep line (interpolated).

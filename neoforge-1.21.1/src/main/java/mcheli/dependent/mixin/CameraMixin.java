@@ -56,8 +56,10 @@ public abstract class CameraMixin {
         // (else the gun tracks the mouse but the view stays frozen, the Apache-gunner bug). firstPersonEye already
         // detaches their eye POSITION to the gun-sight camera; this keeps the ROTATION theirs too.
         int camSeat = v.seatIndexOf(cam);
+        // ...and NOT while the pilot is free-looking: the mouse then sweeps the head, so the camera must follow the
+        // player's own look (the cameraRollFade branch below applies the correct cos-faded bank) instead of the hull.
         boolean locked = v.supportsMouseRotation() && v.locksViewToVehicle()
-            && camSeat == 0 && !v.isSeatGunnerMode(0);
+            && camSeat == 0 && !v.isSeatGunnerMode(0) && !mcheli.dependent.client.MchFreeLook.active();
         float hullYaw = Mth.rotLerp(partialTick, v.yRotO, v.getYRot());
         float hullRoll = mcheli$shortLerp(v.getRollAngle(), v.getPrevRollAngle(), partialTick);
 

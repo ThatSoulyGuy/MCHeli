@@ -43,6 +43,9 @@ public final class MchKeybinds {
     public static final KeyMapping FREE_LOOK = key("free_look", org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_ALT);
     public static final KeyMapping GUNNER_MODE = key("gunner_mode", org.lwjgl.glfw.GLFW.GLFW_KEY_R);
     public static final KeyMapping ZOOM = key("zoom", org.lwjgl.glfw.GLFW.GLFW_KEY_C);
+    /** Pilot free-look TOGGLE (default M) — the reference KeyFreeLook edge toggle. Distinct from {@link #FREE_LOOK}
+     *  (LEFT ALT), which stays purely the held seat-switch modifier, so the two roles never collide. */
+    public static final KeyMapping FREE_LOOK_TOGGLE = key("free_look_toggle", org.lwjgl.glfw.GLFW.GLFW_KEY_M);
 
     /** Client debounce: ticks left before another gunner-mode toggle may be sent (blocks a double-tap double-send). */
     private static int gunnerToggleCooldown;
@@ -59,6 +62,7 @@ public final class MchKeybinds {
         event.register(FREE_LOOK);
         event.register(GUNNER_MODE);
         event.register(ZOOM);
+        event.register(FREE_LOOK_TOGGLE);
     }
 
     @SubscribeEvent
@@ -70,6 +74,7 @@ public final class MchKeybinds {
         boolean prev = drain(SEAT_PREV);
         boolean gunnerToggle = drain(GUNNER_MODE);
         boolean zoom = drain(ZOOM);
+        boolean freeLookToggle = drain(FREE_LOOK_TOGGLE);
         if (gunnerToggleCooldown > 0) {
             gunnerToggleCooldown--; // tick down every client frame, even off a vehicle
         }
@@ -78,6 +83,13 @@ public final class MchKeybinds {
         }
         int seat = v.seatIndexOf(mc.player);
         boolean pilot = seat == 0;
+
+        // Free-look toggle (the port's canSwitchFreeLook analogue): only the pilot of a mouse-flown, view-locked
+        // aircraft — inert on tanks/emplacements (locksViewToVehicle() == false, already permanently free-look) and on
+        // non-pilots (gunners already free-look). Client-only view state; the airframe rotation is client-authoritative.
+        if (freeLookToggle && pilot && v.supportsMouseRotation() && v.locksViewToVehicle()) {
+            MchFreeLook.toggle();
+        }
         boolean freeLook = FREE_LOOK.isDown(); // held modifier, not edge-triggered
 
         // The reference KeySwitchMode state machine (MCP_ClientPlaneTickHandler:148-168): one key walks the pilot through
