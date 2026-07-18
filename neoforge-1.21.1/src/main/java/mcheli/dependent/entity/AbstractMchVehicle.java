@@ -94,6 +94,9 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     /** Barrel heat 0..1 of the selected weapon (synced for the HUD overheat gauge); 1 == overheated (fire locked out). */
     private static final EntityDataAccessor<Float> DATA_HEAT =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.FLOAT);
+    /** Flare dispenser state (synced for the HUD {@code can_flare} cue): 0 = idle/ready, 1 = a dispense window runs. */
+    private static final EntityDataAccessor<Byte> DATA_FLARE_STATE =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.BYTE);
     /** Recoil trigger: bumped once per shot of a weapon with config {@code Recoil > 0}. A client watches it for a rising
      *  edge and runs its own 30-tick kick from {@link #DATA_RECOIL_VALUE}/{@link #DATA_RECOIL_YAW} (reference recoilCount). */
     private static final EntityDataAccessor<Integer> DATA_RECOIL_SEQ =
@@ -725,6 +728,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_SIM_THROTTLE, 0.0F);
         builder.define(DATA_SKIN, 0);
         builder.define(DATA_GEAR, 0.0F);
+        builder.define(DATA_FLARE_STATE, (byte) 0);
         builder.define(DATA_GUNNER_MODE, false);
         builder.define(DATA_WEAPON, -1);
         builder.define(DATA_AMMO, -1);
@@ -769,6 +773,8 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         this.minYResolved = false;
         this.hideGmGroups = null;
         this.viewCameraId = 0; // a different config may have fewer camera positions — fall back to the default eye
+        this.flareInfo.reset();       // a different config may declare different flare types
+        this.currentFlareIndex = 0;
         onConfigChanged();
     }
 
@@ -881,6 +887,12 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             case ROCKET -> 1;
             default -> 0;
         };
+    }
+
+    /** CLIENT: the LOCAL player's selected weapon config (for the lock-on tracker), or null if no weapon selected. */
+    public MCH_WeaponInfo selectedClientWeaponInfo() {
+        WeaponSlot slot = selectedHudSlot();
+        return slot != null ? slot.info : null;
     }
 
     /** The selected weapon's {@code DisplayMortarDistance} config flag — gates the HUD {@code mortar} range readout. */
@@ -1506,6 +1518,114 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
         // Weapons: config-driven loadout (built lazily), cycled by the switch payload and fired while held.
         tickWeapons();
+
+        // Flares/countermeasures: advance the dispense window, eject volleys, and decoy any missiles homing on us.
+        tickFlares();
+    }
+
+    // ---- flares / countermeasures (#26) — server-authoritative dispenser + missile decoy ----
+
+    private final mcheli.agnostic.aircraft.MCH_FlareInfo flareInfo = new mcheli.agnostic.aircraft.MCH_FlareInfo();
+    private int currentFlareIndex; // which of the config's flare.types[] the next press dispenses
+
+    /** This vehicle's config declares flares (reference {@code haveFlare}: FlareType set). */
+    public boolean haveFlare() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null && info.haveFlare();
+    }
+
+    /** The decoy-active burn window is open (reference {@code isFlareUsing}). */
+    public boolean isFlareUsing() { return this.flareInfo.isUsing(); }
+
+    /** Ready to dispense (has flares + the dispenser is idle). */
+    public boolean canDeployFlare() { return haveFlare() && this.flareInfo.canUseFlare(); }
+
+    /** HUD cooldown fraction 1..0 while a dispense window runs. */
+    public float flareCooldownFraction() { return this.flareInfo.cooldownFraction(); }
+
+    /** True if the flare dispenser is idle/ready — reads the SYNCED state, so it is correct on the client (the
+     *  {@link #flareInfo} itself is only ticked server-side). */
+    public boolean flareDispenserIdle() { return this.entityData.get(DATA_FLARE_STATE) == 0; }
+
+    /** The flare type the next dispense will use (cycles the config's {@code FlareType} list). */
+    public int currentFlareType() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null || info.flare.types.length == 0) {
+            return 1;
+        }
+        return info.flare.types[Math.floorMod(this.currentFlareIndex, info.flare.types.length)];
+    }
+
+    /** Advance to the next configured flare type (reference {@code nextFlareType}). */
+    public void nextFlareType() { this.currentFlareIndex++; }
+
+    /** Begin a dispense of {@code type} (server-side; reference {@code useFlare}). */
+    public void deployFlare(int type) { this.flareInfo.use(type); }
+
+    /** Server tick: step the dispense schedule, eject each due volley, then run the missile decoy while flaring. */
+    private void tickFlares() {
+        if (this.level().isClientSide || !haveFlare()) {
+            return;
+        }
+        this.flareInfo.tickDown();
+        // ONE volley per qualifying tick (reference MCH_Flare.update uses an `if`, not a loop): tick is only stepped
+        // by tickDown() above, so a `while` here would dump the WHOLE flare complement in a single tick instead of
+        // streaming it across the window.
+        if (this.flareInfo.shouldSpawnVolley()) {
+            spawnFlareVolley();
+            this.flareInfo.onVolleySpawned();
+        }
+        this.entityData.set(DATA_FLARE_STATE, (byte) (this.flareInfo.isPreparing() ? 1 : 0)); // sync the HUD cue
+        // Decoy (reference MCH_MissileDetector.destroyMissile): while the burn window is active, null the target of
+        // every guided round homing on us within SEARCH_RANGE and discard it (tickGuidance would self-discard on the
+        // nulled target next tick; the explicit discard matches the reference for immediacy).
+        if (this.flareInfo.isUsing() && !isDestroyed()) {
+            double r = mcheli.agnostic.aircraft.MCH_FlareInfo.SEARCH_RANGE;
+            AABB box = this.getBoundingBox().inflate(r, r, r);
+            for (MchBullet b : this.level().getEntitiesOfClass(MchBullet.class, box)) {
+                if (b.isGuided() && b.isHomingOn(this)) {
+                    b.decoyClear();
+                    b.discard();
+                }
+            }
+        }
+    }
+
+    /** Eject one volley of {@code num} flares from the config {@code FlareOption} point, behind + below the hull, with
+     *  the per-type spread velocity (reference {@code MCH_Flare.spawnFlare}). */
+    private void spawnFlareVolley() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null) {
+            return;
+        }
+        int type = this.flareInfo.flareType();
+        int num = this.flareInfo.volleyNum();
+        int fuse = this.flareInfo.fuseCount();
+        boolean floaty = mcheli.agnostic.aircraft.MCH_FlareInfo.isFloatyType(type);
+
+        // Emit point = FlareOption offset (model space) rotated by the hull, at the vehicle position.
+        float hullYaw = Mth.rotLerp(1.0F, this.yRotO, getYRot());
+        float roll = getRollAngle();
+        org.joml.Quaternionf qHull = new org.joml.Quaternionf()
+            .rotateY((float) Math.toRadians(-hullYaw))
+            .rotateX((float) Math.toRadians(getXRot()))
+            .rotateZ((float) Math.toRadians(roll));
+        org.joml.Vector3f fpos = new org.joml.Vector3f(
+            (float) info.flare.pos.x(), (float) info.flare.pos.y(), (float) info.flare.pos.z());
+        qHull.transform(fpos);
+        Vec3 mot = this.getDeltaMovement();
+        double baseX = this.getX() + fpos.x - mot.x * 2.0;
+        double baseY = this.getY() + fpos.y - mot.y * 2.0 - 1.0 + (type == 10 ? 2.0 : 0.0);
+        double baseZ = this.getZ() + fpos.z - mot.z * 2.0;
+
+        for (int i = 0; i < num; i++) {
+            double[] v = mcheli.agnostic.aircraft.MCH_FlareInfo.volleyMotion(type, i, num, mot.x, mot.y, mot.z,
+                hullYaw, this.random.nextFloat(), this.random.nextFloat(), this.random.nextFloat());
+            MchFlare.spawn(this.level(), new Vec3(baseX, baseY, baseZ), new Vec3(v[0], v[1], v[2]), fuse, floaty);
+        }
+        // Dispense report (reference plays random.click on use + an aux pop per volley).
+        this.level().playSound(null, baseX, baseY, baseZ, net.minecraft.sounds.SoundEvents.FIRECHARGE_USE,
+            SoundSource.NEUTRAL, 0.6F, 1.4F);
     }
 
     // ---- config-driven weapons ----
@@ -2310,6 +2430,22 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         } else {
             return;
         }
+        // Guided missiles (AA/AT) require a COMPLETED lock: the operator's client resolves the lock and ships the
+        // target entity id (controlState.lockTargetId). Resolve + validate it here BEFORE consuming ammo — with no
+        // valid live target the weapon does not fire (faithful to the reference shot() returning false pre-lock).
+        String preType = slot.info.type == null ? "" : slot.info.type.toLowerCase();
+        boolean guided = preType.equals("aamissile") || preType.equals("atmissile");
+        Entity guidedTarget = null;
+        byte guidedKind = MchBullet.GUIDED_NONE;
+        if (guided) {
+            int tid = controlState(seat).lockTargetId;
+            Entity t = tid >= 0 ? this.level().getEntity(tid) : null;
+            if (t == null || !t.isAlive() || t == this || this.getPassengers().contains(t)) {
+                return; // no valid lock → hold fire (do not consume ammo)
+            }
+            guidedTarget = t;
+            guidedKind = preType.equals("aamissile") ? MchBullet.GUIDED_AA : MchBullet.GUIDED_AT_DIRECT;
+        }
         boolean creative = shooter instanceof Player pl && pl.getAbilities().instabuild;
         MCH_AircraftInfo.Weapon mount = slot.fireOneShot(creative);
         MCH_WeaponInfo wi = slot.info;
@@ -2399,7 +2535,18 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             ? wi.bulletModelName : MCH_WeaponBallistics.defaultBulletModel(wi.type);
         int color = packColor(wi.color);
 
-        MchBullet.spawnWeapon(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600, this, model, color, wi);
+        if (preType.equals("bomb")) {
+            // A bomb is RELEASED at the aircraft's own velocity (reference MCH_WeaponBomb.shot overwrites the round's
+            // motion with the carrier's), NOT fired forward at muzzle speed — config gravity (auto -0.03) carries it
+            // down. Longer life than guns so a high-altitude release reaches the ground.
+            MchBullet.spawnDropped(this.level(), muzzle, this.getDeltaMovement(), gravity, wi.power, 1200, this,
+                model, color, wi);
+        } else if (guidedKind != MchBullet.GUIDED_NONE) {
+            MchBullet.spawnGuided(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600, this, model,
+                color, wi, guidedTarget, guidedKind);
+        } else {
+            MchBullet.spawnWeapon(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600, this, model, color, wi);
+        }
 
         // Report: the weapon's own sound at its configured volume, with the reference pitch jitter.
         SoundEvent report = MchSounds.byName(wi.soundFileName);

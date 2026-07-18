@@ -104,6 +104,13 @@ public final class MchHudVarState implements HudState {
             case "wpn_heat" -> this.vehicle.getSelectedHeat();
             // Selected-weapon aiming reticle: 1 = rocket/gun move-sight, 2 = lock-on missile sight (drives hud/sight.txt).
             case "sight_type" -> this.vehicle.selectedWeaponSightType();
+            // Missile lock-on progress 0..1 for the sight.txt lock reticle (fills + tints red at 1). Client-side lock
+            // state (reference lock resolves on the client); only meaningful for a lock-on sight (sight_type==2).
+            case "lock" -> mcheli.dependent.client.MchLockTracker.progress();
+            // Flares/countermeasures: have_flare lights the cue for a flare-equipped aircraft; can_flare dims it while a
+            // dispense window is running (synced), matching the reference MCH_HudItem have_flare/can_flare vars.
+            case "have_flare" -> this.vehicle.haveFlare() ? 1.0 : 0.0;
+            case "can_flare" -> this.vehicle.haveFlare() && this.vehicle.flareDispenserIdle() ? 1.0 : 0.0;
             // Mortar range readout gate (config DisplayMortarDistance); mt_dist (the ballistic range) is unported -> 0,
             // so hud/mortar.txt shows "DIST = ----" for a mortar weapon rather than a bogus number.
             case "dsp_mt_dist" -> this.vehicle.selectedWeaponDisplaysMortarDist() ? 1.0 : 0.0;
@@ -111,6 +118,9 @@ public final class MchHudVarState implements HudState {
             // holds a straight course while the pilot aims) — MCP_EntityPlane + getIsGunnerMode.
             case "auto_pilot" -> this.vehicle instanceof mcheli.dependent.entity.MchPlane
                 && this.vehicle.isSeatGunnerMode(0) ? 1.0 : 0.0;
+            // VTOL nozzle mode (reference MCH_HudItem getVtolMode): 0 = forward, 1 = transition, 2 = full hover — the
+            // Harrier/F-35 HUD keys its VTOL block off this. Synced via the derived nozzle angle; 0 for non-planes.
+            case "vtol_stat" -> this.vehicle instanceof mcheli.dependent.entity.MchPlane p ? p.getVtolMode() : 0.0;
             // HP bar: hp/max_hp raw values; hp_rto 0..1 drives the bar width + colour threshold (reference MCH_HudItem).
             case "hp" -> this.vehicle.getHp();
             case "max_hp" -> this.vehicle.getMaxHp();

@@ -35,8 +35,9 @@ public final class DemoPlaneState implements PlaneState {
     @Override public boolean isCanopyClose() { return true; }     // partCanopy == null
     @Override public void switchGunnerMode(boolean on) { /* authoritative toggle lives on the entity */ }
 
-    @Override public float getNozzleRotation() { return 0.0F; }   // partNozzle == null -> level thrust
-    @Override public int getVtolMode() { return 0; }              // nozzle rotation <= 0.005 -> mode 0
+    // VTOL (#28): the nozzle ramp + mode live on the entity (MchPlane); a non-plane owner keeps the fixed-wing defaults.
+    @Override public float getNozzleRotation() { return this.owner instanceof MchPlane p ? p.getNozzleRotation() : 0.0F; }
+    @Override public int getVtolMode() { return this.owner instanceof MchPlane p ? p.getVtolMode() : 0; }
     @Override public boolean hasVariableSweepPart() { return false; }
     @Override public float sweepPartFactor() { return 0.0F; }     // unused while hasVariableSweepPart() == false
 }

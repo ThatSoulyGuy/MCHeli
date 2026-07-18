@@ -51,6 +51,17 @@ public class MCHeli {
         if (!FMLEnvironment.production) {
             // Flight-physics proof: the heli generates collective lift and climbs (vs the vehicle, which falls).
             //NeoForge.EVENT_BUS.register(new DemoHeliSelfTest());
+            //// Guided-missile homing proof (#25): a guided AA round curves onto an off-axis target + detonates, while
+            //// an unguided control flies straight past (server-side; the client lock UI is verified in a live client).
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHomingSelfTest());
+            //// VTOL proof (#28): a Harrier engages VTOL (nozzle 0->90, mode 0->1->2) + decelerates to a near-hover
+            //// (speed 0.04 vs a conventional 0.96) while nearly holding altitude.
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoVtolSelfTest());
+            //// Bomb release proof (#27): a b29-type bomb is selectable, dropped at hull velocity, falls + detonates.
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoBombSelfTest());
+            //// Flare decoy proof (#26): a flaring aircraft nulls+kills a guided round homing on it at range;
+            //// an unguided control is untouched; 32 flares spawn.
+            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoFlareSelfTest());
             //// Forward-thrust proofs: the plane and tank fly/drive forward under rider-gated thrust and stay aloft
             //// (vs a pilotless copy that free-falls). Distinct X columns, both at y+90 so the pilotless fall clears.
             //NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.PLANE, "a-10", 6.0, 11.0, 90.0, 5.0, 20.0));

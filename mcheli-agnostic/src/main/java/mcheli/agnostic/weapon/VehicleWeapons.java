@@ -229,6 +229,7 @@ public final class VehicleWeapons {
             case "asmissile":
             case "atmissile":
             case "tvmissile":
+            case "bomb": // dropped munition — released at hull velocity + config gravity (fireSelectedWeapon bomb branch)
                 return true;
             default:
                 return false;

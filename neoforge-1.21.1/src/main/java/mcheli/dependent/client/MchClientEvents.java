@@ -33,6 +33,7 @@ public final class MchClientEvents {
         event.registerEntityRenderer(MchRegistries.DEMO_BULLET.get(), MchBulletRenderer::new);
         event.registerEntityRenderer(MchRegistries.CARTRIDGE.get(), MchCartridgeRenderer::new);
         event.registerEntityRenderer(MchRegistries.CONTAINER.get(), MchContainerRenderer::new);
+        event.registerEntityRenderer(MchRegistries.FLARE.get(), MchFlareRenderer::new);
     }
 
     /** The riding GUI (fuel slots + reload) — bound to the menu type registered in {@link MchRegistries}. */

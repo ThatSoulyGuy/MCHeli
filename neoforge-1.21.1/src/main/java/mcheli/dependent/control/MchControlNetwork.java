@@ -40,5 +40,13 @@ public final class MchControlNetwork {
             ServerboundFoldBladePayload.TYPE,
             ServerboundFoldBladePayload.STREAM_CODEC,
             ServerboundFoldBladePayload::handle);
+        registrar.playToServer(
+            ServerboundUseFlarePayload.TYPE,
+            ServerboundUseFlarePayload.STREAM_CODEC,
+            ServerboundUseFlarePayload::handle);
+        registrar.playToServer(
+            ServerboundVtolPayload.TYPE,
+            ServerboundVtolPayload.STREAM_CODEC,
+            ServerboundVtolPayload::handle);
     }
 }

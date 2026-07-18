@@ -92,6 +92,10 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
    public boolean fixCameraPitch;
    public float cameraRotationSpeedPitch;
    public int target;
+   /** Lock-on seeker head, reference {@code MCH_WeaponEntitySeeker} constants (missiles override the base 50/10). The
+    *  lock time itself is {@link #lockTime}; {@code lockCountMax} = lockTime (reference {@code MCH_WeaponCreator}). */
+   public double lockRange = 200.0;
+   public int lockAngle = 5;
    public int markTime;
    public float recoil;
    public String bulletModelName;
