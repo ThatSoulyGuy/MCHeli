@@ -49,6 +49,9 @@ public final class MchControlState {
     public boolean brake;
     /** Rider is holding the fire trigger this tick (dependent-side combat input; not part of the flight snapshot). */
     public boolean fire;
+    /** Entity id of the rider's currently COMPLETED missile lock (client resolves the lock; ships the id here for the
+     *  server to fire a guided round at). -1 == no lock. Not part of the flight snapshot. */
+    public int lockTargetId = -1;
 
     // --- mouse delta (per-frame averaged pointer motion) ---
     /** Averaged horizontal mouse delta for this frame (yaw, or roll outside flight-sim mode). */
@@ -102,6 +105,7 @@ public final class MchControlState {
      */
     public void clearMomentary() {
         throttleUp = throttleDown = moveLeft = moveRight = brake = fire = false;
+        lockTargetId = -1;
         deltaX = 0.0;
         deltaY = 0.0;
     }

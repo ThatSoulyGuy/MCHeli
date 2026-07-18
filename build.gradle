@@ -10,4 +10,4 @@
 // The original distributed mod jar is not committed; see mcheli-1.7.10/build.gradle (mcheliJar).
 
 group = 'mcheli'
-version = '1.0.3'
+version = '1.0.4'

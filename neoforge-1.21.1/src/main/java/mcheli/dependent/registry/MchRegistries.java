@@ -168,6 +168,13 @@ public final class MchRegistries {
             EntityType.Builder.<MchCartridge>of(MchCartridge::new, MobCategory.MISC)
                 .sized(0.15F, 0.15F).clientTrackingRange(4).updateInterval(3).noSave().noSummon().build("cartridge"));
 
+    /** A flare / countermeasure decoy — cosmetic (server-authoritative), spawned in volleys by the dispenser. */
+    public static final Supplier<EntityType<mcheli.dependent.entity.MchFlare>> FLARE =
+        ENTITY_TYPES.register("flare", () ->
+            EntityType.Builder.<mcheli.dependent.entity.MchFlare>of(
+                    mcheli.dependent.entity.MchFlare::new, MobCategory.MISC)
+                .sized(0.2F, 0.2F).clientTrackingRange(6).updateInterval(1).noSave().noSummon().build("flare"));
+
     /** The cargo container — a placeable 54-slot storage entity (reference {@code MCH_EntityContainer}). */
     public static final Supplier<EntityType<mcheli.dependent.entity.MchContainer>> CONTAINER =
         ENTITY_TYPES.register("container", () ->

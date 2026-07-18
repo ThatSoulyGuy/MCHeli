@@ -20,7 +20,7 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * <p>Rotation is NOT carried here — exactly as in the reference, where orientation travels on a separate packet
  * (client-authoritative yaw/pitch/roll). This packet is only the momentary control-flag bitset.
  */
-public record ServerboundControlPayload(int vehicleId, int bits) implements CustomPacketPayload {
+public record ServerboundControlPayload(int vehicleId, int bits, int lockTargetId) implements CustomPacketPayload {
 
     // Control-flag bits (mirror the reference bitfield's movement/brake flags; mode toggles added as ported).
     public static final int THROTTLE_UP   = 1 << 0;
@@ -38,6 +38,7 @@ public record ServerboundControlPayload(int vehicleId, int bits) implements Cust
         StreamCodec.composite(
             ByteBufCodecs.VAR_INT, ServerboundControlPayload::vehicleId,
             ByteBufCodecs.VAR_INT, ServerboundControlPayload::bits,
+            ByteBufCodecs.VAR_INT, ServerboundControlPayload::lockTargetId,
             ServerboundControlPayload::new);
 
     @Override
@@ -75,6 +76,9 @@ public record ServerboundControlPayload(int vehicleId, int bits) implements Cust
                 s.brake        = pilot && (b & BRAKE)         != 0;
                 s.freeLook     = (b & FREE_LOOK)     != 0;
                 s.fire         = (b & FIRE)          != 0;
+                // The client only ships a non-negative id once its missile lock is COMPLETE; the fire path re-resolves
+                // and re-validates it (alive, not self/passenger) before homing, so storing it raw here is safe.
+                s.lockTargetId = p.lockTargetId();
             }
         });
     }

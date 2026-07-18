@@ -34,6 +34,7 @@ public final class MchClientInput {
 
     private static int lastBits = -1;
     private static int lastVehicleId = -1;
+    private static int lastLockTargetId = -1;
     private static int keepalive;
     // Weapon-switch is edge-triggered: remember the switch key's last state so we send ONE cycle per press.
     private static boolean switchKeyWasDown;
@@ -71,11 +72,13 @@ public final class MchClientInput {
             // that same check — harmless; there the entity's clearMomentary() is the authoritative reset.)
             if (lastVehicleId != -1) {
                 if (mc.player != null) {
-                    PacketDistributor.sendToServer(new ServerboundControlPayload(lastVehicleId, 0));
+                    PacketDistributor.sendToServer(new ServerboundControlPayload(lastVehicleId, 0, -1));
                 }
                 lastVehicleId = -1;
                 lastBits = -1;
+                lastLockTargetId = -1;
             }
+            MchLockTracker.clear(); // GUI open / dismounted → drop any in-progress lock
             return;
         }
 
@@ -93,18 +96,36 @@ public final class MchClientInput {
         if (MchFreeLook.active()) bits |= ServerboundControlPayload.FREE_LOOK;
         // Raw left-mouse-button state — reliable while riding (vanilla attack handling can consume keyAttack). Gated
         // by 'controlling' above (no GUI, mouse grabbed), so it only reads while actually piloting.
-        if (armed && org.lwjgl.glfw.GLFW.glfwGetMouseButton(
-                mc.getWindow().getWindow(), org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS) {
+        boolean fireHeld = armed && org.lwjgl.glfw.GLFW.glfwGetMouseButton(
+                mc.getWindow().getWindow(), org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_LEFT) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+        if (fireHeld) {
             bits |= ServerboundControlPayload.FIRE;
+        }
+
+        // Missile lock-on: drive the client lock state machine for the local operator's selected weapon (it only ramps
+        // while fire is held + a lock-on weapon is selected), then ship the COMPLETED-lock target id so the server can
+        // fire a guided round at it. The lock resolves client-side (reference + client-authoritative rotation).
+        // KNOWN LIMITATION: selectedClientWeaponInfo()/getSelectedWeaponIndex() read the seat-0 (pilot) synced weapon —
+        // the port does not sync per-seat weapon selection to clients (the cockpit HUD sight_type shares this gap). So
+        // a GUNNER-operated guided launcher can't build its own lock until per-seat selection is synced; pilot-fired
+        // guided missiles (the common case) work correctly.
+        int lockTargetId = -1;
+        if (vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle amv && mc.player != null) {
+            int seat = amv.seatIndexOf(mc.player);
+            int wIdx = amv.getSelectedWeaponIndex();
+            mcheli.agnostic.weapon.MCH_WeaponInfo wi = amv.selectedClientWeaponInfo();
+            MchLockTracker.tick(amv, seat, wIdx, wi, fireHeld);
+            lockTargetId = fireHeld ? MchLockTracker.completeTargetId() : -1;
         }
 
         int vid = vehicle.getId();
         keepalive++;
-        // Send on change (bits or target vehicle), plus a ~5-second keepalive to recover from any missed packet.
-        if (bits != lastBits || vid != lastVehicleId || keepalive % 100 == 0) {
-            PacketDistributor.sendToServer(new ServerboundControlPayload(vid, bits));
+        // Send on change (bits, target vehicle, or lock target), plus a ~5-second keepalive to recover a missed packet.
+        if (bits != lastBits || vid != lastVehicleId || lockTargetId != lastLockTargetId || keepalive % 100 == 0) {
+            PacketDistributor.sendToServer(new ServerboundControlPayload(vid, bits, lockTargetId));
             lastBits = bits;
             lastVehicleId = vid;
+            lastLockTargetId = lockTargetId;
         }
     }
 

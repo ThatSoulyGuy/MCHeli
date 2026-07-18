@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import mcheli.MCHeli;
 import mcheli.dependent.control.ServerboundFoldBladePayload;
 import mcheli.dependent.control.ServerboundGunnerModePayload;
+import mcheli.dependent.control.ServerboundUseFlarePayload;
 import mcheli.dependent.control.ServerboundSeatSwitchPayload;
 import mcheli.dependent.control.ServerboundVehicleGuiPayload;
 import mcheli.dependent.entity.AbstractMchVehicle;
@@ -46,6 +47,7 @@ public final class MchKeybinds {
     /** Pilot free-look TOGGLE (default M) — the reference KeyFreeLook edge toggle. Distinct from {@link #FREE_LOOK}
      *  (LEFT ALT), which stays purely the held seat-switch modifier, so the two roles never collide. */
     public static final KeyMapping FREE_LOOK_TOGGLE = key("free_look_toggle", org.lwjgl.glfw.GLFW.GLFW_KEY_M);
+    public static final KeyMapping FLARE = key("flare", org.lwjgl.glfw.GLFW.GLFW_KEY_V);
 
     /** Client debounce: ticks left before another gunner-mode toggle may be sent (blocks a double-tap double-send). */
     private static int gunnerToggleCooldown;
@@ -63,6 +65,7 @@ public final class MchKeybinds {
         event.register(GUNNER_MODE);
         event.register(ZOOM);
         event.register(FREE_LOOK_TOGGLE);
+        event.register(FLARE);
     }
 
     @SubscribeEvent
@@ -75,6 +78,7 @@ public final class MchKeybinds {
         boolean gunnerToggle = drain(GUNNER_MODE);
         boolean zoom = drain(ZOOM);
         boolean freeLookToggle = drain(FREE_LOOK_TOGGLE);
+        boolean flare = drain(FLARE);
         if (gunnerToggleCooldown > 0) {
             gunnerToggleCooldown--; // tick down every client frame, even off a vehicle
         }
@@ -125,6 +129,13 @@ public final class MchKeybinds {
             MchGunnerView.stepZoom(v);
         }
 
+        // Flares/countermeasures (reference KeyFlare, seatId <= 1): the pilot or the co-pilot/gunner may dispense.
+        // Client pre-gate uses the SYNCED dispenser state (flareDispenserIdle) — canDeployFlare() reads the server-only
+        // flareInfo and would always read idle on the client — to avoid spamming during cooldown; server re-checks.
+        if (flare && seat >= 0 && seat <= 1 && v.haveFlare() && v.flareDispenserIdle()) {
+            PacketDistributor.sendToServer(new ServerboundUseFlarePayload(v.getId()));
+        }
+
         // Reference commonPlayerControl:66-93. FreeLook held turns the seat keys into "leave your seat":
         if (freeLook && (gui || prev)) {
             if (pilot) {
@@ -147,6 +158,9 @@ public final class MchKeybinds {
                 send(v, ServerboundSeatSwitchPayload.PREV);
             } else if (v instanceof MchHelicopter h && h.canSwitchFoldBlades()) {
                 PacketDistributor.sendToServer(new ServerboundFoldBladePayload(v.getId()));
+            } else if (v instanceof mcheli.dependent.entity.MchPlane p && p.canSwitchVtol()) {
+                // Reference shares KeyExtra between heli rotor-fold and plane VTOL — the pilot toggles the nozzle.
+                PacketDistributor.sendToServer(new mcheli.dependent.control.ServerboundVtolPayload(v.getId()));
             }
         }
     }
