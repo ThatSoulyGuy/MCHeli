@@ -24,9 +24,9 @@ import mcheli.dependent.entity.MchPlane;
 import mcheli.dependent.entity.MchTank;
 import mcheli.dependent.item.VehicleSpawnItem;
 import mcheli.dependent.particle.MuzzleFxOptions;
-import mcheli.dependent.port.NeoResourceSource;
 import net.minecraft.core.particles.ParticleType;
 import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.codec.StreamCodec;
@@ -113,27 +113,51 @@ public final class MchRegistries {
     /** Register one spawn item per bundled config, keyed by the config base-name (e.g. {@code ah-64}). Call from the
      *  MCHeli constructor BEFORE {@link #register}, so the DeferredRegister entries exist when the RegisterEvent fires. */
     public static void registerVehicles() {
-        NeoResourceSource res = new NeoResourceSource();
+        // The shared bundled+content-pack resource set (MchContentPacks.discover() runs first in the constructor), so
+        // pack config filenames mint spawn items here, in the same construction window as the bundled ones.
+        mcheli.agnostic.spi.ResourceSource res = mcheli.dependent.port.MchContentPacks.resources();
+        // The item-id namespace is SHARED: a config base-name becomes an item id, colliding with (a) a name already
+        // minted in another category, and (b) the non-vehicle items already registered (fuel/wrench/container/tab_*).
+        // A content pack ships ARBITRARY third-party filenames, so BOTH — plus an illegal/uppercase name — must be
+        // handled by skip+warn, never by letting the DeferredRegister throw out of the @Mod constructor (a hard crash).
+        java.util.Set<String> taken = new java.util.HashSet<>();
+        for (var h : ITEMS.getEntries()) {
+            taken.add(h.getId().getPath()); // reserved ids registered before this method runs
+        }
         for (Category cat : Category.values()) {
             List<String> names = new ArrayList<>();
             for (String file : res.list(cat.dir)) {
-                if (file.endsWith(".txt")) {
-                    names.add(file.substring(0, file.length() - 4));
+                if (!file.endsWith(".txt")) {
+                    continue;
                 }
+                // Lowercase to match the manager (MCH_InfoManagerBase lowercases the config name), so the item id, the
+                // synced config name, and infoFor() all agree — and an uppercase pack filename becomes a legal id.
+                String name = file.substring(0, file.length() - 4).toLowerCase(java.util.Locale.ROOT);
+                if (ResourceLocation.tryBuild(MCHeli.MODID, name) == null) {
+                    LOG.warn("MCHeli: skipping content-pack config '{}' in {} — illegal id (only [a-z0-9/._-] allowed)",
+                        file, cat.dir);
+                    continue;
+                }
+                names.add(name);
             }
             Collections.sort(names); // Files.list order is filesystem-dependent — sort for a stable menu
             List<DeferredItem<VehicleSpawnItem>> list = new ArrayList<>();
             for (String name : names) {
+                if (!taken.add(name)) {
+                    LOG.warn("MCHeli: skipping vehicle config '{}' in {} — that id is already registered (first wins)",
+                        name, cat.dir);
+                    continue;
+                }
                 DeferredItem<VehicleSpawnItem> item = ITEMS.registerItem(name,
                     props -> new VehicleSpawnItem(cat, name, props), new Item.Properties().stacksTo(1));
                 list.add(item);
                 ITEM_BY_NAME.put(name, item);
             }
             ITEMS_BY_CATEGORY.put(cat, list);
-            if (names.isEmpty()) {
-                LOG.error("MCHeli: scanned ZERO {} configs — the creative tab will be empty (resource scan failed?)", cat.dir);
+            if (list.isEmpty()) {
+                LOG.error("MCHeli: registered ZERO {} spawn items — the creative tab will be empty (resource scan failed?)", cat.dir);
             } else {
-                LOG.info("MCHeli: registered {} {} spawn items", names.size(), cat.dir);
+                LOG.info("MCHeli: registered {} {} spawn items", list.size(), cat.dir);
             }
         }
     }

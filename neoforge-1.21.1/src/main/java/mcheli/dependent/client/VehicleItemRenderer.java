@@ -7,7 +7,6 @@ import java.util.Map;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.spi.ModelHandle;
 import mcheli.dependent.item.VehicleSpawnItem;
-import mcheli.dependent.port.NeoResourceSource;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BlockEntityWithoutLevelRenderer;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -44,7 +43,7 @@ public class VehicleItemRenderer extends BlockEntityWithoutLevelRenderer {
         if (this.modelCache.containsKey(path)) {
             model = this.modelCache.get(path); // may be null (negative cache) — don't re-parse a failed icon every frame
         } else {
-            ModelHandle h = new NeoResourceSource().loadModel(path);
+            ModelHandle h = mcheli.dependent.port.MchContentPacks.resources().loadModel(path);
             model = h instanceof MchModel m ? m : null;
             this.modelCache.put(path, model);
         }

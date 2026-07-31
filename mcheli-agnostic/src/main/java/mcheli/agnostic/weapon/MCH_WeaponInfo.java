@@ -81,6 +81,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
    public int smokeNum;
    public int smokeMaxAge;
    public ItemHandle dispenseItem;
+   public String dispenseItemName; // the raw config item registry name (dependent layer resolves it to a real Item)
    public int dispenseDamege;
    public int dispenseRange;
    public int recoilBufCount;
@@ -168,6 +169,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
       this.smokeNum = 1;
       this.smokeSize = 2.0F;
       this.dispenseItem = null;
+      this.dispenseItemName = "";
       this.dispenseDamege = 0;
       this.dispenseRange = 1;
       this.recoilBufCount = 2;
@@ -467,6 +469,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
                this.dispenseDamege = this.toInt(s[1], 0, 100000000);
             }
 
+            this.dispenseItemName = s[0].toLowerCase().trim(); // keep the raw registry name; the dependent layer resolves it
             this.dispenseItem = this.itemByName(s[0]);
          } else if (item.equalsIgnoreCase("DispenseRange")) {
             this.dispenseRange = this.toInt(data, 1, 100);

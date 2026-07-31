@@ -60,6 +60,10 @@ public final class MchLockTracker {
     /** The locked target's entity id once the lock is COMPLETE, else -1 (what the fire packet ships). */
     public static int completeTargetId() { return completeTargetId; }
 
+    /** The entity a lock is currently building or held on (any lockCount &gt; 0), else -1 — the RWR "you are being
+     *  locked" warning ships this to the server (reference paces MCH_PacketNotifyLock while lockCount &gt; 0). */
+    public static int warningTargetId() { return lockCount > 0 ? targetId : -1; }
+
     /** True if a lock-on weapon type is one this tracker drives (AA/AT; AS/TV are deferred). */
     public static boolean isLockType(String type) {
         if (type == null) {

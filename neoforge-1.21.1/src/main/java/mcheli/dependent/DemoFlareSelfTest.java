@@ -33,6 +33,7 @@ public final class DemoFlareSelfTest {
     private int forceCz;
 
     private MchHelicopter heli;
+    private net.minecraft.world.entity.Entity pilot;
     private MchBullet missile;   // GUIDED_AA homing on the heli — should be decoyed
     private MchBullet control;   // unguided — should be ignored by the decoy
     private double missileDecoyDist = -1.0;
@@ -66,6 +67,15 @@ public final class DemoFlareSelfTest {
             LOG.warn("[FLARE-SELFTEST] ah-1z reports no flares; skipping");
             this.heli = null;
             return;
+        }
+        // The decoy + RWR require a rider present (reference MCH_MissileDetector gate) — seat a stand-in pilot.
+        if (net.minecraft.world.entity.EntityType.PIG.create(this.level) instanceof net.minecraft.world.entity.Mob p) {
+            p.setNoAi(true);
+            p.setPos(spawn.getX() + 0.5, baseY, spawn.getZ() + 0.5);
+            this.level.addFreshEntity(p);
+            this.heli.preferSeat(p, 0);
+            p.startRiding(this.heli, true);
+            this.pilot = p;
         }
 
         float speed = MCH_WeaponBallistics.initialSpeed(aa.acceleration);
@@ -123,6 +133,10 @@ public final class DemoFlareSelfTest {
     }
 
     private void cleanup() {
+        if (this.pilot != null) {
+            this.pilot.stopRiding();
+            this.pilot.discard();
+        }
         if (this.heli != null) {
             this.heli.discard();
         }

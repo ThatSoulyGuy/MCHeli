@@ -21,7 +21,6 @@ import mcheli.agnostic.vehicle.MCH_VehicleInfo;
 import net.minecraft.world.entity.Entity;
 import org.joml.Quaternionf;
 import mcheli.dependent.entity.AbstractMchVehicle;
-import mcheli.dependent.port.NeoResourceSource;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
@@ -99,7 +98,7 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
     }
 
     private static MchModel load(String name) {
-        ModelHandle h = new NeoResourceSource().loadModel(name);
+        ModelHandle h = mcheli.dependent.port.MchContentPacks.resources().loadModel(name);
         if (!(h instanceof MchModel m)) {
             LOGGER.warn("MCHeli renderer: model '{}' did not load; entity will be invisible", name);
             return null;

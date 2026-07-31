@@ -655,16 +655,16 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     }
 
     /** Lowest model vertex Y (&le;0) for the current config — the value the renderer lifts the model by ({@code -minY}).
-     *  Sourced once from the parsed model via the classpath-cached {@link NeoResourceSource} (works both sides), then
-     *  cached until the config changes; 0 when there is no model. Public so the cockpit {@code CameraMixin} can apply
-     *  the same lift to the first-person eye. */
+     *  Sourced once from the parsed model via the shared bundled+content-pack resource set (works both sides, so a pack
+     *  vehicle lifts correctly on the server too), then cached until the config changes; 0 when there is no model.
+     *  Public so the cockpit {@code CameraMixin} can apply the same lift to the first-person eye. */
     public float modelMinY() {
         if (!this.minYResolved) {
             this.modelMinY = 0.0F;
             String name = configName();
             if (name != null && !name.isEmpty()) {
                 mcheli.agnostic.spi.ModelHandle h =
-                    new mcheli.dependent.port.NeoResourceSource().loadModel(modelDir() + "/" + name);
+                    mcheli.dependent.port.MchContentPacks.resources().loadModel(modelDir() + "/" + name);
                 if (h instanceof mcheli.agnostic.model.MchModel m) {
                     this.modelMinY = m.minY;
                 }
@@ -1527,6 +1527,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     private final mcheli.agnostic.aircraft.MCH_FlareInfo flareInfo = new mcheli.agnostic.aircraft.MCH_FlareInfo();
     private int currentFlareIndex; // which of the config's flare.types[] the next press dispenses
+    private int rwrAlertCooldown;  // reference MCH_MissileDetector.alertCount — 20-tick spacing between inbound-missile tones
 
     /** This vehicle's config declares flares (reference {@code haveFlare}: FlareType set). */
     public boolean haveFlare() {
@@ -1579,7 +1580,12 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         // Decoy (reference MCH_MissileDetector.destroyMissile): while the burn window is active, null the target of
         // every guided round homing on us within SEARCH_RANGE and discard it (tickGuidance would self-discard on the
         // nulled target next tick; the explicit discard matches the reference for immediacy).
-        if (this.flareInfo.isUsing() && !isDestroyed()) {
+        if (this.rwrAlertCooldown > 0) {
+            this.rwrAlertCooldown--;
+        }
+        // Reference MCH_MissileDetector gates BOTH the decoy and the RWR alert on a rider being present.
+        boolean crew = seatPassenger(0) != null || seatPassenger(1) != null;
+        if (this.flareInfo.isUsing() && !isDestroyed() && crew) {
             double r = mcheli.agnostic.aircraft.MCH_FlareInfo.SEARCH_RANGE;
             AABB box = this.getBoundingBox().inflate(r, r, r);
             for (MchBullet b : this.level().getEntitiesOfClass(MchBullet.class, box)) {
@@ -1588,7 +1594,48 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
                     b.discard();
                 }
             }
+        } else if (!isDestroyed() && crew && this.rwrAlertCooldown == 0 && isLockedByMissile()) {
+            // RWR inbound-missile 'alert' (reference MCH_MissileDetector: not flaring + a live missile homing on us).
+            this.rwrAlertCooldown = 20;
+            sendRwrToCrew(mcheli.dependent.control.ClientboundRwrPayload.ALERT);
         }
+    }
+
+    /** True if a guided round is currently homing on this vehicle or a passenger within the flare search radius
+     *  (reference {@code MCH_MissileDetector.isLockedByMissile}). Server-side. */
+    private boolean isLockedByMissile() {
+        double r = mcheli.agnostic.aircraft.MCH_FlareInfo.SEARCH_RANGE;
+        AABB box = this.getBoundingBox().inflate(r, r, r);
+        for (MchBullet b : this.level().getEntitiesOfClass(MchBullet.class, box)) {
+            if (b.isGuided() && b.isHomingOn(this)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Send an RWR tone to the seat-0/1 crew (reference {@code MCH_MissileDetector} warns {@code getEntityBySeatId(0..1)}).
+     *  Server-side; used by both the inbound-missile alert and the being-locked relay. */
+    public void sendRwrToCrew(byte kind) {
+        if (this.level().isClientSide) {
+            return;
+        }
+        for (int s = 0; s <= 1; s++) {
+            if (seatPassenger(s) instanceof net.minecraft.server.level.ServerPlayer sp) {
+                net.neoforged.neoforge.network.PacketDistributor.sendToPlayer(sp,
+                    new mcheli.dependent.control.ClientboundRwrPayload(kind));
+            }
+        }
+    }
+
+    /** True if {@code seat}'s currently-selected weapon is a lock-on missile (server-side; the NotifyLock anti-spoof). */
+    public boolean selectedWeaponIsLockOn(int seat) {
+        if (this.weapons == null) {
+            return false;
+        }
+        WeaponSlot s = this.weapons.selected(seat);
+        return s != null && s.info != null
+            && (s.info.type.equalsIgnoreCase("aamissile") || s.info.type.equalsIgnoreCase("atmissile"));
     }
 
     /** Eject one volley of {@code num} flares from the config {@code FlareOption} point, behind + below the hull, with
@@ -2544,6 +2591,28 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         } else if (guidedKind != MchBullet.GUIDED_NONE) {
             MchBullet.spawnGuided(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600, this, model,
                 color, wi, guidedTarget, guidedKind);
+        } else if (preType.equals("torpedo")) {
+            // A torpedo launches at unit_dir × config Acceleration PLUS the carrier's own velocity (reference
+            // MCH_WeaponTorpedo.shotNoGuided) — NOT the clamped muzzle speed. That carrier term is essential: several
+            // shipped torpedoes ship Acceleration 0, so the launcher's motion is their whole thrust; it then self-steers
+            // underwater (MchBullet water-run). Guided torpedoes are filtered out upstream (not fireable, deferred #30b).
+            Vec3 launch = dir.scale(wi.acceleration).add(this.getDeltaMovement());
+            MchBullet.spawnTorpedo(this.level(), muzzle, launch, gravity, wi.power, 600, this, model, color, wi);
+        } else if (preType.equals("cas")) {
+            // Close air support: raycast the operator's aim to the ground and call in a BOMBING RUN there (reference
+            // MCH_WeaponCAS calls an A-10 gun run from a compass direction — the flying MCH_EntityA10 strafing entity is
+            // a deferred sub-port, so this port rains a bombing run at the aim point instead: same ordnance-on-target
+            // effect, reusing the proven #21 airstrike path). Aimed at open sky (no ground hit) → no strike.
+            Vec3 to = muzzle.add(dir.scale(180.0));
+            net.minecraft.world.phys.BlockHitResult bh = this.level().clip(new net.minecraft.world.level.ClipContext(
+                muzzle, to, net.minecraft.world.level.ClipContext.Block.COLLIDER,
+                net.minecraft.world.level.ClipContext.Fluid.NONE, this));
+            if (bh.getType() != net.minecraft.world.phys.HitResult.Type.MISS
+                    && this.level() instanceof ServerLevel sl) {
+                Vec3 tgt = bh.getLocation();
+                MchBullet.callAirstrike(sl, tgt.x, tgt.y, tgt.z, this, Math.max(wi.explosion, 3), wi.power,
+                    6 + this.random.nextInt(3));
+            }
         } else {
             MchBullet.spawnWeapon(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600, this, model, color, wi);
         }

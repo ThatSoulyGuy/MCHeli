@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'mcheli'
-version = '1.0.0'
+version = '1.1.0'
 
 // NeoForge 1.21.1 runs on Java 21. This is independent of the :mcheli-1.7.10 subproject,
 // which keeps its own Java 8 toolchain — Gradle provisions both JDKs per-subproject.

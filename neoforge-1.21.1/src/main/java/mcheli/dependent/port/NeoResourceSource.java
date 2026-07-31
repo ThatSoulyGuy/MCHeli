@@ -81,9 +81,9 @@ public final class NeoResourceSource implements ResourceSource {
         }
         if (model != null) {
             MODEL_CACHE.put(name, model);
-        } else {
-            LOGGER.warn("MCHeli: no model found for '{}' (looked for models/{}.mqo/.obj)", name, name);
         }
+        // A miss is NOT warned here: this source is one of several (bundled + content packs); the composite that unions
+        // them owns the single "no model found anywhere" warning so a pack-only model does not warn against the bundle.
         return model;
     }
 

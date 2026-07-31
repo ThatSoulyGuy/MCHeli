@@ -89,7 +89,7 @@ public class MchBulletRenderer extends EntityRenderer<MchBullet> {
         if (name == null || name.isEmpty()) {
             return null;
         }
-        ModelHandle h = new NeoResourceSource().loadModel("bullets/" + name);
+        ModelHandle h = mcheli.dependent.port.MchContentPacks.resources().loadModel("bullets/" + name);
         return h instanceof MchModel m ? m : null;
     }
 }

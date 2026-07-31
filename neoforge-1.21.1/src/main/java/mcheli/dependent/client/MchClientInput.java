@@ -35,6 +35,7 @@ public final class MchClientInput {
     private static int lastBits = -1;
     private static int lastVehicleId = -1;
     private static int lastLockTargetId = -1;
+    private static int notifyLockTick;   // paces the RWR "you are being locked" packet (~every 15 ticks while locking)
     private static int keepalive;
     // Weapon-switch is edge-triggered: remember the switch key's last state so we send ONE cycle per press.
     private static boolean switchKeyWasDown;
@@ -116,6 +117,17 @@ public final class MchClientInput {
             mcheli.agnostic.weapon.MCH_WeaponInfo wi = amv.selectedClientWeaponInfo();
             MchLockTracker.tick(amv, seat, wIdx, wi, fireHeld);
             lockTargetId = fireHeld ? MchLockTracker.completeTargetId() : -1;
+
+            // RWR: while a lock is building/held, tell the server every ~15 ticks so it can warn the target's crew
+            // (reference MCH_PacketNotifyLock cadence). Reset the pacer when there's no lock so the next lock warns fast.
+            int warnId = MchLockTracker.warningTargetId();
+            if (warnId >= 0) {
+                if (notifyLockTick++ % 15 == 0) {
+                    PacketDistributor.sendToServer(new mcheli.dependent.control.ServerboundNotifyLockPayload(warnId));
+                }
+            } else {
+                notifyLockTick = 0;
+            }
         }
 
         int vid = vehicle.getId();

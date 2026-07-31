@@ -6,7 +6,6 @@ import mcheli.MCHeli;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.spi.ModelHandle;
 import mcheli.dependent.entity.MchContainer;
-import mcheli.dependent.port.NeoResourceSource;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -34,7 +33,7 @@ public class MchContainerRenderer extends EntityRenderer<MchContainer> {
     @Override
     public void render(MchContainer entity, float entityYaw, float partialTick, PoseStack pose,
                        MultiBufferSource buffers, int packedLight) {
-        ModelHandle h = new NeoResourceSource().loadModel("container");
+        ModelHandle h = mcheli.dependent.port.MchContentPacks.resources().loadModel("container");
         if (h instanceof MchModel model) {
             pose.pushPose();
             float yaw = Mth.rotLerp(partialTick, entity.yRotO, entity.getYRot());

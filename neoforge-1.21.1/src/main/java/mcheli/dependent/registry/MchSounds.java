@@ -73,6 +73,22 @@ public final class MchSounds {
         return s != null ? s.get() : null;
     }
 
+    /**
+     * Register a {@link SoundEvent} for each content-pack {@code sounds/*.ogg} basename (from
+     * {@link mcheli.dependent.port.MchContentPacks#packSoundBasenames()}). MUST be called during the {@code @Mod}
+     * constructor, BEFORE {@link #register} attaches the DeferredRegister to the bus — the registry freezes right after.
+     * A name already shipped by the mod is skipped (bundled sounds win — additive, matching the resource policy); the
+     * matching {@code sounds.json} entry + {@code .ogg} are served client-side via the pack's resource-pack mount.
+     */
+    public static void registerPackSounds(java.util.List<String> basenames) {
+        for (String name : basenames) {
+            if (name == null || name.isEmpty() || BY_NAME.containsKey(name)) {
+                continue;
+            }
+            BY_NAME.put(name, reg(name));
+        }
+    }
+
     public static void register(IEventBus modBus) {
         SOUNDS.register(modBus);
     }

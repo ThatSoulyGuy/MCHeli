@@ -73,6 +73,14 @@ public class MchBullet extends Entity {
      *  accept the server's curved position/orientation via {@link #lerpTo} instead of dead-reckoning a straight line. */
     private static final EntityDataAccessor<Byte> DATA_GUIDED =
         SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.BYTE);
+    /** True for a {@code torpedo}-type round. Synced so the client (a) accepts the server's water-run path via
+     *  {@link #lerpTo} — the run is server-authoritative like guidance — and (b) knows the round self-steers underwater. */
+    private static final EntityDataAccessor<Boolean> DATA_TORPEDO =
+        SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.BOOLEAN);
+    /** In-water gravity ({@code MCH_WeaponInfo.gravityInWater}). The reference swaps {@code gravity}→{@code gravityInWater}
+     *  the instant a round is submerged; synced so both sides integrate the same value while dead-reckoning. */
+    private static final EntityDataAccessor<Float> DATA_GRAVITY_WATER =
+        SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.FLOAT);
 
     /** Squared horizontal despawn distance from the shooter (5820², reference {@code checkValid}). */
     private static final double MAX_DIST_SQ = 3.38724E7;
@@ -95,6 +103,7 @@ public class MchBullet extends Entity {
     private int markerCountdown;        // marker rocket: ticks from plant to the airstrike + despawn (reference countDown)
     private Entity targetEntity;        // guided missile: the locked target (server-side only; resolved live each tick)
     private float guideSpeed;           // guided missile: cruise speed for the guidance blend (reference this.acceleration)
+    private double torpedoAccel;        // torpedo: the live water-run speed, ramped toward accelerationInWater (reference this.acceleration)
 
     public MchBullet(EntityType<? extends MchBullet> type, Level level) {
         super(type, level);
@@ -142,6 +151,20 @@ public class MchBullet extends Entity {
             false);
     }
 
+    /**
+     * Spawn a TORPEDO — launched at an EXPLICIT velocity (reference {@code MCH_WeaponTorpedo.shotNoGuided}:
+     * {@code unit_dir × config Acceleration + the carrier's own motion}). The carrier term matters: several shipped
+     * torpedoes ship {@code Acceleration = 0}, so the aircraft's velocity is their <i>entire</i> launch thrust — a plain
+     * forward muzzle shot at {@code initialSpeed(0)} would leave them dead at the muzzle. {@code accelerationFactor} is 1
+     * (torpedoes never get the bullet/rocket step-scaling); {@code createWithVelocity} seeds the water-run cruise speed
+     * from this velocity's magnitude, matching the reference {@code this.acceleration}.
+     */
+    public static MchBullet spawnTorpedo(Level level, Vec3 pos, Vec3 velocity, float gravity, float damage, int maxLife,
+                                         Entity shooter, String modelName, int color, MCH_WeaponInfo wi) {
+        return createWithVelocity(level, pos, velocity, 1.0F, gravity, damage, maxLife, shooter, modelName, color, wi,
+            false);
+    }
+
     private static MchBullet create(Level level, Vec3 pos, Vec3 dir, float speed, float accelerationFactor,
                                     float gravity, float damage, int maxLife, Entity shooter, String modelName,
                                     int color, MCH_WeaponInfo wi, boolean isBomblet) {
@@ -182,9 +205,19 @@ public class MchBullet extends Entity {
         if (wi != null && !isBomblet && "mkrocket".equalsIgnoreCase(wi.type)) {
             b.entityData.set(DATA_MARKER, (byte) 1); // a marker rocket: flies, plants a spotting marker, then calls a strike
         }
+        // Torpedo (non-guided only): self-steers underwater (water-run). Seed the live run speed from the launch-motion
+        // magnitude (reference sets the entity's acceleration to it) so it ramps toward accelerationInWater from there. A
+        // GUIDED torpedo would need the onUpdateGuided target-seek (deferred #30b) — it is not fireable, but guard here
+        // too so a stray one is never silently mis-run as a dumb water-run round.
+        if (wi != null && "torpedo".equalsIgnoreCase(wi.type) && !wi.isGuidedTorpedo) {
+            b.entityData.set(DATA_TORPEDO, true);
+            b.torpedoAccel = v.length();
+        }
         b.entityData.set(DATA_MODEL, modelName == null ? "" : modelName);
         b.entityData.set(DATA_COLOR, color);
         b.entityData.set(DATA_GRAVITY, gravity);
+        // In-water gravity: from config for a real weapon; mirror the air gravity for a wi-less test tracer (unchanged).
+        b.entityData.set(DATA_GRAVITY_WATER, wi != null ? wi.gravityInWater : gravity);
         b.entityData.set(DATA_ACCEL_FACTOR, accelerationFactor);
         double horiz = Math.sqrt(v.x * v.x + v.z * v.z);
         b.setYRot((float) Math.toDegrees(Math.atan2(-v.x, v.z)));
@@ -241,7 +274,11 @@ public class MchBullet extends Entity {
         }
 
         Vec3 motion = this.getDeltaMovement();
-        float gravity = this.entityData.get(DATA_GRAVITY);
+        // Reference swaps gravity->gravityInWater the moment a round is submerged (MCH_EntityBaseBullet.onUpdate). Both
+        // are synced so the client dead-reckons the same value. Most weapons ship gravityInWater 0 (a round loses fall
+        // in water); bombs ship it negative (they keep sinking); a torpedo then self-steers via tickTorpedo().
+        boolean submerged = inWater();
+        float gravity = submerged ? this.entityData.get(DATA_GRAVITY_WATER) : this.entityData.get(DATA_GRAVITY);
         float accFactor = this.entityData.get(DATA_ACCEL_FACTOR);
 
         if (!this.level().isClientSide) {
@@ -384,6 +421,14 @@ public class MchBullet extends Entity {
             }
         }
 
+        // Torpedo water-run (server-authoritative, reference MCH_EntityTorpedo.onUpdateNoGuided): once submerged, level
+        // the descent, ramp toward the cruise speed, and re-normalize — sets the motion for the NEXT tick. The client
+        // takes the resulting path via lerpTo (like a guided round), so this runs server-side only. Gated on the
+        // POST-move water state (the reference runs onUpdateNoGuided after the move, unlike the pre-move gravity swap).
+        if (!this.level().isClientSide && this.entityData.get(DATA_TORPEDO) && inWater()) {
+            tickTorpedo();
+        }
+
         // Client cosmetics: the config-driven smoke/flame trail (rocket/missile) + in-water bubbles.
         if (this.level().isClientSide) {
             emitTrail(from, to);
@@ -478,6 +523,47 @@ public class MchBullet extends Entity {
         }
     }
 
+    /**
+     * Server-side torpedo water-run (reference {@code MCH_EntityTorpedo.onUpdateNoGuided}): while submerged, damp the
+     * vertical motion ({@code motionY *= 0.8}) so the run levels off, ramp the cruise speed toward
+     * {@code accelerationInWater} (±0.1/tick into a +0.2 dead-band), then re-normalize the whole motion vector to that
+     * speed — a torpedo cruises at a constant underwater speed regardless of how fast it was launched. Sets the motion
+     * for the NEXT tick + the nose orientation.
+     */
+    private void tickTorpedo() {
+        Vec3 m = this.getDeltaMovement();
+        double mx = m.x;
+        double my = m.y * 0.8; // level the descent (reference motionY *= 0.8F)
+        double mz = m.z;
+        double accInWater = this.weaponInfo != null ? this.weaponInfo.accelerationInWater : 1.0;
+        if (this.torpedoAccel < accInWater) {
+            this.torpedoAccel += 0.1;
+        } else if (this.torpedoAccel > accInWater + 0.2) {
+            this.torpedoAccel -= 0.1;
+        }
+        double d = Math.sqrt(mx * mx + my * my + mz * mz);
+        if (d > 1.0e-6) {
+            double s = this.torpedoAccel / d;
+            mx *= s;
+            my *= s;
+            mz *= s;
+        }
+        this.setDeltaMovement(mx, my, mz);
+        double horiz = Math.sqrt(mx * mx + mz * mz);
+        if (mx * mx + my * my + mz * mz > 1.0e-9) {
+            this.setYRot((float) Math.toDegrees(Math.atan2(-mx, mz)));
+            this.setXRot((float) Math.toDegrees(Math.atan2(-my, horiz)));
+        }
+    }
+
+    /** Whether this round is currently in water — a direct fluid-state probe at the round's block (the reference
+     *  {@code isInWater()} is a block check). More reliable than vanilla's AABB water state for a {@code noPhysics}
+     *  projectile, and evaluated identically on both sides so the gravity swap stays in sync. */
+    private boolean inWater() {
+        return this.level().getFluidState(this.blockPosition())
+            .is(net.minecraft.tags.FluidTags.WATER);
+    }
+
     // ---- impact / detonation ----
 
     /** Impact resolution mirroring {@code MCH_EntityBaseBullet.onImpact}: direct entity damage zeroes piercing; a
@@ -511,6 +597,13 @@ public class MchBullet extends Entity {
     /** Full explosion (FAE / in-water / normal variant selection) then despawn. Non-explosive rounds just despawn. */
     private void detonate(Vec3 pos) {
         if (this.level().isClientSide) {
+            this.discard();
+            return;
+        }
+        // A dispenser round "uses" its configured item across a radius instead of exploding (reference
+        // MCH_EntityDispensedItem.onImpact), then despawns.
+        if (isDispenserType() && this.level() instanceof ServerLevel dsl) {
+            dispenseAt(dsl, pos);
             this.discard();
             return;
         }
@@ -582,31 +675,41 @@ public class MchBullet extends Entity {
         this.markerCountdown = 100;
     }
 
-    /** Call in the bombing run: 6-8 bombs rain from high above the marked point, scattered, each exploding on impact
-     *  (reference: {@code 6+rand(2)} {@code MCH_EntityBomb}, explosionPower 3-4). Reuses the projectile path. */
+    /** The marked-point strike: 6-8 bombs rain from high above THIS entity's position (reference marker rocket). */
     private void spawnAirstrike() {
-        if (!(this.level() instanceof ServerLevel sl)) {
-            return;
-        }
-        int num = 6 + this.random.nextInt(2);
-        double ceiling = sl.getMaxBuildHeight() - 2;
-        for (int i = 0; i < num; i++) {
-            double bx = this.getX() + (this.random.nextFloat() - 0.5F) * 15.0F;
-            double by = Math.min(this.getY() + 140.0 + this.random.nextFloat() * 10.0F + i * 15, ceiling);
-            double bz = this.getZ() + (this.random.nextFloat() - 0.5F) * 15.0F;
-            MCH_WeaponInfo bombWi = airstrikeBombInfo();
-            spawnWeapon(sl, new Vec3(bx, by, bz), new Vec3(0.0, -1.0, 0.0), 0.5F, 1.0F, -0.05F,
-                bombWi.power, 1200, this.shooter, "bullet", 0xFF303030, bombWi);
+        if (this.level() instanceof ServerLevel sl) {
+            callAirstrike(sl, this.getX(), this.getY(), this.getZ(), this.shooter,
+                3 + this.random.nextInt(2), 30, 6 + this.random.nextInt(2));
         }
     }
 
-    /** A synthetic weapon info for the called-in bombs — explosion 3-4 with light block cratering, no per-config file. */
-    private MCH_WeaponInfo airstrikeBombInfo() {
+    /**
+     * Call in a bombing run at a ground TARGET: {@code num} bombs rain from high above the point, scattered, each
+     * exploding on impact with {@code explosion} power (reference: {@code MCH_EntityBomb} volley). Shared by the marker
+     * rocket (#21) and the CAS weapon (#31 — a called-in bombing run standing in for the reference A-10 gun run, whose
+     * flying {@code MCH_EntityA10} strafing entity is a deferred sub-port). Reuses the projectile/gravity path.
+     */
+    public static void callAirstrike(ServerLevel sl, double tx, double ty, double tz, Entity shooter,
+                                     int explosion, int power, int num) {
+        double ceiling = sl.getMaxBuildHeight() - 2;
+        net.minecraft.util.RandomSource rnd = sl.getRandom();
+        int p = Math.max(explosion, 1);
+        for (int i = 0; i < num; i++) {
+            double bx = tx + (rnd.nextFloat() - 0.5F) * 15.0F;
+            double by = Math.min(ty + 140.0 + rnd.nextFloat() * 10.0F + i * 15, ceiling);
+            double bz = tz + (rnd.nextFloat() - 0.5F) * 15.0F;
+            MCH_WeaponInfo bombWi = airstrikeBombInfo(p);
+            spawnWeapon(sl, new Vec3(bx, by, bz), new Vec3(0.0, -1.0, 0.0), 0.5F, 1.0F, -0.05F,
+                power > 0 ? power : 30, 1200, shooter, "bullet", 0xFF303030, bombWi);
+        }
+    }
+
+    /** A synthetic weapon info for the called-in bombs — the given explosion with light block cratering, no config file. */
+    private static MCH_WeaponInfo airstrikeBombInfo(int explosion) {
         MCH_WeaponInfo wi = new MCH_WeaponInfo("mch_airstrike_bomb");
         wi.type = "bomb";
-        int p = 3 + this.random.nextInt(2);
-        wi.explosion = p;
-        wi.explosionBlock = p;
+        wi.explosion = explosion;
+        wi.explosionBlock = explosion;
         wi.explosionInWater = 0;
         wi.flaming = false;
         wi.power = 30;
@@ -676,7 +779,93 @@ public class MchBullet extends Entity {
     /** True if this round is a dropped bomb (config type {@code bomb}) — gates the bomb-specific horizontal drag and
      *  cluster-bomblet spread that the reference {@code MCH_EntityBomb} applies but the generic bullet/rocket does not. */
     private boolean isBombType() {
-        return this.weaponInfo != null && "bomb".equalsIgnoreCase(this.weaponInfo.type);
+        return this.weaponInfo != null
+            && ("bomb".equalsIgnoreCase(this.weaponInfo.type) || isDispenserType());
+    }
+
+    /** True if this round is a dispenser (config type {@code dispenser}) — falls like a bomb, then "uses" its configured
+     *  item across a radius on impact instead of exploding (reference {@code MCH_EntityDispensedItem}). */
+    private boolean isDispenserType() {
+        return this.weaponInfo != null && "dispenser".equalsIgnoreCase(this.weaponInfo.type);
+    }
+
+    /**
+     * Dispense the configured item across a radius of blocks around the impact point (reference
+     * {@code MCH_EntityDispensedItem.onImpact} + {@code useItemToBlock}): a {@code FakePlayer} "right-clicks" the item
+     * onto each block in a sphere of radius {@code DispenseRange-1} (the inner half always, the outer shell at 50%),
+     * so e.g. a water-bucket dispenser douses fire/lava and a sapling/torch dispenser plants/places. Server-only.
+     */
+    private void dispenseAt(ServerLevel sl, Vec3 pos) {
+        MCH_WeaponInfo wi = this.weaponInfo;
+        String itemName = wi != null ? wi.dispenseItemName : null;
+        if (itemName == null || itemName.isEmpty()) {
+            return;
+        }
+        net.minecraft.resources.ResourceLocation id = net.minecraft.resources.ResourceLocation.tryParse(
+            itemName.indexOf(':') >= 0 ? itemName : "minecraft:" + itemName);
+        net.minecraft.world.item.Item item = id == null ? null
+            : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(id);
+        if (item == null || item == net.minecraft.world.item.Items.AIR) {
+            return; // config named an item this version doesn't have — no-op (a 1.7.10 name that didn't survive, etc.)
+        }
+        net.neoforged.neoforge.common.util.FakePlayer fake =
+            net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(sl);
+        int rng = Math.max(wi.dispenseRange - 1, 0);
+        int cx = net.minecraft.util.Mth.floor(pos.x);
+        int cy = net.minecraft.util.Mth.floor(pos.y);
+        int cz = net.minecraft.util.Mth.floor(pos.z);
+        double r2 = (double) rng * rng;
+        for (int x = -rng; x <= rng; x++) {
+            for (int y = -rng; y <= rng; y++) {
+                int by = cy + y;
+                if (by < sl.getMinBuildHeight() || by >= sl.getMaxBuildHeight()) {
+                    continue;
+                }
+                for (int z = -rng; z <= rng; z++) {
+                    int dist = x * x + y * y + z * z;
+                    if (dist <= r2 && (dist <= 0.5 * r2 || this.random.nextInt(2) == 0)) {
+                        useItemOnBlock(sl, fake, item, new net.minecraft.core.BlockPos(cx + x, by, cz + z));
+                    }
+                }
+            }
+        }
+    }
+
+    /** "Right-click" {@code item} onto the top of a non-air block (reference {@code useItemToBlock}): water-bucket
+     *  douses fire / freezes lava; anything else runs the vanilla {@code useOn} then {@code use} path. */
+    private void useItemOnBlock(ServerLevel sl, net.neoforged.neoforge.common.util.FakePlayer fake,
+                                net.minecraft.world.item.Item item, net.minecraft.core.BlockPos bp) {
+        BlockState state = sl.getBlockState(bp);
+        if (state.isAir()) {
+            return;
+        }
+        if (item == net.minecraft.world.item.Items.WATER_BUCKET) {
+            // Reference special case: extinguish fire, and turn lava to obsidian (source) / cobblestone (flow).
+            net.minecraft.core.BlockPos above = bp.above();
+            if (sl.getBlockState(above).is(net.minecraft.world.level.block.Blocks.FIRE)) {
+                sl.removeBlock(above, false);
+            } else if (state.getFluidState().is(net.minecraft.tags.FluidTags.LAVA)) {
+                boolean source = state.getFluidState().isSource();
+                sl.setBlockAndUpdate(bp, source
+                    ? net.minecraft.world.level.block.Blocks.OBSIDIAN.defaultBlockState()
+                    : net.minecraft.world.level.block.Blocks.COBBLESTONE.defaultBlockState());
+            }
+            return;
+        }
+        net.minecraft.world.item.ItemStack stack = new net.minecraft.world.item.ItemStack(item, 1);
+        fake.setPos(bp.getX() + 0.5, bp.getY() + 2.5, bp.getZ() + 0.5);
+        fake.setYRot(this.random.nextInt(360));
+        fake.setXRot(90.0F);
+        fake.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, stack);
+        net.minecraft.world.phys.BlockHitResult hit = new net.minecraft.world.phys.BlockHitResult(
+            new Vec3(bp.getX() + 0.5, bp.getY() + 1.0, bp.getZ() + 0.5), Direction.UP, bp, false);
+        net.minecraft.world.item.context.UseOnContext ctx = new net.minecraft.world.item.context.UseOnContext(
+            sl, fake, net.minecraft.world.InteractionHand.MAIN_HAND, stack, hit);
+        net.minecraft.world.InteractionResult r = item.useOn(ctx);
+        if (!r.consumesAction()) {
+            item.use(sl, fake, net.minecraft.world.InteractionHand.MAIN_HAND);
+        }
+        fake.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND, net.minecraft.world.item.ItemStack.EMPTY);
     }
 
     /** Emit {@code bomblet} child rounds spread by {@code bombletDiff}, rendered with the bomblet model; they never
@@ -724,6 +913,11 @@ public class MchBullet extends Entity {
         int kind = this.entityData.get(DATA_TRAIL_KIND);
         if (kind == 0 || this.age < this.entityData.get(DATA_TRAIL_START)) {
             return; // config TrajectoryParticleStartTick delays the trail
+        }
+        // A torpedo's trajectory particle is emitted ONLY underwater (reference MCH_EntityTorpedo.onUpdate gates its
+        // spawnParticle on isInWater()); on the surface run it shows no trail, unlike an air-trailing rocket/missile.
+        if (this.entityData.get(DATA_TORPEDO) && !inWater()) {
+            return;
         }
         float size = this.entityData.get(DATA_TRAIL_SIZE);
         for (int i = 1; i <= 3; i++) {
@@ -787,6 +981,8 @@ public class MchBullet extends Entity {
         builder.define(DATA_TRAIL_START, 0);
         builder.define(DATA_MARKER, (byte) 0);
         builder.define(DATA_GUIDED, GUIDED_NONE);
+        builder.define(DATA_TORPEDO, false);
+        builder.define(DATA_GRAVITY_WATER, 0.0F);
     }
     @Override protected void readAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {}
     @Override protected void addAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {}
@@ -794,14 +990,15 @@ public class MchBullet extends Entity {
     @Override public boolean isPickable() { return false; }
     @Override public boolean shouldRenderAtSqrDistance(double d) { return d < 4096.0; }
     @Override public void lerpTo(double x, double y, double z, float yr, float xr, int steps) {
-        // In-flight straight rounds dead-reckon (no lerp). Two exceptions accept the server position:
+        // In-flight straight rounds dead-reckon (no lerp). Exceptions accept the server position:
         //  - a PLANTED marker snaps to its block so the client beacon isn't dead-reckoned past the wall;
-        //  - a GUIDED missile curves under server authority, which the client can't reproduce from straight motion, so
-        //    it accepts the server position AND nose orientation each update (dead-reckoning between updates keeps it
-        //    smooth). Extends the marker-branch pattern to homing rounds.
+        //  - a GUIDED missile curves under server authority, which the client can't reproduce from straight motion;
+        //  - a TORPEDO self-steers underwater (level + re-normalize to cruise speed) server-side, the same way.
+        // The latter two accept the server position AND nose orientation each update (dead-reckoning between updates
+        // keeps it smooth).
         if (this.entityData.get(DATA_MARKER) == 2) {
             this.setPos(x, y, z);
-        } else if (this.entityData.get(DATA_GUIDED) != GUIDED_NONE) {
+        } else if (this.entityData.get(DATA_GUIDED) != GUIDED_NONE || this.entityData.get(DATA_TORPEDO)) {
             this.setPos(x, y, z);
             this.setYRot(yr);
             this.setXRot(xr);

@@ -48,5 +48,14 @@ public final class MchControlNetwork {
             ServerboundVtolPayload.TYPE,
             ServerboundVtolPayload.STREAM_CODEC,
             ServerboundVtolPayload::handle);
+        registrar.playToServer(
+            ServerboundNotifyLockPayload.TYPE,
+            ServerboundNotifyLockPayload.STREAM_CODEC,
+            ServerboundNotifyLockPayload::handle);
+        // The port's first CLIENTBOUND payload — the RWR cockpit warning tone (handler is Dist-guarded).
+        registrar.playToClient(
+            ClientboundRwrPayload.TYPE,
+            ClientboundRwrPayload.STREAM_CODEC,
+            ClientboundRwrPayload::handle);
     }
 }

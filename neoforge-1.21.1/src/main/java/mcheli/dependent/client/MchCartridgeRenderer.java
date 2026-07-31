@@ -6,7 +6,6 @@ import mcheli.MCHeli;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.spi.ModelHandle;
 import mcheli.dependent.entity.MchCartridge;
-import mcheli.dependent.port.NeoResourceSource;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -37,7 +36,7 @@ public class MchCartridgeRenderer extends EntityRenderer<MchCartridge> {
     public void render(MchCartridge entity, float entityYaw, float partialTick, PoseStack pose,
                        MultiBufferSource buffers, int packedLight) {
         String name = entity.cartridgeName();
-        ModelHandle h = name.isEmpty() ? null : new NeoResourceSource().loadModel("bullets/" + name);
+        ModelHandle h = name.isEmpty() ? null : mcheli.dependent.port.MchContentPacks.resources().loadModel("bullets/" + name);
         if (h instanceof MchModel model) {
             pose.pushPose();
             float scale = entity.cartridgeScale();

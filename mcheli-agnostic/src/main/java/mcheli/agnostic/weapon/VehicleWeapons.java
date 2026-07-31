@@ -49,6 +49,13 @@ public final class VehicleWeapons {
                 if (wi == null || !isFireable(wi.type) || ws.weapons == null || ws.weapons.isEmpty()) {
                     continue;
                 }
+                // GUIDED torpedoes (GuidedTorpedo=true, e.g. mk46) home onto a look->water target point and hold fire
+                // unless aimed at water (reference MCH_WeaponTorpedo.shotGuided / MCH_EntityTorpedo.onUpdateGuided). That
+                // steer + fire-gate is a deferred sub-port (#30b) — leaving them selectable would silently mis-run them as
+                // dumb water-run torpedoes that fire unconditionally, so they are not fireable until the guided path lands.
+                if (wi.isGuidedTorpedo && "torpedo".equalsIgnoreCase(wi.type)) {
+                    continue;
+                }
                 slots.add(new WeaponSlot(ws.type, wi, new ArrayList<>(ws.weapons)));
             }
         }
@@ -211,10 +218,11 @@ public final class VehicleWeapons {
     }
 
     /**
-     * Whether a weapon {@code type} spawns a straight/ballistic projectile this port fires today. Guided-missile
-     * <em>guidance</em> (AA/AS/AT/TV homing + lock-on) is a deferred sub-port — those types are still listed and fired
-     * here (as unguided projectiles with their real stats/sound/model), so the loadout is complete; utility/complex
-     * types (targeting pod, dispenser, CAS air-strike call, smoke, dummy, bomb) are excluded from the selectable list.
+     * Whether a weapon {@code type} spawns a projectile this port fires today. Guns, rockets, marker rockets, guided
+     * missiles (AA/AS/AT/TV — homing + lock-on ported), dropped bombs, torpedoes (water-run), CAS (called-in bombing
+     * run), and dispensers (item-use on impact) are all fireable. The remaining types (targeting pod, smoke, dummy) are
+     * excluded: smoke is a no-op in the reference too, the targeting pod needs the spotting subsystem, and dummy fires
+     * nothing.
      */
     public static boolean isFireable(String type) {
         if (type == null) {
@@ -230,6 +238,9 @@ public final class VehicleWeapons {
             case "atmissile":
             case "tvmissile":
             case "bomb": // dropped munition — released at hull velocity + config gravity (fireSelectedWeapon bomb branch)
+            case "torpedo": // forward-launched round that self-steers underwater (MchBullet water-run: level + cruise)
+            case "cas": // close air support — aim at the ground to call in a bombing run (fireSelectedWeapon cas branch)
+            case "dispenser": // drops a round that "uses" its configured item across a radius on impact (MchBullet dispenseAt)
                 return true;
             default:
                 return false;
