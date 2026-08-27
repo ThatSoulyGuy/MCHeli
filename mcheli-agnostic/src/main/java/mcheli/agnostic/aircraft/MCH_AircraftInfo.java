@@ -899,7 +899,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
          }
       } else if (item.compareTo("addrecipe") == 0 || item.compareTo("addshapelessrecipe") == 0) {
          this.isShapedRecipe = item.compareTo("addrecipe") == 0;
-         this.recipeString.add(data.toUpperCase());
+         this.recipeString.add(data.toUpperCase(java.util.Locale.ROOT));
       } else if (item.compareTo("maxhp") == 0) {
          this.maxHp = this.toInt(data, 1, 100000);
       } else if (item.compareTo("inventorysize") == 0) {

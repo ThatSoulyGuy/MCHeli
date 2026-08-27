@@ -104,7 +104,7 @@ public class MCH_BaseInfo {
                     str = str.trim();
                     int eqIdx = str.indexOf('=');
                     if (eqIdx >= 0 && str.length() > eqIdx + 1) {
-                        String item = str.substring(0, eqIdx).trim().toLowerCase();
+                        String item = str.substring(0, eqIdx).trim().toLowerCase(java.util.Locale.ROOT);
                         if (info.canReloadItem(item)) {
                             info.loadItemData(item, str.substring(eqIdx + 1).trim());
                         }

@@ -11,6 +11,7 @@ import mcheli.agnostic.weapon.MCH_WeaponBallistics;
 import mcheli.agnostic.weapon.MCH_WeaponInfo;
 import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
 import mcheli.agnostic.weapon.VehicleWeapons;
+import mcheli.agnostic.weapon.WeaponAim;
 import mcheli.agnostic.weapon.WeaponSlot;
 import mcheli.dependent.control.MchControlState;
 import mcheli.dependent.control.MchControllable;
@@ -35,16 +36,21 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.damagesource.DamageTypes;
 import java.util.UUID;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.ExperienceOrb;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.entity.projectile.AbstractArrow;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.event.EventHooks;
 
 /**
  * Shared base for the demo vehicles. Owns the agnostic {@link EntityRef} view, the rider {@link MchControlState},
@@ -1455,12 +1461,22 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
         if (this.riderOwnsRotation) {
             // Client-authoritative rotation wins: re-assert the rider's angles over the flight model's on-ground/
-            // water attitude damping (the physics still USED the rotation for thrust this tick; only its WRITES are
-            // overridden). Keeps observers in sync with the pilot, whose client ignores the server rotation.
+            // water attitude damping AND over the tank's server-side terrain tilt (TankFlightModel.integrateForces —
+            // the physics still USED the rotation for thrust this tick; only its WRITES are overridden). This is
+            // reference-faithful: MCH_WheelManager:165 skips its own direct attitude write for exactly the case where
+            // the rider is the client player, because that client is running the same solve against the same blocks.
             this.setYRot(this.pendingYaw);
             this.setXRot(this.pendingPitch);
             this.setRollAngle(this.pendingRoll);
         }
+
+        // Terrain interaction, post-move (reference onUpdate_updateBlock + updateCollisionBox, MCH_EntityTank:724-725).
+        // The part hitboxes were posed PRE-physics above, so re-pose them to where we actually ENDED UP — the
+        // reference recomputes getTransformedPosition() fresh inside updateCollisionBox.
+        updateExtraBoxes();
+        boolean grief = EventHooks.canEntityGrief(level(), this); // computed ONCE: each call posts a bus event
+        updateBlockLight(grief);
+        updateCollisionBox(grief);
 
         // No vanilla fall damage (reference zeroes fallDistance for the craft AND its riders every tick) — the demo
         // vehicle is a non-Living Entity so it never falls-damages itself, but this keeps a dismounting pilot safe.
@@ -2522,18 +2538,28 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         // where a passenger's rotation arrives via {@code ServerboundMovePlayerPacket.Rot} → {@code absMoveTo}, which
         // sets {@code getYRot()}/{@code getXRot()} but NEVER {@code yHeadRot}.
         {
-            // A ring-mounted gun fires along the RATE-LIMITED turret (the same slewed angle its muzzle orbits by below),
-            // so the shot leaves the barrel instead of the operator's instant look; a fixed gun still tracks the look.
-            float relYaw = mount.turret
-                ? turretOrbitYaw(1.0F)
-                : Mth.wrapDegrees(shooter.getYRot() - hullYaw);
-            float relPitch = Mth.wrapDegrees(shooter.getXRot() - hullPitch);
-            boolean finiteYaw = Math.abs((int) mount.minYaw) < 360 && Math.abs((int) mount.maxYaw) < 360;
-            if (finiteYaw) {
-                relYaw = Mth.clamp(Mth.wrapDegrees(relYaw - mount.defaultYaw), mount.minYaw, mount.maxYaw)
-                    + mount.defaultYaw;
+            // Reference MCH_EntityAircraft.updateWeaponsRotation (:4485-4515) + MCH_WeaponSet.use (:312-315): the shot
+            // is hull + THIS WEAPON's own rotationYaw/rotationPitch, and that angle tracks the player who OPERATES
+            // this mount — never the pilot's turret ring. `turret` contributes only `ty` (:4495), the frame the
+            // traverse limits are measured in; it cancels outright on an unlimited mount.
+            //
+            // Firing a turret mount along turretOrbitYaw() was the "secondary weapons only shoot forward" bug: the
+            // ring is PILOT-sourced (updateAimLatch reads pilot()), so a gunner's shots left along the driver's aim,
+            // or along hull-forward when no driver had ever boarded. The ring and the aim are different quantities;
+            // they coincide only when the operator IS the pilot (on a tank: the main gun, not the secondaries).
+            //
+            // The renderer calls WeaponAim.renderYaw with these same three inputs, so the barrel and the projectile
+            // differ only by mount.defaultYaw, which the model geometry already carries.
+            //   AIM SOURCE = the operator's BODY yaw (getYRot()), NOT the head yaw (getYHeadRot()). This is the
+            // reference's field AND the only one that survives to the server: a passenger's rotation arrives via
+            // ServerboundMovePlayerPacket.Rot -> absMoveTo, which sets getYRot()/getXRot() but NEVER yHeadRot.
+            Entity aimer = weaponOperator(mount);
+            if (aimer == null) {
+                aimer = shooter; // eligibility() already guarantees these are the same player; belt and braces
             }
-            relPitch = Mth.clamp(relPitch, mount.minPitch, mount.maxPitch);
+            float aimTy = WeaponAim.turretBase(mount, turretOrbitYaw(1.0F));
+            float relYaw = WeaponAim.rotationYaw(mount, Mth.wrapDegrees(aimer.getYRot() - hullYaw), aimTy);
+            float relPitch = WeaponAim.rotationPitch(mount, Mth.wrapDegrees(aimer.getXRot() - hullPitch));
             yaw = hullYaw + relYaw;
             pitch = hullPitch + relPitch;
         }
@@ -3115,6 +3141,256 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             }
         }
         return false;
+    }
+
+    // ---- terrain interaction: the light sweep (all categories) + the tank crush/ram ----
+
+    /** Reference {@code MCH_EntityAircraft.onUpdate_updateBlock} (:2574-2592): four corner columns at ±0.4, two Y
+     *  levels. Snow layer vanishes silently, lily pad / cake break without drops. Runs on EVERY category, every
+     *  server tick — MCH_EntityHeli:776, MCP_EntityPlane:718, MCH_EntityTank:724, MCH_EntityVehicle:370 all call it. */
+    private void updateBlockLight(boolean grief) {
+        if (!grief) {
+            return;
+        }
+        for (int l = 0; l < 4; l++) {
+            int bx = Mth.floor(getX() + ((l % 2) - 0.5) * 0.8);
+            int bz = Mth.floor(getZ() + ((l / 2) - 0.5) * 0.8);
+            for (int k = 0; k < 2; k++) {
+                lightSweepAt(bx, Mth.floor(getY()) + k, bz);
+            }
+        }
+    }
+
+    /** One cell of the light sweep. Shared with the tank's per-wheel pass (reference {@code MCH_WheelManager.updateBlock}
+     *  :207-224 applies the identical snow/lily/cake rule under each wheel). Callers own the grief gate. */
+    private void lightSweepAt(int bx, int by, int bz) {
+        if (by < level().getMinBuildHeight() || by >= level().getMaxBuildHeight()) {
+            return;
+        }
+        BlockPos p = new BlockPos(bx, by, bz);
+        if (!level().isLoaded(p)) {
+            return;
+        }
+        BlockState s = level().getBlockState(p);
+        if (s.is(Blocks.SNOW)) {
+            level().removeBlock(p, false);
+        } else if (s.is(Blocks.LILY_PAD) || s.is(Blocks.CAKE)) {
+            level().destroyBlock(p, false, this);
+        }
+    }
+
+    /** The reference {@code MCH_TankInfo.weightType} (0 none / 1 car / 2 tank), or -1 for a category with no crush+ram
+     *  pass. {@code MCH_EntityTank} is the only reference class that has one, so only {@link MchTank} overrides this. */
+    protected int crushWeightType() {
+        return -1;
+    }
+
+    /** Test hook: top a seat's selected weapon up to a full reserve + magazine, so a headless probe can fire without
+     *  standing up the whole ammo-supply economy. Server-side only. */
+    public void debugSupplySeatWeapon(int seat) {
+        if (this.weapons == null || this.level().isClientSide) {
+            return;
+        }
+        WeaponSlot s = this.weapons.selected(seat);
+        if (s != null) {
+            s.supplyRestAllAmmo();
+            s.reloadMag();
+        }
+    }
+
+    /** Diagnostic hook for the headless self-tests: what a seat has selected and whether it can actually fire. */
+    public String debugSeatWeapon(int seat) {
+        if (this.weapons == null) {
+            return "<no weapons>";
+        }
+        WeaponSlot s = this.weapons.selected(seat);
+        if (s == null) {
+            return "seat " + seat + ": <nothing selected> slots=" + this.weapons.all().size();
+        }
+        return "seat " + seat + ": " + s.info.name + " canFire=" + s.canFire()
+            + " mag=" + s.magazine() + " reload=" + s.reloadFraction() + " heat=" + s.heatFraction()
+            + " occupant=" + (seatPassenger(seat) == null ? "<none>" : seatPassenger(seat).getType().toShortString())
+            + " fireHeld=" + controlState(seat).fire + " reloadingGate=" + isPilotReloading();
+    }
+
+    /** Diagnostic hook for the headless self-tests: the resolved config plus the terrain solve's current output. */
+    public String debugTerrainState() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null) {
+            return "<no info>";
+        }
+        double wcz = info instanceof mcheli.agnostic.tank.MCH_TankInfo ti ? ti.weightedCenterZ : 0.0;
+        var tilt = mcheli.agnostic.sim.WheelTerrainSampler.sample(this.ref, info, wcz);
+        return info.name + " wheels=" + (info.wheels == null ? -1 : info.wheels.size())
+            + " wt=" + crushWeightType() + " tickCount=" + this.tickCount
+            + (tilt == null ? " tilt=<null>"
+               : " targetPitch=" + tilt.targetPitch() + " targetRoll=" + tilt.targetRoll());
+    }
+
+    /** Reference {@code MCH_EntityTank.updateCollisionBox} (:791-808). Unconditional per tick — NOT speed-gated and
+     *  NOT contact-gated; the speed gate lives inside {@link #collisionEntity} only. */
+    private void updateCollisionBox(boolean grief) {
+        int wt = crushWeightType();
+        if (wt < 0) {
+            return;
+        }
+        MCH_AircraftInfo info = weaponHostInfo();
+        if (info == null) {
+            return; // reference early-returns from updateCollisionBox AND destoryBlockRange when getAcInfo() == null
+        }
+
+        // 1. Per-wheel light sweep. The reference drives real wheel ENTITIES; the port transforms each config wheel
+        //    directly. createWheels MIRRORS the list in X (`i % 2 == 0 ? wp.x : -wp.x`, MCH_WheelManager:52), so both
+        //    track sides must be swept — iterating info.wheels alone would only ever touch the +X side.
+        if (grief && wt > 0 && info.wheels != null) {
+            for (MCH_AircraftInfo.Wheel w : info.wheels) {
+                for (int side = 0; side < 2; side++) {
+                    double lx = side == 0 ? w.pos.x() : -w.pos.x();
+                    Vec3 v = transformLocal(lx, w.pos.y(), w.pos.z());
+                    // Reference uses (int) casts here, not floor.
+                    lightSweepAt((int) (v.x + 0.5), (int) (v.y + 0.5), (int) (v.z + 0.5));
+                }
+            }
+        }
+
+        // 2. Per-part boxes, 1-in-3 per box per tick — the SAME gate covers crush AND ram (reference :796-803).
+        if (this.extraBoxes != null) {
+            for (MCH_BoundingBox bb : this.extraBoxes) {
+                if (this.random.nextInt(3) != 0) {
+                    continue;
+                }
+                if (grief && wt > 0) {
+                    destroyBlockRange(bb.nowPos.x(), bb.nowPos.y(), bb.nowPos.z(), bb.width, bb.height, wt);
+                }
+                collisionEntity(mcBox(bb), wt);
+            }
+        }
+
+        // 3. Hull, ungated (reference :804-807): w = width * 1.5, h = height * 2.0. The reference reads the entity's
+        //    LIVE size, which onAcInfoReloaded() had re-set from the config; the port has one fixed-size EntityType per
+        //    category and never resizes, so take the body size from the config the way coreBox() does.
+        float bw = info.bodyWidth > 0.0F ? info.bodyWidth : 2.0F;
+        float bh = info.bodyHeight > 0.0F ? info.bodyHeight : 0.7F;
+        if (grief && wt > 0) {
+            destroyBlockRange(getX(), getY(), getZ(), bw * 1.5F, bh * 2.0F, wt);
+        }
+        collisionEntity(getBoundingBox(), wt);
+    }
+
+    /** Reference {@code destoryBlockRange} (:811-849). The loop bounds are exact, including the integer division of
+     *  the truncated double and the asymmetric {@code +1} on the top Y. There is deliberately no hardness or
+     *  blast-resistance test — {@link MchCrushableBlocks} IS the rule. */
+    private void destroyBlockRange(double vx, double vy, double vz, double w, double h, int wt) {
+        int ws = (int) (w + 2.0) / 2;
+        int hs = (int) (h + 2.0) / 2;
+        int minY = level().getMinBuildHeight();
+        int maxY = level().getMaxBuildHeight();
+        BlockPos.MutableBlockPos p = new BlockPos.MutableBlockPos();
+        for (int x = -ws; x <= ws; x++) {
+            for (int z = -ws; z <= ws; z++) {
+                for (int y = -hs; y <= hs + 1; y++) {
+                    int bx = (int) (vx + x - 0.5);
+                    int by = (int) (vy + y - 1.0);
+                    int bz = (int) (vz + z - 0.5);
+                    if (by < minY || by >= maxY) {
+                        continue; // reference bound was the 1.7.10 world, 0 <= by < 256
+                    }
+                    p.set(bx, by, bz);
+                    if (!level().isLoaded(p)) {
+                        break; // never load a chunk just to crush it
+                    }
+                    BlockState s = level().getBlockState(p);
+                    if (s.isAir()) {
+                        continue;
+                    }
+                    if (MchCrushableBlocks.noBreak(s, wt)) {
+                        break; // a protected block shields the rest of the column
+                    }
+                    if (MchCrushableBlocks.explicitBreak(s, wt)) {
+                        crushOne(p);
+                        break;
+                    }
+                    if (MchCrushableBlocks.materialBreak(s, wt)) {
+                        crushOne(p);
+                    }
+                }
+            }
+        }
+    }
+
+    /** Reference {@code MCH_EntityTank.destroyBlock} (:851-857): 1-in-8 drops its items and plays the break effect,
+     *  the other 7-in-8 vanish silently — which is what keeps a tank from carpeting the ground in item entities. */
+    private void crushOne(BlockPos pos) {
+        BlockPos immutable = pos.immutable();
+        if (this.random.nextInt(8) == 0) {
+            level().destroyBlock(immutable, true, this);
+        } else {
+            level().removeBlock(immutable, false);
+        }
+    }
+
+    /** Body-local → world at the CURRENT (non-interpolated) pose — reference {@code getTransformedPosition}. Uses the
+     *  agnostic rotate chain rather than JOML so these points agree bit-for-bit with {@code MCH_BoundingBox.nowPos}
+     *  and with {@code WheelTerrainSampler.transform}. ({@link #bodyRotation} is render-side and interpolated.) */
+    private Vec3 transformLocal(double lx, double ly, double lz) {
+        mcheli.agnostic.value.Vec3d v = new mcheli.agnostic.value.Vec3d(lx, ly, lz)
+            .rotateAroundZ(-getRollAngle() / 180.0F * (float) Math.PI)
+            .rotateAroundX(-getXRot() / 180.0F * (float) Math.PI)
+            .rotateAroundY(-getYRot() / 180.0F * (float) Math.PI);
+        return new Vec3(getX() + v.x(), getY() + v.y(), getZ() + v.z());
+    }
+
+    /** Reference {@code MCH_EntityTank.collisionEntity} (:732-771): ram damage {@code |motion| * 15} plus a proximity
+     *  bonus, knockback, and car self-damage. Tanks only (gated by {@link #crushWeightType()}). */
+    private void collisionEntity(AABB box, int wt) {
+        if (box == null) {
+            return;
+        }
+        Vec3 m = getDeltaMovement();
+        double speed = m.length();
+        if (speed <= 0.05) {
+            return; // reference gate: a parked tank rams nothing
+        }
+        float damage = (float) (speed * 15.0);
+        Entity rider = pilot();
+        for (Entity e : level().getEntities(this, box.inflate(0.3, 0.3, 0.3), this::ramTarget)) {
+            double dist = Math.min(Math.hypot(e.getX() - getX(), e.getZ() - getZ()), 5.0);
+            damage += (float) (5.0 - dist); // reference ACCUMULATES across targets within one call — kept
+            DamageSource ds = rider instanceof LivingEntity lr
+                ? damageSources().mobAttack(lr) : damageSources().generic();
+            // Reference MCH_Lib.applyEntityHurtResistantTimeConfig: scales the target's i-frames by the config
+            // HurtResistantTime, which DEFAULTS TO 0.0 (MCH_Config.java:317) — i.e. it clears them, so the per-tick
+            // ram always lands. Without this vanilla's 10-tick invulnerability would swallow ~9 of every 10 hits.
+            e.invulnerableTime = 0;
+            e.hurt(ds, damage);
+            if (e instanceof AbstractMchVehicle) {
+                e.setDeltaMovement(e.getDeltaMovement().add(m.x * 0.05, 0.0, m.z * 0.05));
+            } else if (e instanceof AbstractArrow) {
+                e.discard();
+            } else {
+                e.setDeltaMovement(e.getDeltaMovement().add(m.x * 1.5, 0.0, m.z * 1.5));
+            }
+            if (wt != MchCrushableBlocks.WEIGHT_TANK && (e.getBbWidth() >= 1.0F || e.getBbHeight() >= 1.5F)) {
+                // A CAR hurts itself ramming anything substantial; a real tank never does.
+                DamageSource back = e instanceof LivingEntity le
+                    ? damageSources().mobAttack(le) : damageSources().generic();
+                hurt(back, damage / 3.0F);
+            }
+        }
+    }
+
+    /** Reference ram selector + {@code shouldCollisionDamage} (:773-788): never ourselves, our own passengers, the
+     *  craft we are riding, dropped items/XP, our own projectiles — and never another heavy tank, because
+     *  {@code Collision_EntityTankDamage} defaults to FALSE (MCH_Config.java:274). */
+    private boolean ramTarget(Entity e) {
+        if (e == this || e == getVehicle() || e.getVehicle() == this || getPassengers().contains(e)) {
+            return false;
+        }
+        if (e instanceof ItemEntity || e instanceof ExperienceOrb
+            || e instanceof MchBullet || e instanceof MchCartridge || e instanceof MchFlare) {
+            return false;
+        }
+        return !(e instanceof MchTank t && t.crushWeightType() == MchCrushableBlocks.WEIGHT_TANK);
     }
 
     /** CLIENT: advance the wheel-spin + track-scroll phase from the SIGNED forward distance moved this tick (so parked

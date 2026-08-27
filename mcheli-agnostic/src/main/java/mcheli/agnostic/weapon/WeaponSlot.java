@@ -13,7 +13,8 @@ import mcheli.agnostic.aircraft.MCH_AircraftInfo;
  * <ul>
  *   <li><b>interval</b> = {@code info.delay} — ticks between shots ({@code countWait}); the reference sets
  *       {@code weapon.interval = info.delay} server-side (its extra client-only padding is prediction, not the
- *       authoritative rate).</li>
+ *       authoritative rate). Taken VERBATIM, with no lower bound: {@code Delay = 0} means one shot per tick, which
+ *       is what 35 of the bundled weapons — every rotary gun — are authored as.</li>
  *   <li><b>magazine</b> = {@code info.round} — rounds per burst; when it empties, a <b>reload</b> of
  *       {@code info.reloadTime} ticks runs, after which the magazine refills.</li>
  *   <li><b>barrel round-robin</b> — a set with N mounts fires <b>one</b> mount per shot, advancing
@@ -196,7 +197,18 @@ public final class WeaponSlot {
     public MCH_AircraftInfo.Weapon fireOneShot(boolean infinityAmmo) {
         MCH_AircraftInfo.Weapon mount = this.mounts.get(this.barrel);
         this.barrel = (this.barrel + 1) % this.mounts.size();
-        this.countWait = Math.max(1, this.info.delay);
+        // Reference MCH_WeaponSet.use:340 — `this.countWait = crtWpn.interval;` with NO floor. A Delay=0 weapon
+        // therefore leaves countWait at 0 and can fire again on the VERY NEXT tick; the old Math.max(1, delay) here
+        // halved the rate of every one of them. That is 35 bundled weapons, and they are exactly the rotary guns
+        // (GAU-8, GAU-12U, M61A1, the M134s, the GSh cannons, mg3_l/mg3_r, xm301).
+        //
+        // It also broke OVERHEATING outright, because heat accrues per SHOT while the bleed is per TICK: an m61a1 is
+        // HeatCount=1 -> heatPerShot 2, MaxHeatCount 150. Reference: +2 and -1 every tick = +1/tick, so it caps in
+        // 150 ticks. Halved: +2 per 2 ticks against -2 of bleed = net ZERO — the Vulcan could never overheat at all.
+        //
+        // Firing twice in one tick is not a risk: the trigger is serviced once per tick per seat in
+        // AbstractMchVehicle.tick(), so countWait == 0 means "eligible next tick", not "free-running".
+        this.countWait = this.info.delay;
         // Barrel heat (reference MCH_WeaponSet.use:358-363): each shot adds heatPerShot and resets the cooldown ramp;
         // the shot that reaches the cap parks +30 above it, forcing an extra ~1.5s of cooldown (the overheat penalty).
         if (this.info.maxHeatCount > 0) {

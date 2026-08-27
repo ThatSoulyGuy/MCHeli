@@ -101,6 +101,16 @@ public class MCHeli {
             //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoCasSelfTest());
             //// Dispenser proof (#31): "dispenser" is fireable, and a torch dispenser places torches across its radius.
             //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoDispenserSelfTest());
+            // Terrain-interaction proof: an UNRIDDEN tank tilts onto a slope server-side, and a driven tank crushes
+            // planks while leaving stone inert and a torch (plus the column above it) intact.
+            //
+            // Unlike the 18 above, this one is PROPERTY-GATED rather than commented out, so it can be run without
+            // editing code and still never pollutes an ordinary dev launch:
+            //     ./gradlew :neoforge-1.21.1:runServer -Dmcheli.selftests=true -Dmcheli.selftest.halt=true
+            // (the second flag stops the server once the verdict is logged, so a one-shot run terminates by itself).
+            if (System.getProperty("mcheli.selftests") != null) {
+                NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoCrushSelfTest());
+            }
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
     }

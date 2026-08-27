@@ -45,6 +45,14 @@ public class MchTank extends AbstractMchVehicle {
     /** Reference {@code MCH_ClientTankTickHandler} sweeps the tank radar at 10°/tick (twice the heli/vehicle rate). */
     @Override protected int radarSweepSpeed() { return 10; }
 
+    /** {@code MCH_EntityTank} is the only reference class with a block-crush + entity-ram pass; which lists apply is
+     *  selected by the config's {@code WeightType} directive (0 none / 1 Car / 2 Tank). All 12 bundled tank configs
+     *  declare it — 9 Tank, 3 Car (bnr32, growler, mxtmv) — so the 0 fallback is the missing-info path only. */
+    @Override protected int crushWeightType() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info instanceof MCH_TankInfo t ? t.weightType : 0;
+    }
+
 
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */

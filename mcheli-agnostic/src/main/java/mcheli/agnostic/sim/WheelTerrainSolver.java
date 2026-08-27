@@ -18,8 +18,10 @@ import mcheli.agnostic.value.Vec3d;
  *   <li>spawning/positioning the per-axle left+right wheel entities and moving/colliding them
  *       ({@code moveEntity}, the {@code motionY *= 0.15} settle, the {@code -0.1} gravity probe),
  *       which yields each wheel's collided world position and its {@code onGround} flag;</li>
- *   <li>the front/back {@code onGround} forcing (the two {@code zmog} passes over {@code isPlus}) —
- *       the host must apply this <b>before</b> sampling {@code onGround} into the contacts;</li>
+ *   <li>the front/back {@code onGround} forcing (the two {@code zmog} passes over {@code isPlus}) must be applied
+ *       <b>before</b> the contacts reach this solver — {@link WheelTerrainSampler} does it (its Phase B). It is a
+ *       correctness prerequisite, not a refinement: with every axle ungrounded the weights below all go to zero,
+ *       {@code rv} normalizes to ZERO, and {@code atan2(0, 0) == 0} makes this return {@code pitch=+90/roll=-90};</li>
  *   <li>the weighted-center world origin — {@code wc = ac.getTransformedPosition(weightedCenter)}
  *       with {@code wc.y = weightedCenter.y}, giving the origin
  *       {@code (ac.posX + wc.x, ac.posY + wc.y, ac.posZ + wc.z)}. This uses the entity transform

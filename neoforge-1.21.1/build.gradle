@@ -31,6 +31,13 @@ neoForge {
         server {
             server()
             programArgument '--nogui'
+            // Headless self-tests are OFF by default so an ordinary dev launch is not polluted with probe entities.
+            // Opt in with:  ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests
+            // (which also halts the server once the verdict is logged, so the run terminates by itself).
+            if (project.hasProperty('mcheliSelfTests')) {
+                systemProperty 'mcheli.selftests', 'true'
+                systemProperty 'mcheli.selftest.halt', 'true'
+            }
         }
     }
 

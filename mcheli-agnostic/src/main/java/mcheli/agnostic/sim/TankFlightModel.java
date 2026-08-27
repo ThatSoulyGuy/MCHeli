@@ -4,6 +4,7 @@ import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.math.MchMath;
 import mcheli.agnostic.spi.EntityRef;
+import mcheli.agnostic.tank.MCH_TankInfo;
 import mcheli.agnostic.value.MoveResult;
 import mcheli.agnostic.value.Vec3d;
 
@@ -16,9 +17,11 @@ import mcheli.agnostic.value.Vec3d;
  * (halves throttleBack + bleeds throttle) and NO pivot-turn boost / VTOL / sweep-wing. {@code getMaxSpeed} is just
  * {@code info.speed}.
  *
- * <p>Deferred (TODO): {@code updateWheels()} = {@code WheelMng.move(...)} — the host wheel-entity collision and
- * terrain-normal attitude (a future {@code WheelTerrainSolver} + wheel-contact seam). The tank body still moves
- * and rests on ground via the collision move; it just doesn't tilt to slopes yet.
+ * <p>{@code updateWheels()} = {@code WheelMng.move(...)} is implemented in {@link #integrateForces} via
+ * {@link WheelTerrainSampler}/{@link WheelTerrainSolver}: the hull tilts onto the terrain normal and gains the
+ * downhill slope-slide, every server tick, with no rider gate — matching the reference, where the rider decided only
+ * whether the attitude write was direct or smoothed. The reference's real {@code MCH_EntityWheel} entities are not
+ * ported; the sampler reproduces their resting contact with a block probe instead.
  */
 public final class TankFlightModel implements FlightModel {
 
@@ -193,8 +196,25 @@ public final class TankFlightModel implements FlightModel {
             // as a no-op — actively damping (as the base does) would feed a wrong pitch into rot2Vec3 next tick.
         }
 
-        // TODO(wheel-terrain): reference calls updateWheels() = WheelMng.move(motion) here (host wheel entities +
-        // terrain-normal attitude). Deferred — needs a wheel-contact seam (WheelTerrainSolver). Tank stays level.
+        // updateWheels() = WheelMng.move(motion) — the terrain-normal attitude solve. The reference calls this
+        // UNCONDITIONALLY here, between the on-ground damping (MCH_EntityTank:715) and the moveEntity (:719), on BOTH
+        // sides and with NO rider gate; the rider only decides whether the write is direct or smoothed
+        // (MCH_WheelManager:165-168 skips the direct write solely when the rider is the *client* player). We are on
+        // the server (integrateForces is reached only via AircraftFlightController.tickServer), so the direct write
+        // always applies — which is what makes an ABANDONED tank settle onto a slope instead of floating level.
+        double wcz = info instanceof MCH_TankInfo ti ? ti.weightedCenterZ : 0.0;
+        WheelTerrainSolver.TerrainTilt tilt = WheelTerrainSampler.sample(self, info, wcz);
+        if (tilt != null) {
+            motionX += tilt.slopeSlide().x(); // MCH_WheelManager:143 — downhill creep, applied pre-move
+            motionZ += tilt.slopeSlide().z(); // MCH_WheelManager:144
+            // The +/-90 clamp is NOT in the reference's server write (MCH_WheelManager writes raw after only the
+            // per-tick ogpf/ogrf clamp) — it is a deliberate divergence, mirroring the client-only clamp in
+            // MCH_EntityTank.setAngles. It is needed because ogpf/ogrf bound the per-tick DELTA, not the absolute
+            // magnitude: a tank wedged against a wall would otherwise walk past 90 and start tripping
+            // collisionGroundDamage (MchTank.giveDamageRot() = 91.0F). Do not "restore parity" by removing it.
+            self.setRotation(self.yaw(), MchMath.clamp(tilt.targetPitch(), -90.0F, 90.0F));
+            self.setRoll(MchMath.clamp(tilt.targetRoll(), -90.0F, 90.0F));
+        }
 
         Vec3d delta = new Vec3d(motionX, motionY, motionZ);
         self.setMotion(delta);

@@ -48,7 +48,7 @@ public abstract class MCH_InfoManagerBase {
                         str = str.trim();
                         int eqIdx = str.indexOf('=');
                         if (eqIdx >= 0 && str.length() > eqIdx + 1) {
-                            info.loadItemData(str.substring(0, eqIdx).trim().toLowerCase(), str.substring(eqIdx + 1).trim());
+                            info.loadItemData(str.substring(0, eqIdx).trim().toLowerCase(java.util.Locale.ROOT), str.substring(eqIdx + 1).trim());
                         }
                     }
 

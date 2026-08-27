@@ -83,6 +83,10 @@ class HeliControlMappingTest {
 
     static final class FakeHeliState implements HeliState {
         boolean hovering;
+        /** These traces drive the stick, which only happens with someone in the seat. Not read by
+         *  {@code HeliControlMapping} (the predicate's sole consumer is {@code HeliFlightModel}), but stated
+         *  explicitly because {@link HeliState#hasPilot()} deliberately has no default. */
+        @Override public boolean hasPilot() { return true; }
         @Override public boolean isDestroyed() { return false; }
         @Override public boolean isHovering() { return hovering; }
         @Override public boolean isHoveringMode() { return hovering; }

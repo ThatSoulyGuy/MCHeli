@@ -31,8 +31,12 @@ public final class MchPackResourcesFinder {
     private static final Logger LOGGER = LogUtils.getLogger();
 
     public static void onAddPackFinders(AddPackFindersEvent event) {
+        if (event.getPackType() == PackType.SERVER_DATA) {
+            addRecipePack(event);
+            return; // pack textures/audio are client resources; the recipes are the only server-side contribution
+        }
         if (event.getPackType() != PackType.CLIENT_RESOURCES) {
-            return; // pack textures/audio are client resources; nothing to add server-side
+            return;
         }
         for (PackMount mount : MchContentPacks.mounts()) {
             String id = "mcheli/" + mount.name();
@@ -59,5 +63,33 @@ public final class MchPackResourcesFinder {
             event.addRepositorySource(consumer -> consumer.accept(pack));
             LOGGER.info("MCHeli: mounted content-pack resources for '{}'", mount.name());
         }
+    }
+
+    /**
+     * Mount the generated vehicle crafting recipes ({@link MchRecipePack}). Fixed + required + BOTTOM: unlike the
+     * asset packs these must NOT override anything — a datapack an operator adds should still be able to replace a
+     * generated recipe, and the four hand-written {@code data/mcheli/recipe/*.json} files keep priority.
+     */
+    private static void addRecipePack(AddPackFindersEvent event) {
+        PackLocationInfo location = new PackLocationInfo(
+            "mcheli/recipes", Component.literal("MCHeli vehicle recipes"), PackSource.BUILT_IN, Optional.empty());
+        Pack.ResourcesSupplier resources = new Pack.ResourcesSupplier() {
+            @Override
+            public PackResources openPrimary(PackLocationInfo loc) {
+                return new MchRecipePack(loc);
+            }
+            @Override
+            public PackResources openFull(PackLocationInfo loc, Pack.Metadata meta) {
+                return new MchRecipePack(loc);
+            }
+        };
+        PackSelectionConfig selection = new PackSelectionConfig(true, Pack.Position.BOTTOM, false);
+        Pack pack = Pack.readMetaAndCreate(location, resources, PackType.SERVER_DATA, selection);
+        if (pack == null) {
+            LOGGER.warn("MCHeli: vehicle recipe pack produced no datapack (metadata error?)");
+            return;
+        }
+        event.addRepositorySource(consumer -> consumer.accept(pack));
+        LOGGER.info("MCHeli: mounted generated vehicle recipe datapack");
     }
 }

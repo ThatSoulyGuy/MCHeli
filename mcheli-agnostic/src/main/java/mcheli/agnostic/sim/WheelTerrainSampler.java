@@ -19,6 +19,13 @@ import mcheli.agnostic.value.Vec3d;
  * position is transformed into the world by the hull orientation (reference {@code getTransformedPosition} =
  * {@code RotVec3(-yaw,-pitch,-roll) + pos}), the terrain surface Y beneath it is probed, and the contact is expressed
  * relative to the weighted-center world origin exactly as the reference's {@code v1}/{@code v2}.
+ *
+ * <p>The reference's fore/aft {@code onGround} forcing (the two {@code zmog} passes, {@code MCH_WheelManager}:92-117)
+ * is applied here, between the probe and the contact list. It is not cosmetic: {@link WheelTerrainSolver} zeroes an
+ * axle's weight when neither of its wheels is grounded, so a body with NO contact at all would accumulate a zero
+ * normal, and {@code atan2(0, 0) == 0} would yield a hard {@code pitch=+90 / roll=-90}. The forcing guarantees at
+ * least one fore and one aft axle always carries weight, which keeps an airborne or wedged hull solving to its
+ * CURRENT attitude instead of snapping vertical.
  */
 public final class WheelTerrainSampler {
 
@@ -44,9 +51,9 @@ public final class WheelTerrainSampler {
         Vec3d pos = self.position();
         WorldView world = self.world();
 
-        // Weighted-center world origin: x/z rotated by the hull, y = the raw weightedCenter.y (reference wc.y).
+        // Weighted-center world origin, x/z only (rotated by the hull, as the reference does). Its Y is NOT taken
+        // from the hull — see the note in phase C, where it is set to the mean contact height instead.
         Vec3d wc = transform(new Vec3d(0.0, WEIGHTED_CENTER_Y, weightedCenterZ), yaw, pitch, roll, pos);
-        Vec3d origin = new Vec3d(wc.x(), pos.y() + WEIGHTED_CENTER_Y, wc.z());
 
         double minZ = Double.POSITIVE_INFINITY;
         double maxZ = Double.NEGATIVE_INFINITY;
@@ -59,22 +66,94 @@ public final class WheelTerrainSampler {
             return null; // single-axle config: no fore/aft lever, no meaningful pitch
         }
 
-        List<WheelTerrainSolver.WheelContact> contacts = new ArrayList<>(wheels.size());
-        for (MCH_AircraftInfo.Wheel w : wheels) {
+        // Phase A — transform each axle's +x/-x wheel into the world and probe the surface beneath it.
+        int n = wheels.size();
+        Vec3d[] leftW = new Vec3d[n];
+        Vec3d[] rightW = new Vec3d[n];
+        double[] leftY = new double[n];
+        double[] rightY = new double[n];
+        boolean[] leftOn = new boolean[n];
+        boolean[] rightOn = new boolean[n];
+        double[] localZ = new double[n];
+        boolean[] isPlus = new boolean[n];
+        for (int i = 0; i < n; i++) {
+            MCH_AircraftInfo.Wheel w = wheels.get(i);
             double lx = w.pos.x();
             double ly = w.pos.y();
             double lz = w.pos.z();
-            Vec3d leftW = transform(new Vec3d(lx, ly, lz), yaw, pitch, roll, pos);    // +x wheel (reference v1)
-            Vec3d rightW = transform(new Vec3d(-lx, ly, lz), yaw, pitch, roll, pos);  // -x wheel (reference v2)
-            double leftY = groundSurfaceY(world, leftW);
-            double rightY = groundSurfaceY(world, rightW);
-            boolean leftOn = !Double.isNaN(leftY);
-            boolean rightOn = !Double.isNaN(rightY);
-            Vec3d left = new Vec3d(leftW.x() - origin.x(),
-                (leftOn ? leftY : leftW.y()) - origin.y(), leftW.z() - origin.z());
-            Vec3d right = new Vec3d(rightW.x() - origin.x(),
-                (rightOn ? rightY : rightW.y()) - origin.y(), rightW.z() - origin.z());
-            contacts.add(new WheelTerrainSolver.WheelContact(left, right, lz, leftOn, rightOn));
+            leftW[i] = transform(new Vec3d(lx, ly, lz), yaw, pitch, roll, pos);    // +x wheel (reference v1)
+            rightW[i] = transform(new Vec3d(-lx, ly, lz), yaw, pitch, roll, pos);  // -x wheel (reference v2)
+            leftY[i] = groundSurfaceY(world, leftW[i]);
+            rightY[i] = groundSurfaceY(world, rightW[i]);
+            leftOn[i] = !Double.isNaN(leftY[i]);
+            rightOn[i] = !Double.isNaN(rightY[i]);
+            localZ[i] = lz;
+            isPlus[i] = lz >= weightedCenterZ; // reference MCH_EntityWheel.setWheelPos: pos.z >= weightedCenter.z
+        }
+
+        // Phase B — the reference's two fore/aft onGround forcing passes (MCH_WheelManager:92-117), verbatim over
+        // axles (the reference indexes wheel PAIRS, wheels[2i+0]/wheels[2i+1], which is one axle each).
+        // Pass 1 walks front->back looking for a grounded AFT (!isPlus) axle; if it never finds one, the last axle
+        // visited is forced grounded. Pass 2 mirrors that back->front for the FORE (isPlus) axles.
+        int zmog = -1;
+        for (int i = 0; i < n; i++) {
+            zmog = i;
+            if (isPlus[i] || (!leftOn[i] && !rightOn[i])) {
+                continue;
+            }
+            zmog = -1;
+            break;
+        }
+        if (zmog >= 0) {
+            leftOn[zmog] = true;
+            rightOn[zmog] = true;
+        }
+        zmog = -1;
+        for (int i = n - 1; i >= 0; i--) {
+            zmog = i;
+            if (!isPlus[i] || (!leftOn[i] && !rightOn[i])) {
+                continue;
+            }
+            zmog = -1;
+            break;
+        }
+        if (zmog >= 0) {
+            leftOn[zmog] = true;
+            rightOn[zmog] = true;
+        }
+
+        // Phase C — resolve each wheel's resting height. The forcing flips only the solver's weight gate, never the
+        // geometry (the reference forces the wheel entity's onGround flag, not its position), so a forced-but-unprobed
+        // wheel keeps its own transformed Y — which is what makes an airborne hull solve to its current attitude.
+        double[] leftC = new double[n];
+        double[] rightC = new double[n];
+        double sumY = 0.0;
+        for (int i = 0; i < n; i++) {
+            leftC[i] = !Double.isNaN(leftY[i]) ? leftY[i] : leftW[i].y();
+            rightC[i] = !Double.isNaN(rightY[i]) ? rightY[i] : rightW[i].y();
+            sumY += leftC[i] + rightC[i];
+        }
+
+        // DIVERGENCE FROM THE REFERENCE, and it is load-bearing. The reference measures each contact from
+        // y = ac.posY + weightedCenter.y (a fixed -0.35 under the hull) because its contacts are real MCH_EntityWheel
+        // entities that LAG toward the hull's transformed wheel position — so when the hull pitches, a lifting wheel's
+        // own Y rises with it and the height offset stays small. This port has no wheel entities: it snaps each
+        // contact straight onto the terrain. With a hull-referenced origin that leaves every contact pinned a constant
+        // h above the origin, and since the solver's normal for an axle is (0, 2az, -2ah), tilting the hull shrinks
+        // the z lever while h stays put — the tilt feeds itself and runs away (measured: a LEVEL tank on FLAT ground
+        // reaching 30 deg of pitch in 20 ticks, still climbing).
+        //
+        // Referencing the contact plane instead makes the solve exact and self-calibrating: for ground of gradient g
+        // the mean-centred heights are h_i = g*z_i, so the axle normal is (0, 2az_i, -2a*g*z_i) proportional to
+        // (0, 1, -g) — the true surface normal — and flat ground gives exactly (0, 1, 0), i.e. zero tilt, for ANY
+        // hull height and ANY wheelbase (the reference's formula only cancels for a symmetric one).
+        Vec3d origin = new Vec3d(wc.x(), sumY / (2.0 * n), wc.z());
+
+        List<WheelTerrainSolver.WheelContact> contacts = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            Vec3d left = new Vec3d(leftW[i].x() - origin.x(), leftC[i] - origin.y(), leftW[i].z() - origin.z());
+            Vec3d right = new Vec3d(rightW[i].x() - origin.x(), rightC[i] - origin.y(), rightW[i].z() - origin.z());
+            contacts.add(new WheelTerrainSolver.WheelContact(left, right, localZ[i], leftOn[i], rightOn[i]));
         }
         return WheelTerrainSolver.solve(self, info, contacts, avgZ);
     }

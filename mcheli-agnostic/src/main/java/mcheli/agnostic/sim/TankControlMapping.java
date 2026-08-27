@@ -18,9 +18,12 @@ import mcheli.agnostic.tank.MCH_TankInfo;
  * the pivot-turn logic); the pivot gate short-circuits when {@code pivotTurnThrottle<=0}, so the client copy's idle
  * throttle is harmless. Turn rate is tunable via {@code mobilityYawOnGround} if the feel is off.
  *
- * <p>Deferred (TODO): {@code WheelMng} suspension — the reference lerps pitch/roll toward {@code WheelMng.targetPitch/
- * targetRoll} (host wheel-entity terrain contact); here the targets are 0, so the hull stays level. The turret/camera
- * aim + first-person hull-tilt compensation from the reference setAngles are client-render concerns, not ported.
+ * <p>The {@code WheelMng} suspension lerp below is the LOCAL PILOT's half of the terrain follow only — the reference
+ * put the client player on a render-frame lerp toward {@code WheelMng.targetPitch/targetRoll}
+ * ({@code MCH_EntityTank.onUpdateAngles}:344-345) rather than the direct write. The authoritative solve now runs
+ * every server tick for every tank in {@link TankFlightModel#integrateForces}, ridden or not; this path only smooths
+ * it for the one client that is driving. The turret/camera aim + first-person hull-tilt compensation from the
+ * reference setAngles are client-render concerns, not ported.
  */
 public final class TankControlMapping implements RotationSolver.ControlMapping {
 

@@ -59,6 +59,13 @@ class HeliFlightModelTraceTest {
     /** Mutable heli mod-state, defaulting to "flyable". */
     static final class Heli implements HeliState {
         boolean hovering, hoveringMode, gunnerMode, destroyed;
+        /** Mirrors production ({@code DemoHeliState.hasPilot() = owner.pilot() != null}) rather than hardcoding a
+         *  constant, so the riderless trace actually exercises the real gate instead of asserting against a stub. */
+        private final EntityRef owner;
+
+        Heli(EntityRef owner) { this.owner = owner; }
+
+        public boolean hasPilot() { return !owner.passengers().isEmpty(); }
         public boolean isDestroyed() { return destroyed; }
         public boolean isHovering() { return hovering; }
         public boolean isHoveringMode() { return hoveringMode; }
@@ -138,7 +145,7 @@ class HeliFlightModelTraceTest {
         AircraftSimState st = new AircraftSimState(0.07);
         st.currentThrottle = 1.0;
 
-        tick(e, hi, st, ControlInput.NONE, new Heli());
+        tick(e, hi, st, ControlInput.NONE, new Heli(e));
 
         assertEquals(0.0, e.mx, 1e-9);              // yaw 0 -> sin(0)=0 -> no lateral cyclic
         assertTrue(e.mz < 0, "nose-down cyclic pushes -Z, was " + e.mz);
@@ -155,7 +162,7 @@ class HeliFlightModelTraceTest {
         AircraftSimState st = new AircraftSimState(0.07);
         st.currentThrottle = 0.5;
 
-        tick(e, hi, st, ControlInput.ground(true, false, false, false), new Heli()); // throttleUp
+        tick(e, hi, st, ControlInput.ground(true, false, false, false), new Heli(e)); // throttleUp
         assertEquals(0.52, st.currentThrottle, 1e-9); // +0.02 * throttleUpDown(1)
     }
 
@@ -165,7 +172,7 @@ class HeliFlightModelTraceTest {
         MCH_HeliInfo hi = info();
         AircraftSimState st = new AircraftSimState(0.07);
         st.currentThrottle = 0.5;
-        Heli mod = new Heli();
+        Heli mod = new Heli(e);
         mod.hovering = true;
 
         tick(e, hi, st, ControlInput.NONE, mod);
@@ -179,7 +186,7 @@ class HeliFlightModelTraceTest {
         AircraftSimState st = new AircraftSimState(0.07);
         st.currentThrottle = 0.5;
 
-        tick(e, hi, st, ControlInput.NONE, new Heli());
+        tick(e, hi, st, ControlInput.NONE, new Heli(e));
         assertEquals(0.49875, st.currentThrottle, 1e-12); // 0.5 - 0.00125
     }
 }

@@ -18,6 +18,7 @@ import mcheli.agnostic.plane.MCP_PlaneInfo;
 import mcheli.agnostic.spi.ModelHandle;
 import mcheli.agnostic.value.Vec3d;
 import mcheli.agnostic.vehicle.MCH_VehicleInfo;
+import mcheli.agnostic.weapon.WeaponAim;
 import net.minecraft.world.entity.Entity;
 import org.joml.Quaternionf;
 import mcheli.dependent.entity.AbstractMchVehicle;
@@ -361,6 +362,10 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             pose.pushPose();
             // The RING is the pilot's turret slew (never a gunner's head); a weapon's own aim is its operator's look.
             float ring = w.turret ? ringYaw : 0.0F;
+            // The AIM ty keys off Weapon.turret (AddTurretWeapon), NOT PartWeapon.turret (AddPartTurretWeapon) — the
+            // reference splits them: updateWeaponsRotation:4495 reads wi.turret, renderWeapon:534/557 reads w.turret.
+            // m1a2 mixes the two (main gun: AddPartWeapon + AddTurretWeapon), so `ring` above is the wrong quantity here.
+            float aimTy = WeaponAim.turretBase(weapon, ringYaw);
             if (w.turret) { // block 1: onto the turret ring about turretPosition; glRotatef(ring,0,-1,0) == Axis.YP(-ring)
                 pose.translate(tp.x(), tp.y(), tp.z());
                 pose.mulPose(Axis.YP.rotationDegrees(-ring));
@@ -368,9 +373,13 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             }
             pose.translate(w.pos.x(), w.pos.y(), w.pos.z());
             if (w.yaw && operated) {
+                // Passing the operator's OWN relYaw as ty (as this did) makes ey collapse to -defaultYaw, which
+                // defeats the finite-yaw clamp entirely — m1a2's m240_r traversed a full 360 against its -220..30
+                // config. ty is the ring, and it is shared by both interpolation endpoints because turretOrbitYaw
+                // already interpolates (re-lerping it gives a partialTick-squared ease).
                 pose.mulPose(Axis.YP.rotationDegrees(-calcRot(
-                    weaponYaw(weapon, relYaw, w.turret ? relYaw : 0.0F),
-                    weaponYaw(weapon, relYawO, w.turret ? relYawO : 0.0F), partialTick)));
+                    WeaponAim.renderYaw(weapon, relYaw, aimTy),
+                    WeaponAim.renderYaw(weapon, relYawO, aimTy), partialTick)));
             }
             if (w.turret && operated) { // block 2: rotationTurretYaw==0 for the OPERATING player; an unmanned weapon's
                 pose.mulPose(Axis.YP.rotationDegrees(ring)); // rotationTurretYaw tracks the ring -> block 2 cancels
@@ -385,8 +394,8 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             if (w.pitch && operated) {
                 // Reference order: clamp the relative pitch FIRST (updateWeaponsRotation RNG), THEN negate for a
                 // side-mounted gun (renderWeapon rev_sign) — negate-then-clamp breaks asymmetric ranges at the limits.
-                float p = weaponPitch(weapon, relPitch);
-                float pO = weaponPitch(weapon, relPitchO);
+                float p = WeaponAim.rotationPitch(weapon, relPitch);
+                float pO = WeaponAim.rotationPitch(weapon, relPitchO);
                 if (revSign) {
                     p = -p;
                     pO = -pO;
@@ -406,7 +415,7 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             if (w.child != null) {
                 for (MCH_AircraftInfo.PartWeaponChild wc : w.child) {
                     pose.pushPose();
-                    renderWeaponChild(model, wc, weapon, relYaw, relYawO, relPitch, relPitchO,
+                    renderWeaponChild(model, wc, weapon, relYaw, relYawO, relPitch, relPitchO, aimTy,
                         pose, consumer, light, overlay, partialTick, c, hidden, operated);
                     pose.popPose();
                 }
@@ -418,13 +427,13 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
     /** Port of {@code MCH_RenderAircraft.renderWeaponChild} (687-764): same aim as the parent MINUS the turret ring and
      *  the barrel; the {@code pose} is already at the parent's post-{@code (-w.pos)} frame. */
     private static void renderWeaponChild(MchModel model, MCH_AircraftInfo.PartWeaponChild w, MCH_AircraftInfo.Weapon weapon,
-                                          float relYaw, float relYawO, float relPitch, float relPitchO,
+                                          float relYaw, float relYawO, float relPitch, float relPitchO, float aimTy,
                                           PoseStack pose, VertexConsumer consumer, int light, int overlay, float partialTick,
                                           int c, Set<String> hidden, boolean operated) {
         pose.translate(w.pos.x(), w.pos.y(), w.pos.z());
         if (w.yaw && operated) {
             pose.mulPose(Axis.YP.rotationDegrees(-calcRot(
-                weaponYaw(weapon, relYaw, 0.0F), weaponYaw(weapon, relYawO, 0.0F), partialTick)));
+                WeaponAim.renderYaw(weapon, relYaw, aimTy), WeaponAim.renderYaw(weapon, relYawO, aimTy), partialTick)));
         }
         boolean revSign = false;
         float defYaw = weapon != null ? weapon.defaultYaw : 0.0F;
@@ -434,8 +443,8 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             pose.mulPose(Axis.YP.rotationDegrees(defYaw));
         }
         if (w.pitch && operated) {
-            float p = weaponPitch(weapon, relPitch);   // clamp FIRST, then rev_sign negate (reference order)
-            float pO = weaponPitch(weapon, relPitchO);
+            float p = WeaponAim.rotationPitch(weapon, relPitch); // clamp FIRST, then rev_sign negate (reference order)
+            float pO = WeaponAim.rotationPitch(weapon, relPitchO);
             if (revSign) {
                 p = -p;
                 pO = -pO;
@@ -450,23 +459,10 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             "$" + w.modelName, hidden);
     }
 
-    /** {@code ws.rotationYaw − ws.defaultRotationYaw} for a single rider (renderWeapon 592-601 + updateWeaponsRotation
-     *  5055-5078): the rider look-yaw relative to the hull, clamped to a FINITE yaw range, plus the turret-ring yaw. */
-    private static float weaponYaw(MCH_AircraftInfo.Weapon weapon, float relYaw, float ty) {
-        if (weapon == null) {
-            return relYaw; // reference `else e!=null` branch: rider yaw minus hull
-        }
-        float ey = Mth.wrapDegrees(relYaw - weapon.defaultYaw - ty);
-        boolean finite = Math.abs((int) weapon.minYaw) < 360 && Math.abs((int) weapon.maxYaw) < 360;
-        float rotationYaw = finite ? clampF(ey, weapon.minYaw, weapon.maxYaw) + weapon.defaultYaw + ty : ey + ty;
-        return rotationYaw - weapon.defaultYaw;
-    }
-
-    /** {@code ws.rotationPitch} for a single rider (updateWeaponsRotation 5081-5082): rider look-pitch relative to the
-     *  hull, clamped to the weapon's pitch range. */
-    private static float weaponPitch(MCH_AircraftInfo.Weapon weapon, float relPitch) {
-        return weapon == null ? relPitch : clampF(relPitch, weapon.minPitch, weapon.maxPitch);
-    }
+    // The weapon aim formula lives in mcheli.agnostic.weapon.WeaponAim, shared VERBATIM with the server's
+    // AbstractMchVehicle.fireSelectedWeapon. Two copies of it here and there is exactly how the rendered barrel and
+    // the projectile drifted apart: this file's local copy was passing the operator's own yaw as `ty`, which
+    // collapsed the finite-yaw clamp, while the server fired along the pilot's turret ring.
 
     private static float clampF(float v, float lo, float hi) {
         return v < lo ? lo : (v > hi ? hi : v);
