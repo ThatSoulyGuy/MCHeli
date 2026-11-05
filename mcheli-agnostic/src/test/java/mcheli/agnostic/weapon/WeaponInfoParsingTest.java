@@ -95,6 +95,23 @@ class WeaponInfoParsingTest {
     }
 
     @Test
+    void explosionBlockDefaultsToExplosionOnLoad() throws Exception {
+        // The reference loader ran checkData() after parsing, so a weapon without an explicit ExplosionBlock broke
+        // blocks with its Explosion power. The port's loader only calls isValidData() -> the default must apply there.
+        MCH_WeaponInfo w = new MCH_WeaponInfo("rocket");
+        w.loadItemData("explosion", "3");
+        assertEquals(-1, w.explosionBlock); // unset after parsing
+        w.isValidData();
+        assertEquals(3, w.explosionBlock);
+
+        MCH_WeaponInfo explicit = new MCH_WeaponInfo("rocket_noblock");
+        explicit.loadItemData("explosion", "3");
+        explicit.loadItemData("explosionblock", "0");
+        explicit.isValidData();
+        assertEquals(0, explicit.explosionBlock); // an explicit value is kept
+    }
+
+    @Test
     void parsesZoomArray() {
         MCH_WeaponInfo w = new MCH_WeaponInfo("scope");
         w.loadItemData("zoom", "2, 4, 8");

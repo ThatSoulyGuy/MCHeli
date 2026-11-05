@@ -47,6 +47,7 @@ class HeliControlMappingTest {
     /** Rotation-only heli fake: rotation + a fixed airborne position + old enough to allow rotation. */
     static final class FakeHeli implements EntityRef {
         float yaw, pitch, roll;
+        boolean grounded; // vanilla onGround flag
         private final WorldView world = new AirWorld();
         @Override public float yaw() { return yaw; }
         @Override public float pitch() { return pitch; }
@@ -70,7 +71,7 @@ class HeliControlMappingTest {
         @Override public float width() { return 1; }
         @Override public float height() { return 1; }
         @Override public AABB boundingBox() { return new AABB(0, 99, 0, 1, 100, 1); }
-        @Override public boolean onGround() { return false; }
+        @Override public boolean onGround() { return grounded; }
         @Override public boolean isInWater() { return false; }
         @Override public void setPosition(Vec3d p) { }
         @Override public void setMotion(Vec3d m) { }
@@ -124,6 +125,23 @@ class HeliControlMappingTest {
         assertEquals(1.2f, e.yaw, 0.2f);
         assertTrue(e.roll > 0.3f && e.roll < 0.7f, "banked right ~0.59, was " + e.roll);
         assertEquals(0.0f, e.pitch, 0.1f);
+    }
+
+    @Test
+    void parkedHeliIgnoresTheMouseEvenWhenTheProbeSeesNoGround() {
+        // Resting on ground the 2-row probe cannot see (1-layer snow, tall grass, a terrace edge): the probe says
+        // "air" but Minecraft reports ground contact -> no mouse pitch/roll/yaw, and the on-ground auto-level runs.
+        FakeHeli e = new FakeHeli();
+        e.grounded = true;
+        e.pitch = 10.0F;
+        MCH_HeliInfo info = new MCH_HeliInfo("test_heli");
+        HeliControlMapping map = new HeliControlMapping(e, info, new AircraftSimState(), new FakeHeliState());
+        assertTrue(!map.canUpdatePitch() && !map.canUpdateRoll() && !map.canUpdateYaw(), "no mouse rotation on the ground");
+        for (int i = 0; i < 20; i++) {
+            RotationSolver.applyControl(e, info, stick(100, 1000, false, false, 0.5F), primed(0.5F), map);
+        }
+        assertTrue(Math.abs(e.roll) < 0.01F, "no bank on the ground, was " + e.roll);
+        assertTrue(e.pitch < 10.0F && e.pitch > 0.0F, "pitch levels toward onGroundPitch, was " + e.pitch);
     }
 
     @Test

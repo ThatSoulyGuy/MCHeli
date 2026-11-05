@@ -54,8 +54,13 @@ public final class HeliControlMapping implements RotationSolver.ControlMapping {
     // below). countOnUpdate ≈ ticks-since-spawn -> use ageTicks() (available client-side, unlike the server's
     // physics countOnUpdate). The base's getRidingEntity()!=null -> false term is always false here (the demo vehicle
     // never rides another entity), so it is omitted.
+    // ON THE GROUND = the reference 2-block probe OR Minecraft's own ground contact. The probe alone misses ground it
+    // cannot "see": it only counts blocks with a collision shape in the 3x3 column (a 1-layer snow cover, tall grass
+    // or flowers don't), and it scans just two rows below the rounded position — so on snowy/grassy terrain or a hull
+    // resting on a terrace edge the craft counted as AIRBORNE while parked, and the mouse could pitch/roll it into
+    // the ground. The vanilla onGround flag (synced to the client) closes that gap.
     private boolean baseCanUpdate() {
-        return self.ageTicks() >= 30 && GroundProbe.blockIdInColumn(self, 3, -2) == 0;
+        return self.ageTicks() >= 30 && !self.onGround() && GroundProbe.blockIdInColumn(self, 3, -2) == 0;
     }
 
     @Override
@@ -73,7 +78,7 @@ public final class HeliControlMapping implements RotationSolver.ControlMapping {
             self.setRoll(self.roll() * rotRoll);
         }
 
-        if (GroundProbe.blockIdInColumn(self, 3, -3) == 0) { // in the air
+        if (!self.onGround() && GroundProbe.blockIdInColumn(self, 3, -3) == 0) { // in the air
             if (in.moveLeft() && !in.moveRight()) {
                 self.setRoll(self.roll() - 1.2F * partialTicks);
             }
