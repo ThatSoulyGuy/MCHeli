@@ -85,10 +85,24 @@ public class MchBullet extends Entity {
     /** Squared horizontal despawn distance from the shooter (5820², reference {@code checkValid}). */
     private static final double MAX_DIST_SQ = 3.38724E7;
 
-    // Guided-round kinds (the DATA_GUIDED byte). Kind 3 (AT top-attack) is reserved for when weapon-mode plumbing lands.
+    // Guided-round kinds (the DATA_GUIDED byte).
     public static final byte GUIDED_NONE = 0;
     public static final byte GUIDED_AA = 1;
     public static final byte GUIDED_AT_DIRECT = 2;
+    /** Blocks EVERY MCHeli round flies straight through without touching them — leaves and plants, so you can fire
+     *  through tree crowns and undergrowth (datapack-extendable tag {@code mcheli:bullet_passthrough}). */
+    public static final net.minecraft.tags.TagKey<net.minecraft.world.level.block.Block> BULLET_PASSTHROUGH =
+        net.minecraft.tags.TagKey.create(net.minecraft.core.registries.Registries.BLOCK,
+            net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(mcheli.MCHeli.MODID, "bullet_passthrough"));
+    /** Blocks ANY MCHeli round shoots through, breaking them — the reference {@code BulletBreakableBlocks} config
+     *  (glass panes), tag {@code mcheli:bullet_breakable}. */
+    public static final net.minecraft.tags.TagKey<net.minecraft.world.level.block.Block> BULLET_BREAKABLE =
+        net.minecraft.tags.TagKey.create(net.minecraft.core.registries.Registries.BLOCK,
+            net.minecraft.resources.ResourceLocation.fromNamespaceAndPath(mcheli.MCHeli.MODID, "bullet_breakable"));
+
+    /** AT top-attack (weapon mode [TA], reference {@code MCH_EntityATMissile.guidanceType == 1}): climb to the
+     *  shooter's altitude +150, level over the target, then dive onto it with a +20% damage / +1 blast kicker. */
+    public static final byte GUIDED_AT_TOP = 3;
 
     private float damage = 5.0F;
     private int life;
@@ -97,6 +111,10 @@ public class MchBullet extends Entity {
     private Entity shooter;             // server-side only; excluded from collision + blast
     private MCH_WeaponInfo weaponInfo;  // server-side only; source of all effect params
     private int piercing;               // live counter (blocks pierced remaining)
+    /** This round's blast power — the config {@code Explosion}, overridden per shot by the weapon MODE (reference
+     *  {@code MCH_EntityBaseBullet.explosionPower}): NEGATIVE = a non-explosive round that only plays the blast sound
+     *  (MachineGun2 normal mode), raised by the AT top-attack terminal kicker. */
+    private int explosionPower;
     private int delayFuseCounter;       // live countdown; 0 == unarmed (bounces off blocks)
     private int sprinkleTime;           // ticks until a cluster round splits (0 == not a cluster carrier)
     private boolean isBomblet;          // a sprinkled child (never re-splits)
@@ -190,6 +208,7 @@ public class MchBullet extends Entity {
         b.isBomblet = isBomblet;
         if (wi != null) {
             b.piercing = wi.piercing;
+            b.explosionPower = wi.explosion;
             if (!isBomblet && wi.bomblet > 0) {
                 b.sprinkleTime = wi.bombletSTime;
             }
@@ -232,6 +251,12 @@ public class MchBullet extends Entity {
         return spawnWeapon(level, pos, dir, speed, 1.0F, -Math.abs(gravity), damage, maxLife, shooter, "bullet",
             0xFFFFFFFF, null);
     }
+
+    /** Override this round's blast power (weapon mode). Negative = no blast, explosion sound only (reference). */
+    public void setExplosionPower(int power) { this.explosionPower = power; }
+
+    /** Override this round's remaining block-piercing count (weapon mode: a Rocket's non-HEIAP mode pierces nothing). */
+    public void setPiercing(int piercing) { this.piercing = Math.max(0, piercing); }
 
     public String bulletModelName() { return this.entityData.get(DATA_MODEL); }
     public int bulletColor() { return this.entityData.get(DATA_COLOR); }
@@ -328,8 +353,9 @@ public class MchBullet extends Entity {
         Vec3 to = from.add(step);
 
         if (!this.level().isClientSide) {
-            BlockHitResult block = this.level().clip(
-                new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this));
+            // Block collision: leaves/plants (#mcheli:bullet_passthrough) are ignored entirely, glass panes
+            // (#mcheli:bullet_breakable) shatter on the way (reference onUpdateCollided, up to 5 per step).
+            BlockHitResult block = clipRound(this.level(), from, to, this, this.shooter);
             boolean blockHit = block.getType() != HitResult.Type.MISS;
             Vec3 segEnd = blockHit ? block.getLocation() : to;
             EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(
@@ -391,7 +417,9 @@ public class MchBullet extends Entity {
                     return;
                 }
                 spawnBlockImpact(block);
-                onImpact(block.getLocation(), null);
+                // Detonate a hair OUTSIDE the struck face: a blast centred exactly on the surface has its line-of-sight
+                // rays to nearby mobs grazing that surface, so the splash damage was lost (only direct hits hurt).
+                onImpact(block.getLocation().add(Vec3.atLowerCornerOf(block.getDirection().getNormal()).scale(0.1)), null);
                 if (this.isRemoved()) {
                     return;
                 }
@@ -440,7 +468,7 @@ public class MchBullet extends Entity {
 
         // Proximity fuse (gun rounds), checked at the very end of the tick after the move. Guided rounds are EXCLUDED —
         // they run their own target-relative proximity in tickGuidance() (different semantics), so this would double.
-        if (!this.level().isClientSide && this.weaponInfo != null && this.weaponInfo.explosion > 0
+        if (!this.level().isClientSide && this.weaponInfo != null && this.explosionPower > 0
             && this.weaponInfo.proximityFuseDist > 0.1F && this.age > 1 && !this.isRemoved()
             && this.entityData.get(DATA_GUIDED) == GUIDED_NONE) {
             proximityCheck();
@@ -467,7 +495,7 @@ public class MchBullet extends Entity {
         double dy = this.getY() - this.targetEntity.getY();
         double dz = this.getZ() - this.targetEntity.getZ();
         double dSq = dx * dx + dy * dy + dz * dz;
-        double deathSq = g == GUIDED_AA ? 3422500.0 : 2250000.0; // AA 1850² / AT 1500² (reference)
+        double deathSq = g == GUIDED_AA ? 3422500.0 : 2250000.0; // AA 1850² / AT 1500² (reference, both AT modes)
         if (dSq > deathSq) {
             this.discard();
             return;
@@ -493,6 +521,37 @@ public class MchBullet extends Entity {
             float af = this.age < rigidity + startTick ? 0.5F : 1.0F;
             applyGuidedMotion(MCH_MissileGuidance.hardSnap(this.getX(), this.getY(), this.getZ(),
                 this.targetEntity.getX(), this.targetEntity.getY(), this.targetEntity.getZ(), this.guideSpeed, af));
+        } else if (g == GUIDED_AT_TOP) {
+            // Reference MCH_EntityATMissile.onUpdateMotion, guidanceType 1 (the [TA] weapon mode): the proximity fuse is
+            // live every tick like direct mode; after the boost the missile pursues three aim points in turn —
+            // 20 ticks toward a point 150 blocks above the SHOOTER's altitude over the target, 10 ticks back down to the
+            // shooter's altitude, then the target itself (with a one-shot +20% damage / +1 blast at boost+35).
+            if (proximityHit) {
+                detonateOnTarget(g);
+                return;
+            }
+            if (this.age <= rigidity) {
+                return;
+            }
+            double tx = this.targetEntity.getX();
+            double tz = this.targetEntity.getZ();
+            double ty;
+            if (this.age <= rigidity + 20) {
+                ty = this.shooter.getY() + 150.0;
+            } else if (this.age <= rigidity + 30) {
+                ty = this.shooter.getY();
+            } else {
+                if (this.age == rigidity + 35) {
+                    this.damage = (int) (this.damage * 1.2F); // reference setPower((int)(power * 1.2F))
+                    if (this.explosionPower > 0) {
+                        this.explosionPower++;
+                    }
+                }
+                ty = this.targetEntity.getY();
+            }
+            Vec3 m = this.getDeltaMovement();
+            applyGuidedMotion(MCH_MissileGuidance.guide(m.x, m.y, m.z, this.getX(), this.getY(), this.getZ(),
+                tx, ty, tz, this.guideSpeed));
         } else {
             if (this.age <= rigidity) {
                 return; // AA: proximity + steering both engage only after the boost (reference)
@@ -573,7 +632,7 @@ public class MchBullet extends Entity {
             onImpactEntity(entity);
             this.piercing = 0;
         }
-        int expPower = this.weaponInfo != null ? this.weaponInfo.explosion : 0;
+        int expPower = this.weaponInfo != null ? this.explosionPower : 0;
         if (this.piercing > 0) {
             this.piercing--;
             if (expPower > 0 && !this.level().isClientSide) {
@@ -610,22 +669,90 @@ public class MchBullet extends Entity {
         MCH_WeaponInfo wi = this.weaponInfo;
         if (wi != null) {
             ServerLevel sl = (ServerLevel) this.level();
-            int expPower = wi.explosion;
+            int expPower = this.explosionPower;
             int expPowerInWater = wi.explosionInWater;
             if (expPowerInWater == 0) {
                 if (wi.isFAE && expPower > 0) {
                     // FAE: no block destruction, strong entity ignition, no per-victim damage factor.
                     MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, false, 15, null, this.shooter);
                 } else if (expPower > 0) {
-                    MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, true, 0, wi, this.shooter);
+                    MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, true, 0, wi, this.shooter,
+                        isGunRound());
+                } else if (expPower < 0) {
+                    playExplosionSound(sl, pos); // non-explosive mode round: the report only (reference)
                 }
             } else if (this.isInWater()) {
                 MchExplosion.explode(sl, pos, expPowerInWater, expPowerInWater, wi.flaming, true, 0, wi, this.shooter);
-            } else {
-                MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, true, 0, wi, this.shooter);
+            } else if (expPower > 0) {
+                MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, true, 0, wi, this.shooter,
+                    isGunRound());
+            } else if (expPower < 0) {
+                playExplosionSound(sl, pos); // non-explosive mode round on dry ground: the report only (reference)
             }
         }
         this.discard();
+    }
+
+    /** May {@code breaker} grief blocks — the mobGriefing gamerule as NeoForge's grief event reports it, the same
+     *  switch the explosions' block damage (Level.ExplosionInteraction.MOB) and the vehicles' terrain damage obey. */
+    private static boolean canBreakBlocks(ServerLevel sl, Entity breaker) {
+        return net.neoforged.neoforge.event.EventHooks.canEntityGrief(sl, breaker);
+    }
+
+    /**
+     * The block raycast every MCHeli round uses — vanilla {@code Level.clip(COLLIDER, no
+     * fluids)}, except that {@link #BULLET_PASSTHROUGH} blocks (leaves, plants) are skipped as if they were air, and
+     * {@link #BULLET_BREAKABLE} blocks (glass panes) the ray touches are shattered and flown through — up to 5 per call,
+     * only with a {@code breaker} and the mobGriefing gamerule on (otherwise they stop the ray like any solid block).
+     * No drops.
+     */
+    public static BlockHitResult clipRound(Level level, Vec3 from, Vec3 to, Entity ctxEntity, Entity breaker) {
+        ClipContext ctx = new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE,
+            ctxEntity != null ? net.minecraft.world.phys.shapes.CollisionContext.of(ctxEntity)
+                : net.minecraft.world.phys.shapes.CollisionContext.empty());
+        // The grief check posts a bus event, so ask only once a breakable block is actually in the way (0 = not asked).
+        int[] canBreak = {breaker != null && level instanceof ServerLevel ? 0 : -1};
+        int[] broken = {0};
+        return net.minecraft.world.level.BlockGetter.traverseBlocks(from, to, ctx, (c, pos) -> {
+            BlockState st = level.getBlockState(pos);
+            if (st.isAir() || st.is(BULLET_PASSTHROUGH)) {
+                return null;
+            }
+            if (canBreak[0] == 0 && st.is(BULLET_BREAKABLE)) {
+                canBreak[0] = canBreakBlocks((ServerLevel) level, breaker) ? 1 : -1;
+            }
+            if (canBreak[0] == 1 && broken[0] < 5 && st.is(BULLET_BREAKABLE)) {
+                net.minecraft.world.phys.shapes.VoxelShape outline = st.getShape(level, pos);
+                if (outline.clip(from, to, pos) != null) {
+                    level.destroyBlock(pos.immutable(), false, breaker);
+                    broken[0]++;
+                }
+                return null;
+            }
+            net.minecraft.world.phys.shapes.VoxelShape shape = c.getBlockShape(st, level, pos);
+            return level.clipWithInteractionOverride(from, to, pos, shape, st);
+        }, c -> {
+            Vec3 d = from.subtract(to);
+            return BlockHitResult.miss(to, Direction.getNearest(d.x, d.y, d.z), net.minecraft.core.BlockPos.containing(to));
+        });
+    }
+
+    /** A gun round (MachineGun1/2): its small HE blast drops nothing, so sustained fire leaves no item litter. */
+    private boolean isGunRound() {
+        String t = this.weaponInfo != null ? this.weaponInfo.type : null;
+        if (t == null) {
+            return false;
+        }
+        String lt = t.toLowerCase(java.util.Locale.ROOT);
+        return lt.startsWith("machinegun");
+    }
+
+    /** Reference {@code MCH_Explosion.playExplosionSound}: the vanilla blast sound at volume 4, pitch ~0.7 — what a
+     *  non-explosive weapon-mode round makes on impact instead of an explosion. */
+    private void playExplosionSound(ServerLevel sl, Vec3 pos) {
+        float pitch = (1.0F + (this.random.nextFloat() - this.random.nextFloat()) * 0.2F) * 0.7F;
+        sl.playSound(null, pos.x, pos.y, pos.z, net.minecraft.sounds.SoundEvents.GENERIC_EXPLODE,
+            net.minecraft.sounds.SoundSource.NEUTRAL, 4.0F, pitch);
     }
 
     // ---- marker rocket (reference MCH_EntityMarkerRocket) ----

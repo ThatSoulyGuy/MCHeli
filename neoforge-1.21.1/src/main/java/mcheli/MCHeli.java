@@ -52,6 +52,9 @@ public class MCHeli {
         modEventBus.addListener(mcheli.dependent.port.MchPackResourcesFinder::onAddPackFinders);
         // Register the serverbound player-control payload (client keys -> server ControlInput).
         modEventBus.addListener(MchControlNetwork::register);
+        // No-drop blasts of HE gun rounds (removes the blown blocks without loot).
+        NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.LOWEST,
+            mcheli.dependent.entity.MchExplosion::onDetonate);
         // Dev-only game-bus listener: the headless self-test that proves agnostic-driven movement at
         // runtime. Gated on !production so a shipped jar never spawns test entities or spams the log — it
         // runs only under runClient/runServer (FMLEnvironment.production is false in the dev workspace).
@@ -110,6 +113,8 @@ public class MCHeli {
             // (the second flag stops the server once the verdict is logged, so a one-shot run terminates by itself).
             if (System.getProperty("mcheli.selftests") != null) {
                 NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoCrushSelfTest());
+                // Weapon features: fire modes, TV / line-of-sight missiles, AT guidance, round vs. blocks.
+                NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoControlsSelfTest());
             }
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
