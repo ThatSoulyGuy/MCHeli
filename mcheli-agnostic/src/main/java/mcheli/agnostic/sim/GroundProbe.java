@@ -14,7 +14,8 @@ import mcheli.agnostic.spi.WorldView;
  * superflat worlds at y=-60) or above y=255 the probe always answered "air", so a parked aircraft counted as
  * AIRBORNE — the mouse could pitch/roll it freely on the ground and the model clipped into the terrain. The scan now
  * uses the world's real build height ({@link WorldView#minBuildHeight()}..{@link WorldView#maxBuildHeight()}), checks
- * the row it actually reads, and rounds with {@code floor} (identical to the cast for positive coordinates, but
+ * the row it actually reads (rows outside the world are skipped while scanning toward it, e.g. a craft resting on the
+ * top layer above the build limit), and rounds with {@code floor} (identical to the cast for positive coordinates, but
  * correct for negative ones, where the cast rounds toward zero and shifts the probe one block up).
  */
 public final class GroundProbe {
@@ -49,8 +50,11 @@ public final class GroundProbe {
 
         for (int y = 0; y < cntY; y++) {
             int wy = py + (lenY > 0 ? y : -y);
-            if (wy < minY || wy > maxY) { // outside the world: nothing more to find in this direction
-                return 0;
+            if (wy < minY || wy > maxY) {
+                if (lenY > 0 ? wy > maxY : wy < minY) {
+                    return 0; // left the world in the scan direction: nothing more to find
+                }
+                continue; // not inside the world yet (e.g. above the build limit, scanning down): keep scanning
             }
             for (int x = -size / 2; x <= size / 2; x++) {
                 for (int z = -size / 2; z <= size / 2; z++) {
@@ -89,7 +93,10 @@ public final class GroundProbe {
         for (int y = 0; y < cntY; y++) {
             int wy = py + (lenY > 0 ? y : -y);
             if (wy < minY || wy > maxY) {
-                return false;
+                if (lenY > 0 ? wy > maxY : wy < minY) {
+                    return false; // left the world in the scan direction
+                }
+                continue; // not inside the world yet: keep scanning toward it
             }
             for (int x = -size / 2; x <= size / 2; x++) {
                 for (int z = -size / 2; z <= size / 2; z++) {

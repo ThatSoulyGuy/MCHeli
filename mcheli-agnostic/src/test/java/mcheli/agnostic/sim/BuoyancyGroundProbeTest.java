@@ -130,6 +130,23 @@ class BuoyancyGroundProbeTest {
     }
 
     @Test
+    void groundProbeFindsTopLayerFromAboveTheBuildLimit() {
+        // A craft resting on the topmost block layer (y=319) sits at y=320: the first scanned row is above the world,
+        // which must be skipped (not end the scan), so the probe still reaches the block at 319.
+        StubWorld w = new StubWorld();
+        for (int x = -1; x <= 1; x++) {
+            for (int z = -1; z <= 1; z++) {
+                w.solid(x, 319, z);
+            }
+        }
+        assertEquals(1, GroundProbe.blockIdInColumn(w, 0.3, 320.0, 0.3, 3, -2, true));
+        assertTrue(GroundProbe.solidNonWaterInColumn(w, 0.3, 320.0, 0.3, 3, -2));
+        // further up, two rows down stay above the world: still airborne
+        assertEquals(0, GroundProbe.blockIdInColumn(w, 0.3, 325.0, 0.3, 3, -2, true));
+        assertFalse(GroundProbe.solidNonWaterInColumn(w, 0.3, 325.0, 0.3, 3, -2));
+    }
+
+    @Test
     void isBlockInWaterNeighbors() {
         StubWorld w = new StubWorld().water(0, 99, 0);
         assertTrue(GroundProbe.isBlockInWater(w, 0, 100, 0));  // {0,-1,0} neighbor is water
