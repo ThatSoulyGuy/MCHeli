@@ -6,6 +6,7 @@ import mcheli.dependent.control.ServerboundFoldBladePayload;
 import mcheli.dependent.control.ServerboundGunnerModePayload;
 import mcheli.dependent.control.ServerboundUseFlarePayload;
 import mcheli.dependent.control.ServerboundSeatSwitchPayload;
+import mcheli.dependent.control.ServerboundVehicleActionPayload;
 import mcheli.dependent.control.ServerboundVehicleGuiPayload;
 import mcheli.dependent.entity.AbstractMchVehicle;
 import mcheli.dependent.entity.MchHelicopter;
@@ -30,6 +31,8 @@ import net.neoforged.neoforge.network.PacketDistributor;
  *       the pilot's GUI/PREV keys switch seats (leaving seat 0), and a gunner's grab the pilot seat.</li>
  *   <li>{@link #GUNNER_MODE} (default {@code R}) — toggle gunner mode (aim a weapon; see the gunner-mode wiring).</li>
  *   <li>{@link #ZOOM} (default {@code C}) — step the scope zoom while in gunner mode.</li>
+ *   <li>{@link #WEAPON_MODE} (default {@code X}, reference {@code KeySwitchWeaponMode}) — cycle the selected weapon's
+ *       fire mode ([HE], [HEIAP], [TA], [TV]).</li>
  * </ul>
  *
  * <p>The seat decision tree reproduces {@code commonPlayerControl:66-93}. All actions are serverbound and re-checked
@@ -48,6 +51,7 @@ public final class MchKeybinds {
      *  (LEFT ALT), which stays purely the held seat-switch modifier, so the two roles never collide. */
     public static final KeyMapping FREE_LOOK_TOGGLE = key("free_look_toggle", org.lwjgl.glfw.GLFW.GLFW_KEY_M);
     public static final KeyMapping FLARE = key("flare", org.lwjgl.glfw.GLFW.GLFW_KEY_V);
+    public static final KeyMapping WEAPON_MODE = key("weapon_mode", org.lwjgl.glfw.GLFW.GLFW_KEY_X);
 
     /** Client debounce: ticks left before another gunner-mode toggle may be sent (blocks a double-tap double-send). */
     private static int gunnerToggleCooldown;
@@ -66,6 +70,7 @@ public final class MchKeybinds {
         event.register(ZOOM);
         event.register(FREE_LOOK_TOGGLE);
         event.register(FLARE);
+        event.register(WEAPON_MODE);
     }
 
     @SubscribeEvent
@@ -79,6 +84,7 @@ public final class MchKeybinds {
         boolean zoom = drain(ZOOM);
         boolean freeLookToggle = drain(FREE_LOOK_TOGGLE);
         boolean flare = drain(FLARE);
+        boolean weaponMode = drain(WEAPON_MODE);
         if (gunnerToggleCooldown > 0) {
             gunnerToggleCooldown--; // tick down every client frame, even off a vehicle
         }
@@ -87,6 +93,12 @@ public final class MchKeybinds {
         }
         int seat = v.seatIndexOf(mc.player);
         boolean pilot = seat == 0;
+
+        // Weapon fire mode (reference KeySwitchWeaponMode): any seat cycles ITS OWN selected weapon; the server checks
+        // the weapon actually has modes (and blocks it during the resupply GUI), then names the new mode on the action bar.
+        if (weaponMode && seat >= 0 && !v.isPilotReloading()) {
+            PacketDistributor.sendToServer(new ServerboundVehicleActionPayload(v.getId(), ServerboundVehicleActionPayload.WEAPON_MODE));
+        }
 
         // Free-look toggle (the port's canSwitchFreeLook analogue): only the pilot of a mouse-flown, view-locked
         // aircraft — inert on tanks/emplacements (locksViewToVehicle() == false, already permanently free-look) and on

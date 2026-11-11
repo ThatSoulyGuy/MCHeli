@@ -161,6 +161,10 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
      *  serves every vehicle in that category; this string selects the specific one (reference DataWatcher slot 20). */
     private static final EntityDataAccessor<String> DATA_CONFIG =
         SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.STRING);
+    /** weaponIndex → selected fire MODE (only non-zero entries) — synced so the HUD can show the reference mode suffix
+     *  ({@code [HE]}, {@code [TA]}, …). */
+    private static final EntityDataAccessor<CompoundTag> DATA_WEAPON_MODES =
+        SynchedEntityData.defineId(AbstractMchVehicle.class, EntityDataSerializers.COMPOUND_TAG);
     /** Cached resolved config, invalidated whenever {@link #DATA_CONFIG} changes (server set or client sync). */
     private MCH_AircraftInfo resolvedInfo;
 
@@ -752,6 +756,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         builder.define(DATA_DAMAGE_TAKEN, 0);
         builder.define(DATA_DESTROYED, false);
         builder.define(DATA_CONFIG, "");
+        builder.define(DATA_WEAPON_MODES, new CompoundTag());
     }
 
     /** The config name identifying this specific vehicle (synced), or "" before it is assigned at spawn. */
@@ -860,7 +865,51 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         if (slot == null) {
             return "";
         }
-        return slot.info.displayName != null && !slot.info.displayName.isEmpty() ? slot.info.displayName : slot.weaponName;
+        String name = slot.info.displayName != null && !slot.info.displayName.isEmpty()
+            ? slot.info.displayName : slot.weaponName;
+        // Reference MCH_WeaponBase.getName(): the per-type mode suffix ([HE], [HEIAP], [TA], [TV]).
+        return name + WeaponSlot.modeSuffix(slot.info, weaponModeOf(getSelectedWeaponIndex()));
+    }
+
+    /** The synced selected fire mode of weapon {@code index} (0 = default mode). */
+    public int weaponModeOf(int index) {
+        if (index < 0) {
+            return 0;
+        }
+        return this.entityData.get(DATA_WEAPON_MODES).getInt(Integer.toString(index));
+    }
+
+    /**
+     * SERVER: cycle the fire mode of the weapon {@code player}'s seat has selected — the reference
+     * {@code KeySwitchWeaponMode} → {@code switchCurrentWeaponMode}. Blocked while the pilot is in the resupply GUI
+     * (like weapon switching). A successful switch blocks the trigger briefly and names the new mode on the action bar.
+     */
+    public void switchWeaponMode(Player player) {
+        if (this.level().isClientSide || this.weapons == null || isPilotReloading() || isDestroyed()) {
+            return;
+        }
+        int seat = seatIndexOf(player);
+        if (seat < 0) {
+            return;
+        }
+        WeaponSlot slot = this.weapons.selected(seat);
+        if (slot == null || !slot.switchMode()) {
+            return;
+        }
+        publishWeaponModes();
+        notifySeatWeapon(seat);
+        player.playNotifySound(net.minecraft.sounds.SoundEvents.UI_BUTTON_CLICK.value(), SoundSource.PLAYERS, 0.6F, 1.0F);
+    }
+
+    private void publishWeaponModes() {
+        CompoundTag t = new CompoundTag();
+        for (int i = 0; i < this.weapons.size(); i++) {
+            int m = this.weapons.get(i).selectedMode();
+            if (m != 0) {
+                t.putInt(Integer.toString(i), m);
+            }
+        }
+        this.entityData.set(DATA_WEAPON_MODES, t);
     }
 
     /** Rounds in the selected weapon's current magazine (synced); -1 == no weapon or infinite ammo. */
@@ -2402,6 +2451,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     private void tickWeapons() {
         if (this.weapons == null) {
             this.weapons = VehicleWeapons.build(weaponHostInfo(), MCH_WeaponInfoManager::get, seatCount());
+            this.entityData.set(DATA_WEAPON_MODES, new CompoundTag()); // fresh loadout: every weapon in its default mode
             this.weapons.initSelection(seat -> seatPassenger(seat) instanceof Player);
             this.entityData.set(DATA_WEAPON, this.weapons.selectedIndex());
             // Restore the saved reserves now the slots exist (reference :795-801: set the total, then fill the mag).
@@ -2507,8 +2557,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
                 return; // no valid lock → hold fire (do not consume ammo)
             }
             guidedTarget = t;
-            guidedKind = preType.equals("aamissile") ? MchBullet.GUIDED_AA : MchBullet.GUIDED_AT_DIRECT;
+            // The AT missile's [TA] mode (mode 1) flies the top-attack profile (reference guidanceType = currentMode).
+            guidedKind = preType.equals("aamissile") ? MchBullet.GUIDED_AA
+                : (slot.currentMode() == 1 ? MchBullet.GUIDED_AT_TOP : MchBullet.GUIDED_AT_DIRECT);
         }
+        int fireMode = slot.currentMode(); // the weapon mode this shot uses (reference prm.option1/option2)
         boolean creative = shooter instanceof Player pl && pl.getAbilities().instabuild;
         MCH_AircraftInfo.Weapon mount = slot.fireOneShot(creative);
         MCH_WeaponInfo wi = slot.info;
@@ -2601,8 +2654,13 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
         // Ballistics + model, all from config.
         boolean bulletOrRocket = MCH_WeaponBallistics.isBulletOrRocket(wi.type);
-        float speed = MCH_WeaponBallistics.initialSpeed(wi.acceleration);
-        float accFactor = MCH_WeaponBallistics.accelerationFactor(wi.acceleration, bulletOrRocket);
+        float launchAccel = wi.acceleration;
+        if (preType.equals("tvmissile") && fireMode != 0) {
+            // Reference MCH_WeaponTvMissile.shotServer: a NON-TV-guided shot (mode != 0) flies 1.5x faster.
+            launchAccel *= 1.5F;
+        }
+        float speed = MCH_WeaponBallistics.initialSpeed(launchAccel);
+        float accFactor = MCH_WeaponBallistics.accelerationFactor(launchAccel, bulletOrRocket);
         float gravity = wi.gravity; // 0 for guns/rockets; negative for bombs
         String model = (wi.bulletModelName != null && !wi.bulletModelName.isEmpty())
             ? wi.bulletModelName : MCH_WeaponBallistics.defaultBulletModel(wi.type);
@@ -2640,7 +2698,16 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
                     6 + this.random.nextInt(3));
             }
         } else {
-            MchBullet.spawnWeapon(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600, this, model, color, wi);
+            MchBullet round = MchBullet.spawnWeapon(this.level(), muzzle, dir, speed, accFactor, gravity, wi.power, 600,
+                this, model, color, wi);
+            if (preType.equals("machinegun2") && wi.modeNum >= 2) {
+                // Reference MCH_WeaponMachineGun2.shot: in the default mode the round is NON-explosive (negative power
+                // = blast sound only); the [HE] mode fires the real explosive round.
+                round.setExplosionPower(fireMode == 0 ? -wi.explosion : wi.explosion);
+            } else if (preType.equals("rocket") && WeaponSlot.modeCount(wi) > 1 && fireMode == 0) {
+                // Reference MCH_WeaponRocket.shot: only the [HEIAP] mode pierces blocks.
+                round.setPiercing(0);
+            }
         }
 
         // Report: the weapon's own sound at its configured volume, with the reference pitch jitter.
@@ -2775,7 +2842,8 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         }
         String label = slot.info.displayName != null && !slot.info.displayName.isEmpty()
             ? slot.info.displayName : slot.weaponName;
-        p.displayClientMessage(Component.literal("Weapon: " + label), true);
+        p.displayClientMessage(Component.literal("Weapon: " + label
+            + WeaponSlot.modeSuffix(slot.info, slot.selectedMode())), true);
     }
 
     // ==== HP / armor / destruction (faithful port of MCH_EntityAircraft.attackEntityFrom + destroyAircraft) ====

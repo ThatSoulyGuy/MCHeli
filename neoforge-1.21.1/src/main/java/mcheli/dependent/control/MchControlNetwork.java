@@ -52,6 +52,11 @@ public final class MchControlNetwork {
             ServerboundNotifyLockPayload.TYPE,
             ServerboundNotifyLockPayload.STREAM_CODEC,
             ServerboundNotifyLockPayload::handle);
+        // One-shot vehicle actions (weapon fire mode).
+        registrar.playToServer(
+            ServerboundVehicleActionPayload.TYPE,
+            ServerboundVehicleActionPayload.STREAM_CODEC,
+            ServerboundVehicleActionPayload::handle);
         // The port's first CLIENTBOUND payload — the RWR cockpit warning tone (handler is Dist-guarded).
         registrar.playToClient(
             ClientboundRwrPayload.TYPE,

@@ -52,6 +52,12 @@ public final class WeaponSlot {
     private int restAllAmmo; // RESERVE behind the magazine; a fresh vehicle spawns DRY (reference MCH_WeaponSet:51-52)
     private int currentHeat;       // accumulated barrel heat (reference MCH_WeaponSet.currentHeat)
     private int cooldownSpeed = 1; // ramps the cooldown rate the longer the barrel goes un-fired (reference)
+    /** Number of selectable fire modes (reference {@code MCH_WeaponBase.numMode} = config {@code ModeNum}). */
+    private final int numMode;
+    private int currentMode;       // reference MCH_WeaponBase.currentMode (0 = the weapon's default mode)
+
+    /** Ticks the weapon is blocked after a mode switch (reference {@code MCH_WeaponSet.switchMode} cntSwitch). */
+    public static final int MODE_SWITCH_DELAY = 15;
 
     public WeaponSlot(String weaponName, MCH_WeaponInfo info, List<MCH_AircraftInfo.Weapon> mounts) {
         if (mounts == null || mounts.isEmpty()) {
@@ -64,6 +70,99 @@ public final class WeaponSlot {
         this.economy = info.maxAmmo > 0;
         this.magazine = this.infiniteMagazine ? Integer.MAX_VALUE : (this.economy ? 0 : magSize());
         this.heatPerShot = info.maxHeatCount > 0 && info.heatCount < 2 ? 2 : info.heatCount;
+        this.numMode = modeCount(info);
+    }
+
+    // ---- fire modes (reference MCH_WeaponBase.numMode/currentMode/switchMode + the per-type getName suffixes) ----
+
+    /**
+     * The number of fire modes a weapon config has — the reference {@code MCH_WeaponCreator} sets
+     * {@code weapon.numMode = info.modeNum}, and {@code MCH_WeaponMachineGun2.modifyParameters} drops it to 0 for a
+     * non-explosive gun (its only alternate mode is the explosive [HE] round).
+     */
+    public static int modeCount(MCH_WeaponInfo info) {
+        if (info == null) {
+            return 0;
+        }
+        if ("machinegun2".equalsIgnoreCase(info.type) && info.explosion == 0) {
+            return 0;
+        }
+        return Math.max(0, info.modeNum);
+    }
+
+    /** The config {@code FixMode}, or 0 when it is out of range — reference {@code MCH_WeaponInfo.checkData} resets a
+     *  {@code FixMode >= ModeNum} to 0 (e.g. a FixMode without ModeNum has no effect). */
+    public static int fixModeOf(MCH_WeaponInfo info) {
+        return info != null && info.fixMode > 0 && info.fixMode < info.modeNum ? info.fixMode : 0;
+    }
+
+    /** True when the mode key does anything for this weapon (more than one mode, and no config {@code FixMode}). */
+    public static boolean hasSwitchableModes(MCH_WeaponInfo info) {
+        return info != null && fixModeOf(info) <= 0 && modeCount(info) > 1;
+    }
+
+    /** The mode a shot uses — the config {@code FixMode} wins over the selected one (reference {@code getCurrentMode}). */
+    public static int effectiveMode(MCH_WeaponInfo info, int selectedMode) {
+        int fix = fixModeOf(info);
+        return fix > 0 ? fix : selectedMode;
+    }
+
+    /**
+     * The HUD name suffix for a weapon in {@code mode} — the reference per-type {@code getName()} overrides:
+     * MachineGun2 {@code [HE]}, Rocket {@code [HEIAP]}, ATMissile {@code [TA]} (top attack), TVMissile {@code [TV]}
+     * (mode 0) / {@code [TA]} (mode 2). Every other type has no suffix.
+     */
+    public static String modeSuffix(MCH_WeaponInfo info, int selectedMode) {
+        if (info == null || info.type == null) {
+            return "";
+        }
+        int mode = effectiveMode(info, selectedMode);
+        switch (info.type.toLowerCase(java.util.Locale.ROOT)) {
+            case "machinegun2":
+                return mode == 0 ? "" : " [HE]";
+            case "rocket":
+                return mode == 0 ? "" : " [HEIAP]";
+            case "atmissile":
+                return mode == 1 ? " [TA]" : "";
+            case "tvmissile":
+                return mode == 0 ? " [TV]" : (mode == 2 ? " [TA]" : "");
+            default:
+                return "";
+        }
+    }
+
+    /** The selected mode, before {@code FixMode} (what the mode key cycles; synced for the HUD). */
+    public int selectedMode() {
+        return this.currentMode;
+    }
+
+    /** The mode the next shot uses ({@code FixMode} if configured, else the selected mode). */
+    public int currentMode() {
+        return effectiveMode(this.info, this.currentMode);
+    }
+
+    public int numMode() {
+        return this.numMode;
+    }
+
+    /**
+     * Advance to the next fire mode — the reference {@code MCH_WeaponBase.switchMode} + {@code MCH_WeaponSet.switchMode}:
+     * a {@code FixMode} weapon never switches; otherwise {@code mode = (mode + 1) % numMode}. A successful switch blocks
+     * the trigger for {@link #MODE_SWITCH_DELAY} ticks (the reference's 15-tick {@code countWait}).
+     *
+     * @return true if the mode actually changed
+     */
+    public boolean switchMode() {
+        if (fixModeOf(this.info) > 0) {
+            return false;
+        }
+        int before = this.currentMode;
+        this.currentMode = this.numMode > 0 ? (this.currentMode + 1) % this.numMode : 0;
+        boolean changed = before != this.currentMode;
+        if (changed && this.countWait < MODE_SWITCH_DELAY) {
+            this.countWait = MODE_SWITCH_DELAY;
+        }
+        return changed;
     }
 
     /** The seat that operates this weapon ({@code AddWeapon}'s seat id; {@code <=0} == the pilot's). */
