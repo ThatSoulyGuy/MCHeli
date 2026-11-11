@@ -9,9 +9,14 @@ import mcheli.agnostic.spi.WorldView;
  * rounding, layer + radius iteration, scan direction, first-hit order) stays pure here; only the per-cell block
  * test is delegated to {@link WorldView}.
  *
- * <p>NOTE (1.21 height range): the reference clamps the scan to {@code y in [0, 255]} (the 1.7.10 world height).
- * This is preserved verbatim for bit-fidelity; it must be revisited for 1.21's {@code [-64, 319]} range once the
- * flight model is validated in-game (a vehicle above y=255 or below y=0 would currently miss ground).
+ * <p><b>1.21 height range + negative coordinates (fixed).</b> The reference clamped the scan to {@code y in [0, 255]}
+ * (the 1.7.10 world height) and rounded with a plain {@code (int)} cast. Both broke in 1.21: below y=0 (deepslate,
+ * superflat worlds at y=-60) or above y=255 the probe always answered "air", so a parked aircraft counted as
+ * AIRBORNE — the mouse could pitch/roll it freely on the ground and the model clipped into the terrain. The scan now
+ * uses the world's real build height ({@link WorldView#minBuildHeight()}..{@link WorldView#maxBuildHeight()}), checks
+ * the row it actually reads (rows outside the world are skipped while scanning toward it, e.g. a craft resting on the
+ * top layer above the build limit), and rounds with {@code floor} (identical to the cast for positive coordinates, but
+ * correct for negative ones, where the cast rounds toward zero and shifts the probe one block up).
  */
 public final class GroundProbe {
     private GroundProbe() {}
@@ -36,17 +41,21 @@ public final class GroundProbe {
         if (lenY == 0) {
             return 0; // reference returns air -> id 0
         }
-        int px = (int) (posX + 0.5);
-        int py = (int) (posY + 0.5);
-        int pz = (int) (posZ + 0.5);
+        int px = (int) Math.floor(posX + 0.5);
+        int py = (int) Math.floor(posY + 0.5);
+        int pz = (int) Math.floor(posZ + 0.5);
         int cntY = lenY > 0 ? lenY : -lenY;
+        int minY = world.minBuildHeight();
+        int maxY = world.maxBuildHeight();
 
         for (int y = 0; y < cntY; y++) {
-            if (py + y < 0 || py + y > 255) { // reference bounds-checks py+y even when scanning downward
-                return 0;
-            }
-
             int wy = py + (lenY > 0 ? y : -y);
+            if (wy < minY || wy > maxY) {
+                if (lenY > 0 ? wy > maxY : wy < minY) {
+                    return 0; // left the world in the scan direction: nothing more to find
+                }
+                continue; // not inside the world yet (e.g. above the build limit, scanning down): keep scanning
+            }
             for (int x = -size / 2; x <= size / 2; x++) {
                 for (int z = -size / 2; z <= size / 2; z++) {
                     int id = world.getBlockId(px + x, wy, pz + z);
@@ -74,16 +83,21 @@ public final class GroundProbe {
         if (lenY == 0) {
             return false;
         }
-        int px = (int) (posX + 0.5);
-        int py = (int) (posY + 0.5);
-        int pz = (int) (posZ + 0.5);
+        int px = (int) Math.floor(posX + 0.5);
+        int py = (int) Math.floor(posY + 0.5);
+        int pz = (int) Math.floor(posZ + 0.5);
         int cntY = lenY > 0 ? lenY : -lenY;
+        int minY = world.minBuildHeight();
+        int maxY = world.maxBuildHeight();
 
         for (int y = 0; y < cntY; y++) {
-            if (py + y < 0 || py + y > 255) {
-                return false;
-            }
             int wy = py + (lenY > 0 ? y : -y);
+            if (wy < minY || wy > maxY) {
+                if (lenY > 0 ? wy > maxY : wy < minY) {
+                    return false; // left the world in the scan direction
+                }
+                continue; // not inside the world yet: keep scanning toward it
+            }
             for (int x = -size / 2; x <= size / 2; x++) {
                 for (int z = -size / 2; z <= size / 2; z++) {
                     if (world.getBlockId(px + x, wy, pz + z) != 0) { // first non-air block

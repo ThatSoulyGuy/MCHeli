@@ -195,6 +195,21 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
       return null;
    }
 
+   /**
+    * Load-time fix-up. The reference {@code MCH_WeaponInfoManager} runs {@link #checkData()} after parsing each file;
+    * the port's generic loader only calls {@code isValidData()}, so the explosion-block default was never applied:
+    * every weapon without an explicit {@code ExplosionBlock} kept -1 and its explosions broke NO blocks at all.
+    * Apply the reference default here ({@code explosionBlock = explosion}). (The other checkData coercions are left
+    * out on purpose — the port's ammo economy was built and tested against the uncoerced magazine values.)
+    */
+   @Override
+   public boolean isValidData() throws Exception {
+      if (this.explosionBlock < 0) {
+         this.explosionBlock = this.explosion;
+      }
+      return super.isValidData();
+   }
+
    public void checkData() {
       if (this.explosionBlock < 0) {
          this.explosionBlock = this.explosion;

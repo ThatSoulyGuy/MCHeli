@@ -97,11 +97,53 @@ class BuoyancyGroundProbeTest {
     }
 
     @Test
-    void groundProbePyPlusYBoundsQuirk() {
-        // py=254, scanning DOWN 3: bounds-check is py+y (254,255,256) -> aborts at y=2 (256>255) BEFORE reaching
-        // the read at wy=252, even though the downward reads (254,253,252) are all in range. Reference quirk.
+    void groundProbeAbove255() {
+        // 1.21 worlds reach y=319. The old 1.7.10 [0,255] clamp aborted this scan (py+y = 256 > 255) and reported
+        // "airborne" for a craft parked on a mountain; the probe now uses the world's real build height.
         StubWorld w = new StubWorld().solid(0, 252, 0);
-        assertEquals(0, GroundProbe.blockIdInColumn(w, 0.4, 254.4, 0.4, 1, -3, true));
+        assertEquals(1, GroundProbe.blockIdInColumn(w, 0.4, 254.4, 0.4, 1, -3, true));
+        StubWorld high = new StubWorld().solid(0, 299, 0);
+        assertEquals(1, GroundProbe.blockIdInColumn(high, 0.4, 300.0, 0.4, 3, -2, true));
+    }
+
+    @Test
+    void groundProbeBelowZeroSuperflat() {
+        // Superflat: grass top at y=-61, a parked vehicle stands at y=-60.0. The old clamp (py<0 -> air) AND the
+        // truncating (int) cast (-59.5 -> -59) both made the 2-deep "on the ground?" probe miss the grass.
+        StubWorld w = new StubWorld();
+        for (int x = -2; x <= 2; x++) {
+            for (int z = -2; z <= 2; z++) {
+                w.solid(x, -61, z);
+            }
+        }
+        assertEquals(1, GroundProbe.blockIdInColumn(w, 0.3, -60.0, 0.3, 3, -2, true));
+        assertEquals(1, GroundProbe.blockIdInColumn(w, -1.3, -60.0, -0.6, 3, -2, true)); // negative x/z too
+        // and a craft hovering 4 blocks up is still airborne
+        assertEquals(0, GroundProbe.blockIdInColumn(w, 0.3, -56.0, 0.3, 3, -2, true));
+    }
+
+    @Test
+    void groundProbeStopsAtWorldBottom() {
+        // Scanning below the world floor finds nothing (and never reads out-of-world cells).
+        StubWorld w = new StubWorld().solid(0, -70, 0);
+        assertEquals(0, GroundProbe.blockIdInColumn(w, 0.4, -63.0, 0.4, 1, -10, true));
+    }
+
+    @Test
+    void groundProbeFindsTopLayerFromAboveTheBuildLimit() {
+        // A craft resting on the topmost block layer (y=319) sits at y=320: the first scanned row is above the world,
+        // which must be skipped (not end the scan), so the probe still reaches the block at 319.
+        StubWorld w = new StubWorld();
+        for (int x = -1; x <= 1; x++) {
+            for (int z = -1; z <= 1; z++) {
+                w.solid(x, 319, z);
+            }
+        }
+        assertEquals(1, GroundProbe.blockIdInColumn(w, 0.3, 320.0, 0.3, 3, -2, true));
+        assertTrue(GroundProbe.solidNonWaterInColumn(w, 0.3, 320.0, 0.3, 3, -2));
+        // further up, two rows down stay above the world: still airborne
+        assertEquals(0, GroundProbe.blockIdInColumn(w, 0.3, 325.0, 0.3, 3, -2, true));
+        assertFalse(GroundProbe.solidNonWaterInColumn(w, 0.3, 325.0, 0.3, 3, -2));
     }
 
     @Test

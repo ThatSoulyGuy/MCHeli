@@ -49,6 +49,11 @@ public final class NeoWorldView implements WorldView {
     @Override public boolean isRemote() { return level.isClientSide; }
     @Override public long totalTime()   { return level.getGameTime(); }
 
+    // The REAL world height (overworld -64..319, superflat ground at -61, custom dimensions differ) so the ground
+    // probes do not treat a vehicle below y=0 / above y=255 as permanently airborne (the 1.7.10 [0,255] clamp).
+    @Override public int minBuildHeight() { return level.getMinBuildHeight(); }
+    @Override public int maxBuildHeight() { return level.getMaxBuildHeight() - 1; } // vanilla max is exclusive
+
     // ---- blocks -------------------------------------------------------------
 
     @Override public int getBlockId(int x, int y, int z) {

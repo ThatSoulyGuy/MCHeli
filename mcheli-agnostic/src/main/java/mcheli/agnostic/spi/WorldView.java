@@ -20,6 +20,11 @@ public interface WorldView {
     boolean isCollidable(int x, int y, int z);  // block has a collision shape (reference block.canCollideCheck)
     boolean isAABBInWater(AABB box);             // any water overlapping the box (reference isAABBInMaterial water)
 
+    /** Lowest block Y of this world (inclusive). The 1.7.10 reference hardcoded 0; 1.21's overworld starts at -64. */
+    default int minBuildHeight() { return -64; }
+    /** Highest block Y of this world (inclusive). The 1.7.10 reference hardcoded 255; 1.21's overworld ends at 319. */
+    default int maxBuildHeight() { return 319; }
+
     // entities
     List<EntityRef> entitiesInAABB(AABB box);
     List<EntityRef> entitiesInAABB(AABB box, Role role);

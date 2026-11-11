@@ -59,8 +59,13 @@ public final class PlaneControlMapping implements RotationSolver.ControlMapping 
     @Override public boolean canUpdatePitch() { return baseCanUpdate() && !mod.isHovering(); }
     @Override public boolean canUpdateRoll()  { return baseCanUpdate() && !mod.isHovering(); }
 
+    // ON THE GROUND = the reference 2-block probe OR Minecraft's own ground contact. The probe alone misses ground it
+    // cannot "see": it only counts blocks with a collision shape in the 3x3 column (a 1-layer snow cover, tall grass
+    // or flowers don't), and it scans just two rows below the rounded position — so on snowy/grassy terrain or a hull
+    // resting on a terrace edge the craft counted as AIRBORNE while parked, and the mouse could pitch/roll it into
+    // the ground. The vanilla onGround flag (synced to the client) closes that gap.
     private boolean baseCanUpdate() {
-        return self.ageTicks() >= 30 && GroundProbe.blockIdInColumn(self, 3, -2) == 0;
+        return self.ageTicks() >= 30 && !self.onGround() && GroundProbe.blockIdInColumn(self, 3, -2) == 0;
     }
 
     /** Accumulate the keyboard rudder into addkeyRotValue (rot=0.2, zeroed in non-sim VTOL). */
@@ -90,7 +95,7 @@ public final class PlaneControlMapping implements RotationSolver.ControlMapping 
             }
         }
 
-        boolean isFly = GroundProbe.blockIdInColumn(self, 3, -3) == 0;
+        boolean isFly = !self.onGround() && GroundProbe.blockIdInColumn(self, 3, -3) == 0;
         double waterDepth = info.isFloat ? Buoyancy.waterDepth(self, info) : 0.0;
         if (!isFly || in.freeLook() || mod.isGunnerMode() || (info.isFloat && waterDepth > 0.0)) {
             float gmy = 1.0F;
