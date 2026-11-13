@@ -7,7 +7,6 @@ import java.util.List;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.RandomSource;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.tank.MCH_TankInfo;
 import mcheli.agnostic.util.MCH_LowPassFilterFloat;
@@ -46,7 +45,8 @@ class TankControlMappingTest {
 
     static final class FakeTank implements EntityRef {
         float yaw, pitch, roll;
-        private final WorldView world = new GroundWorld();
+        int age = 100;
+        WorldView world = new GroundWorld();
         @Override public float yaw() { return yaw; }
         @Override public float pitch() { return pitch; }
         @Override public float roll() { return roll; }
@@ -54,7 +54,7 @@ class TankControlMappingTest {
         @Override public void setRoll(float r) { roll = r; }
         @Override public Vec3d position() { return new Vec3d(0.5, 64.0, 0.5); }
         @Override public Vec3d prevPosition() { return new Vec3d(0.5, 64.0, 0.5); } // stationary
-        @Override public int ageTicks() { return 100; }
+        @Override public int ageTicks() { return age; }
         @Override public WorldView world() { return world; }
         @Override public int id() { return 1; }
         @Override public boolean isSameAs(EntityRef o) { return this == o; }
@@ -76,11 +76,11 @@ class TankControlMappingTest {
         @Override public MoveResult move(Vec3d d) { throw new UnsupportedOperationException(); }
         @Override public EntityRef vehicle() { return null; }
         @Override public List<EntityRef> passengers() { return List.of(); }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
     }
 
     static final class FakeTankState implements TankState {
         @Override public boolean isDestroyed() { return false; }
+        @Override public boolean hasPilot() { return true; } // the mapping runs only for the seated pilot
         @Override public boolean isGunnerMode() { return false; }
         @Override public boolean isTargetDrone() { return false; }
         @Override public boolean canUseFuel() { return true; }
@@ -98,7 +98,7 @@ class TankControlMappingTest {
 
     static ControlInput drive(boolean left, boolean right, double stickX) {
         // throttleUp on (driving forward) so the pivot-turn "reverse" flag stays +1.
-        return new ControlInput(stickX, 0, 0, 0, true, false, left, right, false, false, false, false, false, 0.5F);
+        return new ControlInput(stickX, 0, true, false, left, right, false, false, false, false, 0.5F);
     }
 
     @Test
@@ -123,5 +123,59 @@ class TankControlMappingTest {
         RotationSolver.applyControl(e, info, drive(false, false, 1000), primed(0.5F), map);
 
         assertTrue(Math.abs(e.yaw) < 0.01f, "mouse must not rotate the hull, yaw=" + e.yaw);
+    }
+
+    @Test
+    void hullTiltIgnoresTheRiderLookLimits() {
+        // MinRotationPitch/MaxRotationPitch turn limitRotation on, but the tank's setAngles override bounds the HULL to
+        // +/-90 only (MCH_EntityTank:1034-1050): the config pair limits the rider's look. A t-90 style -14..5 must not
+        // pin a hull settling from 20 degrees at 5.
+        FakeTank e = new FakeTank();
+        e.pitch = 20.0F;
+        MCH_TankInfo info = new MCH_TankInfo("test_tank");
+        info.limitRotation = true;
+        info.minRotationPitch = -14.0F;
+        info.maxRotationPitch = 5.0F;
+        info.wheels.clear(); // no wheel solve: the target is level
+        TankControlMapping map = new TankControlMapping(e, info, new AircraftSimState(), new FakeTankState());
+
+        RotationSolver.applyControl(e, info, drive(false, false, 0), primed(0.5F), map);
+
+        assertEquals(10.0f, e.pitch, 0.05f); // lerped halfway toward the level target (no wheels), not clamped to 5
+    }
+
+    @Test
+    void finalTankLimitsResetARunawayPitch() {
+        MCH_TankInfo free = new MCH_TankInfo("test_tank");
+        TankControlMapping map = new TankControlMapping(new FakeTank(), free, new AircraftSimState(), new FakeTankState());
+        assertEquals(0.0f, map.limitFinalPitch(free, 95.0F), 0.0f);  // |pitch| > 90 -> 0 (MCH_EntityTank:1053-1056)
+        assertEquals(95.0f, map.limitFinalRoll(free, 95.0F), 0.0f);  // roll only clamps with limitRotation
+        MCH_TankInfo limited = new MCH_TankInfo("test_tank");
+        limited.limitRotation = true;
+        assertEquals(90.0f, map.limitFinalPitch(limited, 95.0F), 0.0f);
+        assertEquals(-90.0f, map.limitComposedRoll(limited, -120.0F), 0.0f);
+    }
+
+    @Test
+    void terrainTargetIsSolvedOncePerTick() {
+        // Reference WheelMng.move solves targetPitch once per tick; the frames only lerp toward it. Swapping the
+        // terrain mid-tick must not move the target until the tick counter advances.
+        FakeTank e = new FakeTank();
+        MCH_TankInfo info = new MCH_TankInfo("test_tank");
+        info.wheels.clear(); // one axle fore, one aft (replacing the default wheel list)
+        for (double z : new double[] {2.0, -2.0}) {
+            info.wheels.add(new mcheli.agnostic.aircraft.MCH_AircraftInfo.Wheel(new Vec3d(1.0, -0.24, z)));
+        }
+        info.onGroundPitchFactor = 90.0F; // let the solve reach the slope in one tick
+        TankControlMapping map = new TankControlMapping(e, info, new AircraftSimState(), new FakeTankState());
+
+        RotationSolver.applyControl(e, info, drive(false, false, 0), primed(0.5F), map); // flat ground: target 0
+        assertEquals(0.0f, e.pitch, 1e-3f);
+        e.world = new TankFlightModelTraceTest.SlopeWorld();                                 // same tick, new terrain
+        RotationSolver.applyControl(e, info, drive(false, false, 0), primed(0.5F), map);
+        assertEquals(0.0f, e.pitch, 1e-3f, "still lerping toward this tick's level target");
+        e.age++;                                                                             // next tick: re-solve
+        RotationSolver.applyControl(e, info, drive(false, false, 0), primed(0.5F), map);
+        assertTrue(e.pitch < -1.0f, "tilts nose-up onto the +Z grade once the tick advances, was " + e.pitch);
     }
 }

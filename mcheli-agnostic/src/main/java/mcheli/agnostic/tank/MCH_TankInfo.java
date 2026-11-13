@@ -3,18 +3,12 @@ package mcheli.agnostic.tank;
 import java.util.ArrayList;
 import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
-import mcheli.agnostic.spi.ItemHandle;
+import mcheli.agnostic.config.MchSettings;
 import mcheli.agnostic.value.Vec3d;
 
 public class MCH_TankInfo extends MCH_AircraftInfo {
-   public ItemHandle item = null;
    public int weightType = 0;
    public float weightedCenterZ = 0.0F;
-
-   @Override
-   public ItemHandle getItem() {
-      return this.item;
-   }
 
    public MCH_TankInfo(String name) {
       super(name);
@@ -63,19 +57,16 @@ public class MCH_TankInfo extends MCH_AircraftInfo {
 
    @Override
    public boolean isValidData() throws Exception {
-      this.speed = (float)(this.speed * this.getSpeedMultiplier());
+      // Reference MCH_TankInfo:68: the server-wide AllTankSpeed multiplier, baked in at load.
+      this.speed = (float)(this.speed * MchSettings.current().allTankSpeed());
       return super.isValidData();
-   }
-
-   protected double getSpeedMultiplier() {
-      return 1.0;
    }
 
    @Override
    public void loadItemData(String item, String data) {
       super.loadItemData(item, data);
       if (item.equalsIgnoreCase("WeightType")) {
-         data = data.toLowerCase();
+         data = data.toLowerCase(java.util.Locale.ROOT);
          this.weightType = data.equals("tank") ? 2 : (data.equals("car") ? 1 : 0);
       } else if (item.equalsIgnoreCase("WeightedCenterZ")) {
          this.weightedCenterZ = this.toFloat(data, -1000.0F, 1000.0F);
@@ -95,13 +86,5 @@ public class MCH_TankInfo extends MCH_AircraftInfo {
    @Override
    public void preReload() {
       super.preReload();
-   }
-
-   @Override
-   public void postReload() {
-      this.registerModels();
-   }
-
-   protected void registerModels() {
    }
 }

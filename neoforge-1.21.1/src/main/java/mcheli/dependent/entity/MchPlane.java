@@ -29,19 +29,19 @@ public class MchPlane extends AbstractMchVehicle {
     private static final FlightModel MODEL = new PlaneFlightModel();
     private static final MCP_PlaneInfo FALLBACK = buildFallback();
 
-    private final PlaneState planeState = new DemoPlaneState(this);
+    private final PlaneState planeState = new PlaneStateAdapter(this);
     private final AircraftSimState simState = new AircraftSimState(0.07);
     private final AircraftSimState rotState = new AircraftSimState();
     private RotationSolver.ControlMapping mapping; // lazy — needs the resolved concrete MCP_PlaneInfo
 
     // VTOL thrust vectoring (#28). The pilot toggles the nozzle STATUS (target); the angle ramps deterministically on
     // BOTH sides (1.5°/tick toward 0=forward / 90=hover), so only the boolean needs syncing. The already-ported
-    // PlaneFlightModel + PlaneControlMapping consume it via the PlaneState seam (DemoPlaneState delegates to these).
+    // PlaneFlightModel + PlaneControlMapping consume it via the PlaneState seam (PlaneStateAdapter delegates to these).
     private static final EntityDataAccessor<Boolean> DATA_VTOL =
         SynchedEntityData.defineId(MchPlane.class, EntityDataSerializers.BOOLEAN);
     private float nozzleRotation;      // 0 (forward thrust) .. 90 (vertical/hover) — reference MCH_Parts rotation
     private float prevNozzleRotation;  // render interpolation
-    private int modeSwitchCooldown;    // reference getModeSwitchCooldown (20 ticks after a toggle)
+    // The toggle cooldown is the vehicle's shared part/mode switch cooldown (modeSwitchCooldown()), as in the reference.
 
     public MchPlane(EntityType<? extends MchPlane> type, Level level) {
         super(type, level);
@@ -55,7 +55,7 @@ public class MchPlane extends AbstractMchVehicle {
     @Override
     public void tick() {
         super.tick();
-        tickNozzle(); // BOTH sides: ramp the nozzle toward its target + tick down the toggle cooldown
+        tickNozzle(); // BOTH sides: ramp the nozzle toward its target
     }
 
     // ---- VTOL (#28) — a near-clone of the rotor-fold (#19) discrete-toggle state machine ----
@@ -76,13 +76,14 @@ public class MchPlane extends AbstractMchVehicle {
     /** Nozzle angle 0 (forward thrust) .. 90 (vertical/hover) — feeds the agnostic thrust vectoring in PlaneFlightModel. */
     public float getNozzleRotation() { return this.nozzleRotation; }
 
-    /** Interpolated nozzle angle for the render (the nozzle-part model swivel is deferred to #28b). */
+    /** Interpolated nozzle angle for the render (MchPlaneRenderer swivels the nozzle parts by it). */
     public float nozzleRotationLerp(float pt) {
         return this.prevNozzleRotation + (this.nozzleRotation - this.prevNozzleRotation) * pt;
     }
 
     /** Reference {@code MCP_EntityPlane.getVtolMode}:942 — 0 = forward, 1 = in transition, 2 = full hover. The synced
      *  boolean is the nozzle TARGET; the mode derives from the target + the current angle (exact reference thresholds). */
+    @Override
     public int getVtolMode() {
         boolean statusOn = this.entityData.get(DATA_VTOL);
         if (!statusOn) {
@@ -91,11 +92,12 @@ public class MchPlane extends AbstractMchVehicle {
         return this.nozzleRotation >= 89.995F ? 2 : 1;
     }
 
-    /** Reference {@code canSwitchVtol}:912 — VTOL-enabled, off cooldown, not mid-transition, near-level roll (≤30°),
-     *  and NOT a grounded default-VTOL plane (the MV-22 is locked in VTOL while parked, reference:929). */
+    /** Reference {@code canSwitchVtol}:912 — VTOL-enabled, off the shared part/mode switch cooldown (a gear, hatch,
+     *  wing or canopy switch blocks it too), not mid-transition, near-level roll (≤30°), and NOT a grounded default-VTOL
+     *  plane (the MV-22 is locked in VTOL while parked, reference:929). */
     public boolean canSwitchVtol() {
         return isVtolEnabled()
-            && this.modeSwitchCooldown == 0
+            && modeSwitchCooldown().ready()
             && getVtolMode() != 1
             && !(onGround() && isDefaultVtol())
             && Math.abs(net.minecraft.util.Mth.wrapDegrees(getRollAngle())) <= 30.0F;
@@ -108,12 +110,12 @@ public class MchPlane extends AbstractMchVehicle {
             return;
         }
         this.entityData.set(DATA_VTOL, !this.entityData.get(DATA_VTOL));
-        this.modeSwitchCooldown = 20;
+        modeSwitchCooldown().start();
     }
 
     /** Ramp the nozzle toward its target at the reference 1.5°/tick ({@code MCH_Parts.rotationInv}) on BOTH sides —
-     *  deterministic + throttle-independent, so client and server reach the endpoint on the same tick — and tick the
-     *  toggle cooldown down. No-op for a non-VTOL plane already at rest. */
+     *  deterministic + throttle-independent, so client and server reach the endpoint on the same tick. No-op for a
+     *  non-VTOL plane already at rest. */
     private void tickNozzle() {
         if (!isVtolEnabled() && this.nozzleRotation == 0.0F) {
             return;
@@ -130,9 +132,6 @@ public class MchPlane extends AbstractMchVehicle {
         } else if (this.nozzleRotation > target) {
             this.nozzleRotation = Math.max(target, this.nozzleRotation - 1.5F);
         }
-        if (this.modeSwitchCooldown > 0) {
-            this.modeSwitchCooldown--;
-        }
     }
 
     @Override protected MCH_AircraftInfo resolveInfo(String name) {
@@ -148,7 +147,17 @@ public class MchPlane extends AbstractMchVehicle {
 
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
-    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
+    @Override protected double serverSimThrottle() { return this.simState.getCurrentThrottle(); }
+    @Override protected void setSimThrottle(double throttle) { this.simState.setCurrentThrottle(throttle); }
+
+    /** CLIENT (the local pilot): the per-tick gunner-mode pitch levelling of {@code onUpdateAircraft}
+     *  (MCP_EntityPlane:191-193) on the client that owns this plane's rotation. */
+    @Override public void clientControlTick(ControlInput in) {
+        AircraftFlightController.levelHoverPitch(this.ref, this.planeState);
+    }
+
+    /** Reference {@code MCP_EntityPlane.getUnfoldLandingGearThrottle}:908: a plane drops its gear below 0.7 throttle. */
+    @Override protected float unfoldLandingGearThrottle() { return 0.7F; }
 
     // Reference MCP_EntityPlane.getSoundVolume/getSoundPitch: volume = SoundVolume × slewedThrottle × 0.7; pitch [0.6,1.0].
     // (The port's engine power is already spooled, so it stands in for the reference's separately-slewed soundVolume.)
@@ -157,17 +166,12 @@ public class MchPlane extends AbstractMchVehicle {
     @Override public float engineSoundPitch() { return configSoundPitch() * (0.6F + getThrottleInput() * 0.4F); }
 
     /** Reference {@code MCP_EntityPlane.canSwitchGunnerMode}:140 — additionally requires a near-level attitude
-     *  (|roll|,|pitch| ≤ 40°), fast throttle ({@code > 0.6}), and being airborne, so you cannot gun a parked plane. */
+     *  (|roll|,|pitch| ≤ 40°), fast throttle ({@code > 0.6}) and nothing within 5 blocks below, so you cannot gun a
+     *  parked or just-airborne plane ({@link AircraftFlightController#canPlaneSwitchGunnerMode}). The pilot's client
+     *  runs it as the gunner-mode key's pre-check, so it reads {@link #simThrottle()}, which is the synced throttle on
+     *  a client (the sim state there never moves, which once made the key a no-op for every plane). */
     @Override public boolean canSwitchGunnerMode() {
-        if (!super.canSwitchGunnerMode()) {
-            return false;
-        }
-        float roll = Math.abs(net.minecraft.util.Mth.wrapDegrees(getRollAngle()));
-        float pitch = Math.abs(net.minecraft.util.Mth.wrapDegrees(getXRot()));
-        if (roll > 40.0F || pitch > 40.0F) {
-            return false;
-        }
-        return simThrottle() > 0.6 && !onGround(); // airborne proxy for the reference getBlockIdY(this,3,-5)==0
+        return super.canSwitchGunnerMode() && AircraftFlightController.canPlaneSwitchGunnerMode(this.ref, simThrottle());
     }
     @Override protected RotationSolver.ControlMapping controlMapping() {
         if (this.mapping == null) {

@@ -1,14 +1,10 @@
 package mcheli.dependent;
 
-import com.mojang.logging.LogUtils;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.vehicle.MCH_VehicleInfoManager;
 import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
 import mcheli.agnostic.weapon.VehicleWeapons;
 import mcheli.agnostic.weapon.WeaponSlot;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
-import org.slf4j.Logger;
 
 /**
  * Headless proof of the barrel-heat / overheat mechanic on the real Mk.15 Phalanx gun (M61A1: {@code HeatCount=1},
@@ -16,14 +12,18 @@ import org.slf4j.Logger;
  * (the reference forces {@code heatPerShot>=2} so it out-gains the ~1/tick cooldown), locks out fire at the cap, then
  * cools and re-enables — exactly what the HUD's {@code wpn_heat} gauge shows.
  */
-public final class DemoHeatSelfTest {
-    private static final Logger LOG = LogUtils.getLogger();
+public final class DemoHeatSelfTest extends MchSelfTest {
 
-    @SubscribeEvent
-    public void onServerStarted(ServerStartedEvent event) {
+    @Override
+    protected int[] areaChunks() {
+        return new int[] {0, 0, 0, 0}; // no world needed
+    }
+
+    @Override
+    protected void start() {
         MCH_AircraftInfo info = MCH_VehicleInfoManager.get("mk15");
         if (info == null) {
-            LOG.info("[HEAT-SELFTEST] mk15 config not loaded -> SKIP");
+            fail("mk15 config not loaded");
             return;
         }
         VehicleWeapons w = VehicleWeapons.build(info, MCH_WeaponInfoManager::get);
@@ -35,7 +35,7 @@ public final class DemoHeatSelfTest {
             }
         }
         if (gun == null) {
-            LOG.info("[HEAT-SELFTEST] mk15 has no heat-capable weapon -> FAIL");
+            fail("mk15 has no heat-capable weapon");
             return;
         }
         // A fresh economy weapon (m61a1 MaxAmmo=1600) spawns DRY — supply + load it so it can actually fire.
@@ -81,8 +81,8 @@ public final class DemoHeatSelfTest {
         boolean cooled = gun.heatFraction() < 0.1F; // after sustained cooling the gauge is essentially empty
 
         boolean pass = filled && lockedOut && cooled && reEnabled;
-        LOG.info("[HEAT-SELFTEST] RESULT: {} - peakHeat={} overheated={} (after {} ticks, {} shots); reEnabled@{}tick finalHeat={} cooled={}",
-            pass ? "PASS" : "FAIL", String.format("%.2f", peak), lockedOut, ticksToOverheat, shots,
+        finish(pass, "peakHeat={} overheated={} (after {} ticks, {} shots); reEnabled@{}tick finalHeat={} cooled={}",
+            String.format("%.2f", peak), lockedOut, ticksToOverheat, shots,
             ticksToReEnable, String.format("%.2f", gun.heatFraction()), cooled);
     }
 }

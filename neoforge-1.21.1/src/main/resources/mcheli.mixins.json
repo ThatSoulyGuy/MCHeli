@@ -4,7 +4,9 @@
   "package": "mcheli.dependent.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "CameraMixin"
+    "CameraMixin",
+    "EntityRenderDispatcherMixin",
+    "EntityTurnMixin"
   ],
   "injectors": {
     "defaultRequire": 1

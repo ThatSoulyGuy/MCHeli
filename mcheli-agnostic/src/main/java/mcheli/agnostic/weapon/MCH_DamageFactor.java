@@ -12,7 +12,8 @@ import mcheli.agnostic.spi.Role;
  * through {@link EntityRef#role()} — the mandated {@code instanceof}/{@code getClass} -&gt; role coercion.
  *
  * <p>BEHAVIOR NOTE: for the vehicle roles this is equivalent (MCH_EntityHeli/Plane/Tank/Vehicle are concrete,
- * so exact-class == role). For PLAYER it is NOT: the reference keyed {@code EntityPlayer.class}, which never
+ * so exact-class == role; a UAV config is still a heli/plane entity, so its {@code heli}/{@code plane} factor
+ * applies, as there). Only those five config keys exist, so the other roles always get 1.0. For PLAYER it is NOT: the reference keyed {@code EntityPlayer.class}, which never
  * matched a runtime {@code EntityPlayerMP}/{@code EntityPlayerSP}, so a "player" damage factor was effectively
  * DEAD there. Keying by role makes it apply (honoring the config author's intent). Flagged as a deliberate,
  * documented divergence — revert to a no-op for PLAYER if strict bug-for-bug fidelity is required.

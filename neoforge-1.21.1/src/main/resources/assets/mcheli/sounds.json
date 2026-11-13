@@ -63,9 +63,7 @@
   "turboprop": { "sounds": [ { "name": "mcheli:turboprop", "stream": false } ] },
   "vehicle_drive": { "sounds": [ { "name": "mcheli:vehicle_drive", "stream": false } ] },
   "vehicle_run": { "sounds": [ { "name": "mcheli:vehicle_run", "stream": false } ] },
-  "wrench1": { "sounds": [ { "name": "mcheli:wrench1", "stream": false } ] },
-  "wrench2": { "sounds": [ { "name": "mcheli:wrench2", "stream": false } ] },
-  "wrench3": { "sounds": [ { "name": "mcheli:wrench3", "stream": false } ] },
+  "wrench": { "sounds": [ { "name": "mcheli:wrench1", "stream": false }, { "name": "mcheli:wrench2", "stream": false }, { "name": "mcheli:wrench3", "stream": false } ] },
   "xm301_snd": { "sounds": [ { "name": "mcheli:xm301_snd", "stream": false } ] },
   "zoom": { "sounds": [ { "name": "mcheli:zoom", "stream": false } ] }
 }

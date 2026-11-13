@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.Map;
 import mcheli.agnostic.info.MCH_BaseInfo;
 import mcheli.agnostic.info.MCH_InfoManagerBase;
-import mcheli.agnostic.spi.ItemHandle;
 import mcheli.agnostic.spi.Logger;
 import mcheli.agnostic.spi.ModelHandle;
 import mcheli.agnostic.spi.ResourceSource;
@@ -30,7 +29,6 @@ class AircraftInfoParsingTest {
     /** Minimal concrete aircraft info: fills the abstract seams with test stubs. */
     static final class TestAircraftInfo extends MCH_AircraftInfo {
         TestAircraftInfo(String name) { super(name); }
-        @Override public ItemHandle getItem() { return () -> "test_heli"; }
         @Override public String getDirectoryName() { return "helicopters"; }
         @Override public String getKindName() { return "Heli"; }
         @Override public String getDefaultHudName(int i) { return "hud" + i; }
@@ -109,9 +107,10 @@ class AircraftInfoParsingTest {
         assertEquals(1, info.cameraPosition.size());
         assertEquals(new Vec3d(0.0, 1.5, 3.0), info.cameraPosition.get(0).pos);
 
-        // bounding box drives marker + bbZ (note: the reference uses min() for bbZmax — preserved)
+        // bounding box drives marker + bbZ: the 3-wide box spans z -1.5..1.5, so the fore/aft midpoint is 0 (the
+        // reference's Math.min for bbZmax pinned it at 1.0 and gave -0.25; fixed, see AircraftParserFixesTest)
         assertEquals(4.0f, info.markerHeight, 1e-6f);
-        assertEquals(-0.25f, info.bbZ, 1e-6f);
+        assertEquals(0.0f, info.bbZ, 1e-6f);
 
         // HUD names: one parsed name, padded to seat count with getDefaultHudName(1)
         assertEquals(List.of("cockpit", "hud1"), info.hudList);
@@ -122,8 +121,5 @@ class AircraftInfoParsingTest {
         assertArrayEquals(new int[]{1, 2}, info.flare.types);
         assertEquals(1, info.partWheel.size());
         assertEquals(Vec3d.ZERO, info.turretPosition);
-
-        // the concrete seam still resolves
-        assertEquals("test_heli", info.getItem().name());
     }
 }

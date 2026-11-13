@@ -9,7 +9,6 @@ import mcheli.agnostic.helicopter.MCH_HeliInfo;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.RandomSource;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.value.AABB;
 import mcheli.agnostic.value.MoveResult;
@@ -21,7 +20,7 @@ import org.junit.jupiter.api.Test;
  * Tick-by-tick trace of the {@link HeliFlightModel} through {@link AircraftFlightController}: verifies the
  * collective/cyclic flight model reproduces {@code MCH_EntityHeli} — the {@code pitch^3} cyclic thrust, collective
  * lift beating gravity at full throttle (climb), the {@code currentSpeed} spool that engages for the heli (unlike
- * the ground vehicle), rotor spin, and the not-hovering/hovering throttle curves. Airborne over open air.
+ * the ground vehicle), and the not-hovering/hovering throttle curves. Airborne over open air.
  */
 class HeliFlightModelTraceTest {
 
@@ -59,7 +58,7 @@ class HeliFlightModelTraceTest {
     /** Mutable heli mod-state, defaulting to "flyable". */
     static final class Heli implements HeliState {
         boolean hovering, hoveringMode, gunnerMode, destroyed;
-        /** Mirrors production ({@code DemoHeliState.hasPilot() = owner.pilot() != null}) rather than hardcoding a
+        /** Mirrors production ({@code HeliStateAdapter.hasPilot() = owner.pilot() != null}) rather than hardcoding a
          *  constant, so the riderless trace actually exercises the real gate instead of asserting against a stub. */
         private final EntityRef owner;
 
@@ -120,7 +119,6 @@ class HeliFlightModelTraceTest {
         @Override public int ageTicks() { return 0; }
         @Override public void addMotion(Vec3d d) { mx += d.x(); my += d.y(); mz += d.z(); }
         @Override public EntityRef vehicle() { return null; }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
     }
 
     static MCH_HeliInfo info() {
@@ -152,7 +150,6 @@ class HeliFlightModelTraceTest {
         assertTrue(e.my > 0, "collective lift beats gravity at full throttle -> climbing, was " + e.my);
         assertTrue(e.py > 100.0, "climbs, was " + e.py);
         assertEquals(0.078, st.currentSpeed, 1e-6);  // spools 0.07 -> +(0.35-0.07)/35 (heli DOES spool)
-        assertEquals(79.99, st.rotationRotor, 1e-3); // rotor: (1 - (1-throttle)^3)*rotorSpeed = 1*79.99
     }
 
     @Test

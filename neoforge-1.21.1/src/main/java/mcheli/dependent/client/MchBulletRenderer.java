@@ -6,7 +6,7 @@ import mcheli.MCHeli;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.spi.ModelHandle;
 import mcheli.dependent.entity.MchBullet;
-import mcheli.dependent.port.NeoResourceSource;
+import mcheli.dependent.port.CompositeResourceSource;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.geom.PartPose;
 import net.minecraft.client.model.geom.builders.CubeListBuilder;
@@ -22,7 +22,7 @@ import net.minecraft.resources.ResourceLocation;
 /**
  * Renders a {@link MchBullet} as its <b>configured bullet model</b>: the {@code .mqo}/{@code .obj} named by the firing
  * weapon's {@code ModelBullet=} (or the per-type default — bullet / rocket / aamissile / …), loaded through the shared
- * {@link NeoResourceSource} cache and textured from {@code mcheli:textures/bullets/<name>.png}. The model is oriented
+ * {@link CompositeResourceSource} cache and textured from {@code mcheli:textures/bullets/<name>.png}. The model is oriented
  * along the bullet's flight ({@code -yaw} then {@code +pitch}, no scale — matching the reference {@code MCH_RenderBullet}
  * and the mqo parser's built-in /100 scale) and tinted by the weapon's colour (opaque white = untinted).
  *

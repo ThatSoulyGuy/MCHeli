@@ -51,10 +51,10 @@ public final class MchClientSound {
                 it.remove();
             }
         }
-        // Start a loop for any nearby vehicle that has an engine sound and isn't already playing.
-        for (Entity ent : level.entitiesForRendering()) {
-            if (ent instanceof AbstractMchVehicle v && v.isAlive()
-                && v.distanceToSqr(mc.player) <= RANGE * RANGE && !active.containsKey(v.getId())) {
+        // Start a loop for any nearby vehicle that has an engine sound and isn't already playing. A class-filtered box
+        // query visits only the entity sections in range and only vehicles in them, instead of every client entity.
+        for (AbstractMchVehicle v : level.getEntitiesOfClass(AbstractMchVehicle.class, mc.player.getBoundingBox().inflate(RANGE))) {
+            if (v.isAlive() && v.distanceToSqr(mc.player) <= RANGE * RANGE && !active.containsKey(v.getId())) {
                 SoundEvent engine = engineSoundFor(v);
                 if (engine != null) {
                     VehicleEngineSound sound = new VehicleEngineSound(v, engine);

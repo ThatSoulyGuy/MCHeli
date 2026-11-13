@@ -60,17 +60,20 @@ public abstract class CameraMixin {
         // player's own look (the cameraRollFade branch below applies the correct cos-faded bank) instead of the hull.
         boolean locked = v.supportsMouseRotation() && v.locksViewToVehicle()
             && camSeat == 0 && !v.isSeatGunnerMode(0) && !mcheli.dependent.client.MchFreeLook.active();
+        // For the hull the local rider rotates, applyClientRotation keeps yRotO == getYRot() every frame, so this is
+        // the live per-frame yaw (no per-tick ease); every other hull interpolates its synced yaw as usual.
         float hullYaw = Mth.rotLerp(partialTick, v.yRotO, v.getYRot());
         float hullRoll = mcheli$shortLerp(v.getRollAngle(), v.getPrevRollAngle(), partialTick);
 
         Camera self = (Camera) (Object) this;
         // Weapon recoil kicks the first-person view too (the reference recoil perturbs the hull the camera is locked to).
-        float rP = v.recoilPitchDeg(partialTick);
-        float rR = v.recoilRollDeg(partialTick);
+        float rP = v.animation().recoilPitchDeg(partialTick);
+        float rR = v.animation().recoilRollDeg(partialTick);
         if (!detached) {
             if (locked) {
                 // Reference locks the PLAYER to the hull (setAngles:1265-1288) -> camera shows the full hull attitude.
-                float hullPitch = Mth.lerp(partialTick, v.xRotO, v.getXRot());
+                // ...except a pitch the hull leaves free (a hovering heli, reference isOverridePlayerPitch): the player's.
+                float hullPitch = v.overridesPilotPitch() ? Mth.lerp(partialTick, v.xRotO, v.getXRot()) : self.getXRot();
                 this.setRotation(hullYaw, hullPitch + rP, hullRoll + rR);
             } else if (v.cameraRollFade()) {
                 // Free look on a tank: camera roll fades as the player looks away from the hull axis.

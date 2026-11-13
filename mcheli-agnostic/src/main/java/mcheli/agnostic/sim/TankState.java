@@ -12,5 +12,6 @@ public interface TankState extends AircraftState {
     boolean isTargetDrone();
     boolean canUseFuel();
     boolean isCanopyClose();
+    /** Reference {@code switchGunnerMode(mode)}: leaving restores the throttle saved on entry. */
     void switchGunnerMode(boolean on);
 }

@@ -3,10 +3,8 @@ package mcheli.agnostic.vehicle;
 import java.util.ArrayList;
 import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
-import mcheli.agnostic.spi.ItemHandle;
 
 public class MCH_VehicleInfo extends MCH_AircraftInfo {
-   public ItemHandle item = null;
    public boolean isEnableMove = false;
    public boolean isEnableRot = false;
    public List<MCH_VehicleInfo.VPart> partList = new ArrayList<>();
@@ -21,18 +19,13 @@ public class MCH_VehicleInfo extends MCH_AircraftInfo {
       return 90.0F;
    }
 
-   @Override
-   public ItemHandle getItem() {
-      return this.item;
-   }
-
    public MCH_VehicleInfo(String name) {
       super(name);
    }
 
    @Override
    public boolean isValidData() throws Exception {
-      return super.isValidData();
+      return super.isValidData(); // reference MCH_VehicleInfo:35-37: vehicles have no global speed multiplier
    }
 
    @Override
@@ -107,14 +100,6 @@ public class MCH_VehicleInfo extends MCH_AircraftInfo {
    public void preReload() {
       super.preReload();
       this.partList.clear();
-   }
-
-   @Override
-   public void postReload() {
-      this.registerModels();
-   }
-
-   protected void registerModels() {
    }
 
    public static class VPart extends MCH_AircraftInfo.DrawnPart {

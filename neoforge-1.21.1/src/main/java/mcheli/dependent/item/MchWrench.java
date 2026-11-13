@@ -23,9 +23,11 @@ import net.neoforged.neoforge.entity.PartEntity;
 /**
  * The maintenance wrench — the 1.21.1 port of {@code MCH_ItemWrench}. HOLD right-click while looking at a damaged
  * MCHeli vehicle to mend it: every 20 ticks it repairs 10 HP ({@link AbstractMchVehicle#repair}), spends 1 durability,
- * and clanks one of the {@code wrench1/2/3} sounds — exactly the reference {@code onUsingTick} loop. The targeted
+ * and clanks the {@code wrench} sound (one of {@code wrench1/2/3}) — exactly the reference {@code onUsingTick} loop. The targeted
  * vehicle's HP bar is drawn near the crosshair by {@link mcheli.dependent.client.hud.MchWrenchOverlay} (reference
- * {@code MCH_GuiWrench}). {@link #mouseOverVehicle} is the shared 4-block ray-pick used by both.
+ * {@code MCH_GuiWrench}). {@link #mouseOverVehicle} is the shared 4-block ray-pick used by both. A SNEAKING right-click
+ * with the wrench on a vehicle cycles its paint scheme, and a wrench click never boards
+ * ({@link AbstractMchVehicle#interact}, reference {@code MCH_EntityAircraft.interactFirst}:4318-4324).
  */
 public class MchWrench extends Item {
 
@@ -55,7 +57,9 @@ public class MchWrench extends Item {
         AbstractMchVehicle ac = mouseOverVehicle(player);
         if (ac != null && !ac.isDestroyed() && ac.getHp() > 0 && ac.repair(REPAIR_PER_PULSE)) {
             stack.hurtAndBreak(1, player, EquipmentSlot.MAINHAND);
-            SoundEvent snd = MchSounds.byName("wrench" + (1 + player.getRandom().nextInt(3)));
+            // The "wrench" event groups wrench1..3.ogg, so the sound engine picks the variant (reference
+            // MCH_ItemWrench:123 plays "wrench"; MCH_SoundsJson grouped the numbered files under it).
+            SoundEvent snd = MchSounds.byName("wrench");
             if (snd != null) {
                 level.playSound(null, ac.getX(), ac.getY(), ac.getZ(), snd, SoundSource.PLAYERS,
                     1.0F, 0.9F + player.getRandom().nextFloat() * 0.2F);

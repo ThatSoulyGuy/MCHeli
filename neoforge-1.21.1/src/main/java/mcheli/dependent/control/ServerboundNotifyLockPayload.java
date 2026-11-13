@@ -18,6 +18,11 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
  * server ANTI-SPOOFS it — the sender must actually be riding a vehicle with a lock-on weapon selected — then relays a
  * {@link ClientboundRwrPayload#LOCKED} RWR tone to the target vehicle's crew, but only if that target has flares
  * (reference {@code MCH_MissileDetector} gates on {@code haveFlare()}).
+ *
+ * <p>The notice is also what the server's lock audit ({@link mcheli.agnostic.weapon.MCH_LockAudit}) learns the lock
+ * candidate and its start from, before it lets the seat fire a guided round at it. The relay itself is rate-limited per
+ * seat and needs the target within the seat's lock range, so a modified client cannot sound the warning at any
+ * flare-equipped vehicle in the level.
  */
 public record ServerboundNotifyLockPayload(int targetId) implements CustomPacketPayload {
 
@@ -47,11 +52,14 @@ public record ServerboundNotifyLockPayload(int targetId) implements CustomPacket
             if (seat < 0 || !shooter.selectedWeaponIsLockOn(seat)) {
                 return;
             }
+            Entity target = sender.level().getEntity(p.targetId());
+            if (target == null || !shooter.noteLockNotice(seat, sender, target)) {
+                return; // out of lock range, or inside the relay interval
+            }
             // The lock may be on the airframe OR on a crew member (a passenger) — the tracker can pick either. Resolve a
             // passenger to its airframe (reference getAircraft_RiddenOrControl) so the crew is warned in both cases.
-            Entity target = sender.level().getEntity(p.targetId());
             AbstractMchVehicle victim = target instanceof AbstractMchVehicle v ? v
-                : (target != null && target.getVehicle() instanceof AbstractMchVehicle pv ? pv : null);
+                : (target.getVehicle() instanceof AbstractMchVehicle pv ? pv : null);
             if (victim != null && victim != shooter && victim.haveFlare() && !victim.isDestroyed()) {
                 victim.sendRwrToCrew(ClientboundRwrPayload.LOCKED); // only a flare-equipped target has an RWR
             }

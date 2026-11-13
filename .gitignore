@@ -34,4 +34,6 @@ Thumbs.db
 
 # NOTE: MC1.7.10_mcheli_1.0.3.zip is intentionally NOT ignored — the 1.7.10
 # reference workspace extracts its assets from it at build time
-# (see reference/mcheli-1.7.10/build.gradle -> extractModResources).
+# (see mcheli-1.7.10/build.gradle -> extractModResources). It is not in the
+# working tree: committed in ad27026, removed in 0be2e5a (75 MB). To restore it
+# from history, see mcheli-1.7.10/README.md.

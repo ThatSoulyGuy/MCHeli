@@ -28,5 +28,8 @@ plugins {
 rootProject.name = 'MCHeli'
 
 include 'mcheli-agnostic'
+// The 1.7.10 reference is left out of the default build. It was excluded in ab00fd7, the commit that also moved the
+// wrapper from Gradle 8.8 to 9.6.1; RetroFuturaGradle 1.4.9 was only ever run here under Gradle 8.8. Re-enabling it:
+// mcheli-1.7.10/README.md.
 //include 'mcheli-1.7.10'
 include 'neoforge-1.21.1'

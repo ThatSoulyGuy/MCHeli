@@ -17,6 +17,13 @@ public interface FlightModel {
     void updateThrottle(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, ControlInput in, AircraftState mod);
 
     /**
+     * The rest of {@code onUpdateAircraft} between {@code onUpdate_Control} and {@code onUpdate_Server}: the hover
+     * pitch levelling and the wreck throttle bleed ({@link AircraftFlightController#levelHoverPitch},
+     * {@link AircraftFlightController#decayWreckThrottle}). Default: nothing (the ground vehicle has neither).
+     */
+    default void afterControl(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, AircraftState mod) {}
+
+    /**
      * {@code onUpdate_Server} up to (but not including) the collision move: gravity/buoyancy/thrust, horizontal
      * speed clamp, {@code currentSpeed} envelope and on-ground friction. Sets the entity motion to the computed
      * value and returns that same delta for the controller to pass to {@link EntityRef#move}.

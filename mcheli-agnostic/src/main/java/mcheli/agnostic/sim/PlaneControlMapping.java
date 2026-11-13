@@ -54,16 +54,21 @@ public final class PlaneControlMapping implements RotationSolver.ControlMapping 
     @Override public float pitchFactor() { return (mod.getVtolMode() > 0 ? info.vtolPitch : 1.0F) * 0.8F; }
     @Override public float rollFactor()  { return (mod.getVtolMode() > 0 ? info.vtolYaw : 1.0F) * 0.8F; }
 
-    // canUpdate* = base && !isHovering (base = ageTicks>=30 && off-the-ground; ridingEntity term is inert for the demo).
+    // canUpdate* = base && !isHovering (base = ageTicks>=30 && off-the-ground; the ridingEntity term is inert, as a
+    // vehicle never rides another entity in the port).
     @Override public boolean canUpdateYaw()   { return baseCanUpdate() && !mod.isHovering(); }
     @Override public boolean canUpdatePitch() { return baseCanUpdate() && !mod.isHovering(); }
     @Override public boolean canUpdateRoll()  { return baseCanUpdate() && !mod.isHovering(); }
 
-    // ON THE GROUND = the reference 2-block probe OR Minecraft's own ground contact. The probe alone misses ground it
-    // cannot "see": it only counts blocks with a collision shape in the 3x3 column (a 1-layer snow cover, tall grass
-    // or flowers don't), and it scans just two rows below the rounded position — so on snowy/grassy terrain or a hull
-    // resting on a terrace edge the craft counted as AIRBORNE while parked, and the mouse could pitch/roll it into
-    // the ground. The vanilla onGround flag (synced to the client) closes that gap.
+    // isOverridePlayerYaw/Pitch = base && !isHovering (MCP_EntityPlane:247-255): in gunner mode the airframe holds its
+    // course and the pilot's view turns freely on both axes to aim.
+    @Override public boolean overridesRiderYaw()   { return !mod.isHovering(); }
+    @Override public boolean overridesRiderPitch() { return !mod.isHovering(); }
+
+    // ON THE GROUND = the reference 2-block probe OR Minecraft's own ground contact. The probe scans just two rows below
+    // the rounded position of a 3x3 column, so a hull resting on a terrace edge (or whose rounded centre sits past the
+    // block it rests on) counted as AIRBORNE while parked, and the mouse could pitch/roll it into the ground. The
+    // vanilla onGround flag (synced to the client) closes that gap.
     private boolean baseCanUpdate() {
         return self.ageTicks() >= 30 && !self.onGround() && GroundProbe.blockIdInColumn(self, 3, -2) == 0;
     }

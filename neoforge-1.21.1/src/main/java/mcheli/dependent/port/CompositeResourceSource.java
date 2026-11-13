@@ -6,6 +6,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.spi.ModelHandle;
@@ -20,14 +21,18 @@ import org.slf4j.Logger;
  * all sources; {@code openUtf8}/{@code exists}/{@code loadModel} return the first source that has the resource.
  *
  * <p>This is the single {@link ResourceSource} handed to registration (construction), config parsing (commonSetup),
- * and every model loader, so all three see the identical base+pack resource set. Parsed models are cached here (the
- * per-source loaders no longer cache/warn), so the "no model found" warning fires exactly once, from the true miss.
+ * and every model loader, so all three see the identical base+pack resource set. It is also the ONLY model cache (the
+ * per-source loaders neither cache nor warn): hits and misses are both remembered, so a missing or unparseable model
+ * is probed and warned about once, not on every frame by every bullet/cartridge/container renderer that asks for it.
+ * {@link #clearCaches()} forgets both on a client resource reload (F3+T), so edited model files are picked up.
  */
 public final class CompositeResourceSource implements ResourceSource {
     private static final Logger LOGGER = LogUtils.getLogger();
 
     private final List<ResourceSource> sources;
     private final Map<String, MchModel> modelCache = new ConcurrentHashMap<>();
+    /** Negative cache: names no source could load (absent everywhere, or failed to parse). */
+    private final Set<String> missing = ConcurrentHashMap.newKeySet();
 
     /** @param sources base-first (bundled mcheli, then each pack); wins-on-collision follows this order. */
     public CompositeResourceSource(List<ResourceSource> sources) {
@@ -73,6 +78,9 @@ public final class CompositeResourceSource implements ResourceSource {
         if (cached != null) {
             return cached;
         }
+        if (this.missing.contains(name)) {
+            return null;
+        }
         for (ResourceSource s : this.sources) {
             ModelHandle h = s.loadModel(name);
             if (h instanceof MchModel m) {
@@ -80,7 +88,15 @@ public final class CompositeResourceSource implements ResourceSource {
                 return m;
             }
         }
-        LOGGER.warn("MCHeli: no model found for '{}' in the mod or any content pack (models/{}.mqo/.obj)", name, name);
+        if (this.missing.add(name)) { // add() is true for exactly one caller, so concurrent misses warn once
+            LOGGER.warn("MCHeli: no model found for '{}' in the mod or any content pack (models/{}.mqo/.obj)", name, name);
+        }
         return null;
+    }
+
+    /** Forget every parsed model and every remembered miss, so the next {@link #loadModel} re-reads the files. */
+    public void clearCaches() {
+        this.modelCache.clear();
+        this.missing.clear();
     }
 }

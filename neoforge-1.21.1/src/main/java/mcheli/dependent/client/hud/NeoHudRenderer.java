@@ -1,5 +1,6 @@
 package mcheli.dependent.client.hud;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
@@ -17,8 +18,13 @@ import org.joml.Matrix4f;
 
 /**
  * {@link HudRenderer} over {@link GuiGraphics}: text with shadow, filled rects, textured quads from
- * {@code mcheli:textures/gui/<name>.png}, and — since GuiGraphics has no line primitive — lines drawn as thin rotated
- * {@code fill} quads via the pose stack (so diagonal reticle/ladder lines work too).
+ * {@code mcheli:textures/gui/<name>.png}, and (GuiGraphics has no line primitive) lines drawn as thin float quads in
+ * the GUI buffer, so diagonal reticle and ladder lines work too.
+ *
+ * <p>Every primitive reaches the screen in the order the HUD issued it, as the reference's immediate-mode GL did.
+ * {@code fill}/{@code drawString} flush the GUI buffer themselves (GuiGraphics {@code flushIfUnmanaged}), and
+ * {@code blit} draws immediately, so the line quads queued into the same buffer are flushed at the end of each
+ * {@link #line}/{@link #lineStipple} call. Without that flush a line issued before a texture would render on top of it.
  */
 public final class NeoHudRenderer implements HudRenderer {
 
@@ -26,6 +32,12 @@ public final class NeoHudRenderer implements HudRenderer {
      *  scaled UVs by the texture's actual size, so this must NOT be hardcoded (a 512-wide or non-256-tall custom/content
      *  sheet would otherwise map its UVs wrong and render distorted). Falls back to 256×256 if the file can't be read. */
     private static final Map<String, int[]> DIMS = new HashMap<>();
+
+    /** Forget the cached sheet sizes (render thread only) — a resource reload may swap a gui sheet for one of another
+     *  size. Called by the client reload listener in {@code MchClientEvents}. */
+    public static void clearDimensionCache() {
+        DIMS.clear();
+    }
 
     private static int[] dims(String name) {
         return DIMS.computeIfAbsent(name, n -> {
@@ -87,6 +99,7 @@ public final class NeoHudRenderer implements HudRenderer {
         if (mode == 2) { // GL_LINE_LOOP: close last -> first
             segment(points[2 * (n - 1)], points[2 * (n - 1) + 1], points[0], points[1], argb, width);
         }
+        this.g.flush(); // draw now, in issue order (see the class javadoc)
     }
 
     private void segment(double x1, double y1, double x2, double y2, int argb, float width) {
@@ -149,6 +162,7 @@ public final class NeoHudRenderer implements HudRenderer {
         for (int p = 0; p + 1 < n; p += 2) { // GL_LINES: disjoint point pairs
             stippleSegment(points[2 * p], points[2 * p + 1], points[2 * p + 2], points[2 * p + 3], argb, f, pat, width);
         }
+        this.g.flush(); // draw now, in issue order (see the class javadoc)
     }
 
     /** One dashed segment: walk its length pixel-by-pixel, emitting a solid sub-segment for each run of set pattern
@@ -191,8 +205,13 @@ public final class NeoHudRenderer implements HudRenderer {
         }
         pose.translate(-w / 2.0, -h / 2.0, 0.0);
         int[] d = dims(name); // real sheet size for correct UV normalization (not a hardcoded width/height)
+        // Reference MCH_HudItemTexture enables GL blending first, so translucent texels blend. GuiGraphics.blit
+        // leaves the blend state as it finds it.
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
         g.blit(rl, 0, 0, (int) Math.round(w), (int) Math.round(h),
             (float) u, (float) v, (int) Math.round(uw), (int) Math.round(vh), d[0], d[1]);
+        RenderSystem.disableBlend();
         pose.popPose();
     }
 }

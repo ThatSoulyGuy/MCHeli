@@ -20,12 +20,9 @@ public final class VehicleFlightModel implements FlightModel {
     public void updateThrottle(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, ControlInput in, AircraftState mod) {
         MCH_VehicleInfo vi = (MCH_VehicleInfo) info;
         // Reference: control runs only when `riddenByEntity != null && !riddenByEntity.isDead`; otherwise the
-        // throttle decays. Preserve BOTH halves of that guard (a dead-but-still-attached pilot must not drive
-        // control) rather than assume the host's passengers() already drops dead riders.
-        java.util.List<EntityRef> riders = self.passengers();
-        boolean hasRider = !riders.isEmpty() && !riders.get(0).isDead();
-
-        if (!hasRider) {
+        // throttle decays. riddenByEntity is the seat-0 PILOT (hasPilot() answers both halves of the guard), not
+        // passengers().get(0): passenger order is mount order, so a gunner left aboard must not drive.
+        if (!mod.hasPilot()) {
             if (st.getCurrentThrottle() > 0.0) {
                 st.addCurrentThrottle(-0.00125);
             } else {

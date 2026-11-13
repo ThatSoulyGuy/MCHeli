@@ -59,7 +59,7 @@ public class CharExpression extends WordExpression {
 
    @Override
    public Object evalObject() {
-      return new Character(this.word.charAt(0));
+      return Character.valueOf(this.word.charAt(0));
    }
 
    @Override

@@ -4,12 +4,19 @@ import com.mojang.logging.LogUtils;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import mcheli.agnostic.info.MCH_InfoManagerBase;
+import mcheli.agnostic.info.MCH_SoundsJson;
 import mcheli.agnostic.spi.ResourceSource;
+import mcheli.dependent.registry.MchSounds;
 import net.neoforged.fml.loading.FMLPaths;
 import org.slf4j.Logger;
 
@@ -22,18 +29,28 @@ import org.slf4j.Logger;
  *
  * <p>{@link #discover()} runs ONCE at the very start of the {@code @Mod} constructor — before the registries freeze —
  * because pack config filenames must be enumerable in time to mint spawn items ({@link mcheli.dependent.registry.MchRegistries#registerVehicles})
- * and pack sound basenames in time to register {@code SoundEvent}s ({@link mcheli.dependent.registry.MchSounds}). It:
+ * and pack sound events in time to register {@code SoundEvent}s ({@link mcheli.dependent.registry.MchSounds}). It:
  * <ul>
  *   <li>builds the shared {@link CompositeResourceSource} (bundled assets + every pack's content root) that
  *       registration, the commonSetup config parse, and every model loader read through;</li>
- *   <li>collects each pack's {@code sounds/*.ogg} basenames for construction-time SoundEvent registration;</li>
+ *   <li>turns each pack's {@code sounds/*.ogg} files into sound events the way the reference {@code MCH_SoundsJson}
+ *       did ({@link MCH_SoundsJson}: lower-cased names, numbered files grouped as variants of one event), for
+ *       construction-time SoundEvent registration. A file whose name is not a legal resource id is skipped with a
+ *       warning, exactly like an illegal config name, instead of crashing the {@code @Mod} constructor;</li>
  *   <li>records a {@link PackMount} per pack for the {@code AddPackFindersEvent} resource-pack registration that
- *       exposes pack textures + an (in-memory) {@code sounds.json} + {@code .ogg}s to the client resource manager
- *       (see {@link MchPackResources}).</li>
+ *       exposes pack textures + an (in-memory) {@code sounds.json} + {@code .ogg}s + generated spawn-item models to
+ *       the client resource manager (see {@link MchPackResources}).</li>
  * </ul>
  *
  * <p>The two asset channels: configs + models flow through {@link ResourceSource} ({@link #resources()}); textures +
- * {@code .ogg}s + {@code sounds.json} flow through the vanilla client resource manager ({@link MchPackResources}).
+ * {@code .ogg}s + {@code sounds.json} + item models flow through the vanilla client resource manager
+ * ({@link MchPackResources}). Both follow one precedence rule: bundled content wins every name collision, then the
+ * earlier pack (sorted by folder name). Packs ADD content; replacing a shipped texture is a resource pack's job.
+ *
+ * <p><b>Packs must match on client and server.</b> Each pack vehicle is an item and each pack sound a sound event, and
+ * both registries are synced on join: a client missing a server pack's entries is disconnected by NeoForge's registry
+ * sync, with a message listing the missing {@code mcheli:} ids. A pack only the client has is not detected, nor is a
+ * pack whose files differ under the same names.
  */
 public final class MchContentPacks {
     private MchContentPacks() {}
@@ -47,14 +64,29 @@ public final class MchContentPacks {
     private static final Set<String> CONTENT_DIRS = Set.of(
         "helicopters", "planes", "tanks", "vehicles", "weapons", "hud", "models", "textures", "sounds");
 
-    /** One discovered pack: its display name + resolved content root + its {@code sounds/*.ogg} basenames. */
-    public record PackMount(String name, Path contentRoot, List<String> soundBasenames) {}
+    /**
+     * One discovered pack.
+     *
+     * @param name         the folder name
+     * @param contentRoot  the resolved content root (the pack folder, or its {@code assets/mcheli/})
+     * @param soundEvents  the sound events THIS pack owns (event key -> variant sound names): legal, not bundled, and
+     *                     not already owned by an earlier pack. Only these go into its {@code sounds.json}.
+     * @param soundFiles   every legal sound name of the pack -> its {@code .ogg} file, whatever the file's case
+     * @param vehicleNames the definition names of the pack's vehicle configs (each gets a generated item model)
+     */
+    public record PackMount(String name, Path contentRoot, Map<String, List<String>> soundEvents,
+                            Map<String, Path> soundFiles, Set<String> vehicleNames) {}
+
+    /** The vehicle config directories, as in {@code MchRegistries.Category}. */
+    private static final List<String> VEHICLE_DIRS = List.of("helicopters", "planes", "tanks", "vehicles");
 
     private static boolean discovered = false;
     // Reassigned once in discover() (mod-load thread), then read from render/tick threads — volatile for safe publication.
-    private static volatile ResourceSource shared = new NeoResourceSource(); // bundled-only until discover() runs
+    // Bundled-only until discover() runs, but still behind the composite: it is the only model cache (NeoResourceSource
+    // parses on every call), and the one clearModelCaches() empties.
+    private static volatile ResourceSource shared = new CompositeResourceSource(List.of(new NeoResourceSource()));
     private static final List<PackMount> MOUNTS = new ArrayList<>();
-    private static final List<String> PACK_SOUND_BASENAMES = new ArrayList<>();
+    private static final List<String> PACK_SOUND_EVENTS = new ArrayList<>();
 
     /** Scan {@code <gamedir>/mcheli/} for packs and build the shared resource set. Idempotent; call once, first. */
     public static synchronized void discover() {
@@ -78,19 +110,36 @@ public final class MchContentPacks {
                         packDir.getFileName(), PACKS_DIRNAME, CONTENT_DIRS);
                     continue;
                 }
-                List<String> sounds = scanSounds(contentRoot);
-                sources.add(new FileResourceSource(contentRoot));
-                MOUNTS.add(new PackMount(packDir.getFileName().toString(), contentRoot, sounds));
-                PACK_SOUND_BASENAMES.addAll(sounds);
-                LOGGER.info("MCHeli: discovered content pack '{}' ({} layout, {} sound(s))",
-                    packDir.getFileName(), nested ? "assets/mcheli" : "flat", sounds.size());
+                String packName = packDir.getFileName().toString();
+                FileResourceSource source = new FileResourceSource(contentRoot);
+                Map<String, Path> soundFiles = scanSounds(contentRoot, packName);
+                Map<String, List<String>> owned = new LinkedHashMap<>();
+                for (Map.Entry<String, List<String>> ev : MCH_SoundsJson.group(soundFiles.keySet(),
+                        bad -> LOGGER.warn("MCHeli: skipping content-pack sound '{}' in '{}' — illegal name (only "
+                            + "[a-z0-9_.-] allowed)", bad, packName)).entrySet()) {
+                    String key = ev.getKey();
+                    if (MchSounds.isBundled(key) || PACK_SOUND_EVENTS.contains(key)) {
+                        LOGGER.warn("MCHeli: content pack '{}' sound event '{}' ignored — {} already defines it",
+                            packName, key, MchSounds.isBundled(key) ? "MCHeli" : "an earlier pack");
+                        continue;
+                    }
+                    owned.put(key, List.copyOf(ev.getValue()));
+                    PACK_SOUND_EVENTS.add(key);
+                }
+                sources.add(source);
+                MOUNTS.add(new PackMount(packName, contentRoot, Collections.unmodifiableMap(owned),
+                    Map.copyOf(soundFiles), vehicleNames(source)));
+                LOGGER.info("MCHeli: discovered content pack '{}' ({} layout, {} sound event(s))",
+                    packName, nested ? "assets/mcheli" : "flat", owned.size());
             }
         }
 
         shared = new CompositeResourceSource(sources); // ALWAYS wrap: the composite owns the "no model found" warn
         if (!MOUNTS.isEmpty()) {
-            LOGGER.info("MCHeli: {} content pack(s) active, {} pack sound(s) registered",
-                MOUNTS.size(), PACK_SOUND_BASENAMES.size());
+            // A pack is content on BOTH sides (items + sound events are synced registries): say so where an operator looks.
+            LOGGER.info("MCHeli: {} content pack(s) active ({}), {} pack sound event(s) — clients need the same packs",
+                MOUNTS.size(), MOUNTS.stream().map(PackMount::name).collect(Collectors.joining(", ")),
+                PACK_SOUND_EVENTS.size());
         }
     }
 
@@ -99,14 +148,36 @@ public final class MchContentPacks {
         return shared;
     }
 
+    /**
+     * Forget every parsed model and every remembered model miss, so the next lookup re-reads the files. Run by the
+     * client resource-reload listener ({@code MchClientEvents}) so F3+T picks up edited pack/dev models without a
+     * restart. Thread-safe (the composite's caches are concurrent); callable from the reload's background phase.
+     */
+    public static void clearModelCaches() {
+        if (shared instanceof CompositeResourceSource c) {
+            c.clearCaches();
+        }
+        modelGeneration++;
+    }
+
+    // Bumped by every clearModelCaches(), so per-entity values derived from a model (AbstractMchVehicle.modelMinY)
+    // know to re-derive. Written from the reload's background phase, read on the tick/render threads.
+    private static volatile int modelGeneration;
+
+    /** A counter that changes whenever the model caches are cleared; compare it to re-derive cached model values. */
+    public static int modelGeneration() {
+        return modelGeneration;
+    }
+
     /** Each discovered pack's mount info — the client asset finder ({@link MchPackResourcesFinder}) mounts each one. */
     public static List<PackMount> mounts() {
         return List.copyOf(MOUNTS);
     }
 
-    /** Every pack {@code sounds/*.ogg} basename — one {@code SoundEvent} must be registered per name before the freeze. */
-    public static List<String> packSoundBasenames() {
-        return List.copyOf(PACK_SOUND_BASENAMES);
+    /** Every sound event the packs own (see {@link PackMount#soundEvents}) — one {@code SoundEvent} must be registered
+     *  per name before the freeze. */
+    public static List<String> packSoundEvents() {
+        return List.copyOf(PACK_SOUND_EVENTS);
     }
 
     // ---- internals ----
@@ -131,23 +202,44 @@ public final class MchContentPacks {
         return false;
     }
 
-    /** Collect a pack's {@code sounds/*.ogg} basenames (the {@code sounds.json} that indexes them is synthesized on the
-     *  fly by {@link MchPackResources} — no file is written into the user's pack). */
-    private static List<String> scanSounds(Path contentRoot) {
+    /**
+     * A pack's {@code sounds/*.ogg} files by sound name (the lower-cased base name, reference {@code MCH_SoundsJson}),
+     * sorted by name for a stable event order. The {@code sounds.json} that indexes them is synthesized on the fly by
+     * {@link MchPackResources}; no file is written into the user's pack. Two files differing only in case are one name:
+     * the first (in sorted file-name order) is kept.
+     */
+    private static Map<String, Path> scanSounds(Path contentRoot, String packName) {
         Path soundsDir = contentRoot.resolve("sounds");
         if (!Files.isDirectory(soundsDir)) {
-            return List.of();
+            return Map.of();
         }
-        Set<String> basenames = new LinkedHashSet<>();
+        Map<String, Path> byName = new TreeMap<>();
         try (Stream<Path> s = Files.list(soundsDir)) {
-            s.filter(Files::isRegularFile)
-                .map(p -> p.getFileName().toString())
-                .filter(n -> n.toLowerCase().endsWith(".ogg"))
-                .forEach(n -> basenames.add(n.substring(0, n.length() - 4)));
+            for (Path p : s.filter(Files::isRegularFile).sorted().toList()) {
+                String name = MCH_SoundsJson.soundName(p.getFileName().toString());
+                if (name != null && byName.putIfAbsent(name, p) != null) {
+                    LOGGER.warn("MCHeli: content pack '{}' has two sound files named '{}' (case differs) — using {}",
+                        packName, name, byName.get(name).getFileName());
+                }
+            }
         } catch (Exception e) {
             LOGGER.warn("MCHeli: could not scan pack sounds under {}", soundsDir, e);
-            return List.of();
+            return Map.of();
         }
-        return new ArrayList<>(basenames);
+        return byName;
+    }
+
+    /** The definition names of a pack's own vehicle configs (the manager's naming rule), for its item models. */
+    private static Set<String> vehicleNames(FileResourceSource source) {
+        Set<String> names = new TreeSet<>();
+        for (String dir : VEHICLE_DIRS) {
+            for (String file : source.list(dir)) {
+                String name = MCH_InfoManagerBase.definitionName(file);
+                if (name != null && MCH_SoundsJson.isLegalName(name)) {
+                    names.add(name);
+                }
+            }
+        }
+        return Collections.unmodifiableSet(names);
     }
 }

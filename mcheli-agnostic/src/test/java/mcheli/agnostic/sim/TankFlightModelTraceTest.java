@@ -8,7 +8,6 @@ import java.util.List;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.RandomSource;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.tank.MCH_TankInfo;
 import mcheli.agnostic.value.AABB;
@@ -20,7 +19,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Trace of {@link TankFlightModel} through {@link AircraftFlightController}: verifies the tank ground physics
  * reproduce {@code MCH_EntityTank} — Rot2Vec3 forward thrust with the {@code throttle/8} lift, the currentSpeed
- * spool, and the brake (halves throttleBack + bleeds throttle). Airborne over open air (wheel terrain-follow deferred).
+ * spool, the brake (halves throttleBack + bleeds throttle), the pilot gate and the wreck throttle bleed, plus the
+ * WheelMng terrain follow on scripted slopes (the wheels rest on collision shapes only, so not on water).
  */
 class TankFlightModelTraceTest {
 
@@ -46,8 +46,12 @@ class TankFlightModelTraceTest {
     };
 
     static final class Tank implements TankState {
-        boolean gunner, drone, destroyed;
+        boolean gunner, drone, destroyed, exploded;
+        /** The seat-0 pilot, set explicitly: passengers().get(0) may be a gunner (see pilotGateIgnoresGunner). */
+        boolean pilot = true;
+        public boolean hasPilot() { return pilot; }
         public boolean isDestroyed() { return destroyed; }
+        public boolean isExploded() { return exploded; }
         public boolean isGunnerMode() { return gunner; }
         public boolean isTargetDrone() { return drone; }
         public boolean canUseFuel() { return true; }
@@ -110,7 +114,7 @@ class TankFlightModelTraceTest {
                 int bx = (int) Math.floor(px);
                 int bz = (int) Math.floor(pz);
                 for (int y = (int) Math.floor(py) + 1; y >= (int) Math.floor(py) - 8; y--) {
-                    if (world.isCollidable(bx, y, bz)) {
+                    if (world.hasCollision(bx, y, bz)) {
                         if (py < y + 1.0) { py = y + 1.0; my = 0.0; onGround = true; }
                         break;
                     }
@@ -133,7 +137,6 @@ class TankFlightModelTraceTest {
         @Override public int ageTicks() { return 0; }
         @Override public void addMotion(Vec3d d) { mx += d.x(); my += d.y(); mz += d.z(); }
         @Override public EntityRef vehicle() { return null; }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
     }
 
     static MCH_TankInfo info() {
@@ -176,7 +179,7 @@ class TankFlightModelTraceTest {
         st.currentThrottle = 0.5;
 
         // brake = 5th boolean (throttleUp, throttleDown, moveLeft, moveRight, brake, ...)
-        ControlInput braking = new ControlInput(0, 0, 0, 0, false, false, false, false, true, false, false, false, false, 0.0F);
+        ControlInput braking = new ControlInput(0, 0, false, false, false, false, true, false, false, false, 0.0F);
         tick(e, ti, st, braking, new Tank());
 
         assertEquals(0.2F, st.throttleBack, 1e-6);      // *0.8 then *0.5
@@ -283,5 +286,62 @@ class TankFlightModelTraceTest {
 
         assertEquals(0.0F, e.pitch, 1e-3F, "flat ground leaves the hull level");
         assertEquals(0.0F, e.roll, 1e-3F, "flat ground leaves the hull level");
+    }
+
+    /** A flat stone floor under y=64 with a WATER slope above it (rising like {@link SlopeWorld}): the probe sees the
+     *  water ({@code isCollidable}), a wheel entity would not ({@code hasCollision}, whose default excludes water). */
+    static final class WaterSlopeWorld implements WorldView {
+        public boolean isRemote() { return false; }
+        public long totalTime() { return 0; }
+        public int getBlockId(int x, int y, int z) { return y < SlopeWorld.surface(z) || y < 64 ? 1 : 0; }
+        public boolean isWater(int x, int y, int z) { return y >= 64 && y < SlopeWorld.surface(z); }
+        public String materialName(int x, int y, int z) { return "stub"; }
+        public boolean isCollidable(int x, int y, int z) { return getBlockId(x, y, z) != 0; }
+        public boolean isAABBInWater(AABB box) { return false; }
+        public List<EntityRef> entitiesInAABB(AABB box) { throw new UnsupportedOperationException(); }
+        public List<EntityRef> entitiesInAABB(AABB box, Role role) { throw new UnsupportedOperationException(); }
+        public RayHit rayTraceBlocks(Vec3d from, Vec3d to) { throw new UnsupportedOperationException(); }
+        public RayHit clip(Vec3d from, Vec3d to, boolean stopOnLiquid) { throw new UnsupportedOperationException(); }
+        public void spawn(EntityRef entity) { throw new UnsupportedOperationException(); }
+        public void spawnParticle(String name, Vec3d pos, Vec3d velocity) { }
+        public void playSound(Vec3d pos, String name, float volume, float pitch) { }
+        public void playSoundAtEntity(EntityRef entity, String name, float volume, float pitch) { }
+        public RandomSource random() { throw new UnsupportedOperationException(); }
+    }
+
+    @Test
+    void wheelsSinkThroughWaterInsteadOfRestingOnIt() {
+        // The reference MCH_EntityWheel collided only with collision boxes, so a sloping water surface over a flat bed
+        // must leave the hull level (the old isCollidable contact tilted it onto the water).
+        FakeEntity e = new FakeEntity().at(0.5, 64, 0.5).in(new WaterSlopeWorld()).restingOnTerrain();
+        MCH_TankInfo ti = slopeInfo();
+        AircraftSimState st = new AircraftSimState(0.07);
+        Tank mod = new Tank();
+        for (int i = 0; i < 20; i++) {
+            tick(e, ti, st, ControlInput.NONE, mod);
+        }
+        assertEquals(0.0F, e.pitch, 1e-3F, "the hull rests on the stone bed, not the water slope");
+    }
+
+    @Test
+    void pilotGateIgnoresAGunnerLeftAboard() {
+        FakeEntity e = new FakeEntity().at(0, 100, 0).withRider();
+        AircraftSimState st = new AircraftSimState(0.07);
+        st.currentThrottle = 0.5;
+        Tank mod = new Tank();
+        mod.pilot = false; // seat 0 empty, a gunner is passengers().get(0)
+        tick(e, info(), st, ControlInput.ground(true, false, false, false), mod);
+        assertEquals(0.4975, st.currentThrottle, 1e-12); // -0.0025 spool-down, the throttle key is not the pilot's
+    }
+
+    @Test
+    void wreckThrottleBleedsOnTheGround() {
+        FakeEntity e = new FakeEntity().at(0.5, 64, 0.5).in(new SlopeWorld());
+        AircraftSimState st = new AircraftSimState(0.07);
+        st.currentThrottle = 0.5;
+        Tank mod = new Tank();
+        mod.destroyed = true;
+        tick(e, info(), st, ControlInput.NONE, mod);
+        assertEquals((0.5 - 0.0025) * 0.8, st.currentThrottle, 1e-12); // MCH_EntityTank:200-208, block within 2 below
     }
 }

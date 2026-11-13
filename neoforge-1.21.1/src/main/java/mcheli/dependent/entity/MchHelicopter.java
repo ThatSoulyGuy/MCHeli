@@ -32,7 +32,7 @@ public class MchHelicopter extends AbstractMchVehicle {
     /** Fallback for an unknown/blank config name so the physics never sees a null info. */
     private static final MCH_HeliInfo FALLBACK = buildFallback();
 
-    private final HeliState heliState = new DemoHeliState(this);
+    private final HeliState heliState = new HeliStateAdapter(this);
     private final AircraftSimState simState = new AircraftSimState(0.07); // heli idles currentSpeed at 0.07
     private final AircraftSimState rotState = new AircraftSimState();
     private RotationSolver.ControlMapping mapping; // lazy — needs the resolved concrete MCH_HeliInfo
@@ -49,6 +49,12 @@ public class MchHelicopter extends AbstractMchVehicle {
     private float foldRotorSpin;      // reference rotationRotor: throttle-driven, so it FREEZES when parked and the
     private float prevFoldRotorSpin;  // fold sweep runs deterministically + identically on client and server
 
+    // ---- Hovering mode (reference MCH_EntityAircraft.isHoveringMode, switched by KeySwitchHovering on the heli) ----
+    // Server-authoritative and synced: the flight sim hovers on it (HeliState.isHovering), and the pilot's client reads
+    // it for the rotation mapping (no mouse pitch/roll, free view pitch) and the HUD "hovering" cue. Not persisted.
+    private static final EntityDataAccessor<Boolean> DATA_HOVER =
+        SynchedEntityData.defineId(MchHelicopter.class, EntityDataSerializers.BOOLEAN);
+
     public MchHelicopter(EntityType<? extends MchHelicopter> type, Level level) {
         super(type, level);
     }
@@ -57,12 +63,87 @@ public class MchHelicopter extends AbstractMchVehicle {
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
         super.defineSynchedData(builder);
         builder.define(DATA_FOLD, (byte) 2); // unfolded
+        builder.define(DATA_HOVER, false);
+    }
+
+    /** The requested hovering mode (synced; reference {@code isHoveringMode}). */
+    public boolean isHoveringMode() { return this.entityData.get(DATA_HOVER); }
+
+    /** Reference {@code MCH_EntityHeli.canSwitchHoveringMode}:306 — not in gunner mode (base :5341), usable blades and a
+     *  near-level attitude (|wrapped roll| and |wrapped pitch| under 40). It gates turning the mode OFF too. */
+    public boolean canSwitchHoveringMode() {
+        if (isGunnerModeActive() || !canUseBlades()) {
+            return false;
+        }
+        float roll = Math.abs(net.minecraft.util.Mth.wrapDegrees(getRollAngle()));
+        float pitch = Math.abs(net.minecraft.util.Mth.wrapDegrees(getXRot()));
+        return roll < 40.0F && pitch < 40.0F;
+    }
+
+    /** SERVER: reference {@code switchHoveringMode(mode)} (MCH_EntityAircraft:5324-5339): when allowed and changing,
+     *  entering saves the sim throttle and leaving restores it (shared with gunner mode). The reference also levelled
+     *  the rider's view pitch; the pilot's client does that when it sends the toggle. */
+    public void switchHoveringMode(boolean on) {
+        if (this.level().isClientSide || !canSwitchHoveringMode() || isHoveringMode() == on) {
+            return;
+        }
+        if (on) {
+            setBeforeHoverThrottle(this.simState.getCurrentThrottle());
+        } else {
+            this.simState.setCurrentThrottle(beforeHoverThrottle());
+        }
+        this.entityData.set(DATA_HOVER, on);
+    }
+
+    /** SERVER: the pilot's hover key (reference {@code KeySwitchHovering}, pilot only). */
+    public void toggleHoveringMode(Player pilot) {
+        if (!this.level().isClientSide && seatIndexOf(pilot) == 0) {
+            switchHoveringMode(!isHoveringMode());
+        }
+    }
+
+    /** Reference {@code unmountEntity}/{@code onUnmountPlayerSeat}: once no PLAYER rides, the hover mode is dropped
+     *  (through the same gate) — a heli whose crew all left must not keep hovering on its own. */
+    @Override
+    protected void removePassenger(net.minecraft.world.entity.Entity p) {
+        super.removePassenger(p);
+        if (!this.level().isClientSide && isHoveringMode()) {
+            boolean anyPlayer = false;
+            for (net.minecraft.world.entity.Entity q : getPassengers()) {
+                anyPlayer |= q instanceof Player;
+            }
+            if (!anyPlayer) {
+                switchHoveringMode(false);
+            }
+        }
+    }
+
+    /** Reference {@code destroyAircraft} drops the hover mode first (then gunner mode, which ejecting the crew does). */
+    @Override
+    protected void destroyVehicle(net.minecraft.world.entity.Entity killer, boolean terrainKill) {
+        if (!this.level().isClientSide) {
+            switchHoveringMode(false);
+        }
+        super.destroyVehicle(killer, terrainKill);
+    }
+
+    /** Reference {@code MCH_EntityHeli.getUnfoldLandingGearThrottle}:174-180: 0.8 while (nearly) still — squared travel
+     *  of the last tick at most {@code speed / 3.5} (the reference compares a squared distance with an unsquared
+     *  speed) — else 0.3, so a moving heli keeps its gear up until it slows down. */
+    @Override
+    protected float unfoldLandingGearThrottle() {
+        double x = getX() - this.xo;
+        double y = getY() - this.yo;
+        double z = getZ() - this.zo;
+        float s = weaponHostInfo().speed / 3.5F;
+        return x * x + y * y + z * z <= s ? 0.8F : 0.3F;
     }
 
     @Override
     protected void addAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {
         super.addAdditionalSaveData(tag);
         tag.putBoolean("FoldBlade", foldStat() == 0); // reference persists folded vs not; transient states collapse
+        tag.putDouble("RotorSpeed", this.simState.getCurrentThrottle()); // reference MCH_EntityHeli:103
     }
 
     @Override
@@ -72,6 +153,8 @@ public class MchHelicopter extends AbstractMchVehicle {
             // Reload folded (0) or unfolded (2); ensureFoldRotors force-folds the blades on the first tick when 0.
             this.entityData.set(DATA_FOLD, tag.getBoolean("FoldBlade") ? (byte) 0 : (byte) 2);
         }
+        // The flight throttle, so a heli saved spooled up does not reload with a dead rotor (reference :137).
+        this.simState.setCurrentThrottle(tag.getDouble("RotorSpeed"));
     }
 
     @Override protected MCH_AircraftInfo resolveInfo(String name) {
@@ -84,7 +167,14 @@ public class MchHelicopter extends AbstractMchVehicle {
 
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
-    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
+    @Override protected double serverSimThrottle() { return this.simState.getCurrentThrottle(); }
+    @Override protected void setSimThrottle(double throttle) { this.simState.setCurrentThrottle(throttle); }
+
+    /** CLIENT (the local pilot): the per-tick hover/gunner pitch levelling of {@code onUpdateAircraft} on the client
+     *  that owns this heli's rotation — the server's own levelling would be overwritten by that rotation. */
+    @Override public void clientControlTick(ControlInput in) {
+        AircraftFlightController.levelHoverPitch(this.ref, this.heliState);
+    }
 
     // Reference MCH_EntityHeli.getSoundVolume/getSoundPitch: volume = SoundVolume × throttle × 2; pitch spans [0.2,0.4].
     @Override protected String defaultEngineSound() { return "heli"; }
@@ -155,7 +245,8 @@ public class MchHelicopter extends AbstractMchVehicle {
      *  near-level attitude (|roll| &lt; 40°, |pitch| &lt; 40°). Since #19 wired {@link #canUseBlades()} to the fold
      *  state, a folded / mid-fold heli must NOT enter gunner mode. */
     @Override public boolean canSwitchGunnerMode() {
-        if (!super.canSwitchGunnerMode() || !canUseBlades()) {
+        // + the base reference gate !isHoveringMode() (MCH_EntityAircraft:5300): hover and gunner mode exclude each other.
+        if (!super.canSwitchGunnerMode() || isHoveringMode() || !canUseBlades()) {
             return false;
         }
         float roll = Math.abs(net.minecraft.util.Mth.wrapDegrees(getRollAngle()));

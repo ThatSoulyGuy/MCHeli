@@ -8,7 +8,6 @@ import mcheli.agnostic.plane.MCP_PlaneInfo;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.RandomSource;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.util.MCH_LowPassFilterFloat;
 import mcheli.agnostic.value.AABB;
@@ -75,7 +74,6 @@ class PlaneControlMappingTest {
         @Override public MoveResult move(Vec3d d) { throw new UnsupportedOperationException(); }
         @Override public EntityRef vehicle() { return null; }
         @Override public List<EntityRef> passengers() { return List.of(); }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
     }
 
     static final class FakePlaneState implements PlaneState {
@@ -83,6 +81,7 @@ class PlaneControlMappingTest {
         int vtol;
         float nozzle;
         @Override public boolean isDestroyed() { return false; }
+        @Override public boolean hasPilot() { return true; } // the mapping runs only for the seated pilot
         @Override public boolean isGunnerMode() { return gunner; }
         @Override public boolean isHovering() { return gunner; }
         @Override public boolean isTargetDrone() { return false; }
@@ -105,7 +104,7 @@ class PlaneControlMappingTest {
     }
 
     static ControlInput in(double stickX, double stickY, boolean left, boolean right, boolean flightSim, float pt) {
-        return new ControlInput(stickX, stickY, 0, 0, false, false, left, right, false, false, false, flightSim, false, pt);
+        return new ControlInput(stickX, stickY, false, false, left, right, false, false, flightSim, false, pt);
     }
 
     @Test
@@ -147,5 +146,16 @@ class PlaneControlMappingTest {
         RotationSolver.applyControl(e, info, in(0, 0, false, true, false, 0.5F), primed(0.5F), map);
 
         assertTrue(e.roll > 0.02f, "keyboard rudder added roll in flight, roll=" + e.roll);
+    }
+
+    @Test
+    void gunnerModeFreesTheViewOnBothAxes() {
+        // isOverridePlayerYaw/Pitch = !isHovering (MCP_EntityPlane:247-255): the airframe holds course, the pilot aims.
+        FakePlaneState mod = new FakePlaneState();
+        PlaneControlMapping map = new PlaneControlMapping(new FakePlane(), new MCP_PlaneInfo("test_plane"),
+            new AircraftSimState(), mod);
+        assertTrue(map.overridesRiderYaw() && map.overridesRiderPitch());
+        mod.gunner = true;
+        assertTrue(!map.overridesRiderYaw() && !map.overridesRiderPitch());
     }
 }

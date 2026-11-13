@@ -2,23 +2,29 @@ package mcheli.agnostic.aircraft;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import mcheli.agnostic.config.MchSettings;
 import mcheli.agnostic.helicopter.MCH_HeliInfo;
 import mcheli.agnostic.plane.MCP_PlaneInfo;
 import mcheli.agnostic.tank.MCH_TankInfo;
 import mcheli.agnostic.value.Vec3d;
 import mcheli.agnostic.vehicle.MCH_VehicleInfo;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
  * Exercises the four concrete {@link MCH_AircraftInfo} subclasses (ported in parallel) through their
- * type-specific parse directives and the coercion seams (ItemHandle item / getSpeedMultiplier /
- * registerModels), proving each parses with ZERO Minecraft and behaves like the 1.7.10 original.
+ * type-specific parse directives and the global speed multipliers ({@link MchSettings}), proving each parses with
+ * ZERO Minecraft and behaves like the 1.7.10 original.
  */
 class AircraftSubclassParsingTest {
+
+    @AfterEach
+    void restoreDefaultSettings() {
+        MchSettings.install(null);
+    }
 
     @Test
     void heliParsesRotorsAndSeams() throws Exception {
@@ -41,13 +47,53 @@ class AircraftSubclassParsingTest {
         assertEquals(1, h.rotorList.get(0).bladeRot);
 
         h.isValidData();
-        // getSpeedMultiplier() default is 1.0, so the config multiplier is a no-op agnostic-side
+        // nothing installed -> the reference default AllHeliSpeed = 1.0, so Speed is unchanged
         assertEquals(0.5f, h.speed, 1e-6f);
+    }
 
-        // ItemHandle seam: null until the dependent layer injects an item
-        assertNull(h.getItem());
-        h.item = () -> "item.heli";
-        assertEquals("item.heli", h.getItem().name());
+    @Test
+    void globalSpeedMultipliersApplyPerKindAtLoad() throws Exception {
+        // reference MCH_HeliInfo:26 / MCP_PlaneInfo:79-80 / MCH_TankInfo:68 (vehicles have none)
+        MchSettings.install(new MchSettings(2.0, 0.5, 3.0));
+
+        MCH_HeliInfo h = new MCH_HeliInfo("h");
+        h.loadItemData("addseat", "0, 0, 0");
+        h.loadItemData("speed", "0.3");
+        h.isValidData();
+        assertEquals(0.6f, h.speed, 1e-6f);
+
+        MCP_PlaneInfo p = new MCP_PlaneInfo("p");
+        p.loadItemData("addseat", "0, 0, 0");
+        p.loadItemData("speed", "1.0");
+        p.loadItemData("sweepwingspeed", "1.2");
+        p.isValidData();
+        assertEquals(0.5f, p.speed, 1e-6f);
+        assertEquals(0.6f, p.sweepWingSpeed, 1e-6f);
+
+        MCH_TankInfo t = new MCH_TankInfo("t");
+        t.loadItemData("addseat", "0, 0, 0");
+        t.loadItemData("speed", "0.2");
+        t.isValidData();
+        assertEquals(0.6f, t.speed, 1e-6f);
+
+        MCH_VehicleInfo v = new MCH_VehicleInfo("v");
+        v.loadItemData("addseat", "0, 0, 0");
+        v.loadItemData("speed", "0.4");
+        v.isValidData();
+        assertEquals(0.4f, v.speed, 1e-6f);
+    }
+
+    @Test
+    void speedMultipliersClampLikeTheReference() {
+        // reference correctionParameter: MCH_Lib.RNG(x, 0.0, 1000.0)
+        MchSettings s = new MchSettings(-1.0, 5000.0, Double.NaN);
+        assertEquals(0.0, s.allHeliSpeed(), 0.0);
+        assertEquals(1000.0, s.allPlaneSpeed(), 0.0);
+        assertEquals(1.0, s.allTankSpeed(), 0.0);
+        MchSettings.install(s);
+        assertEquals(s, MchSettings.current());
+        MchSettings.install(null);
+        assertEquals(MchSettings.DEFAULTS, MchSettings.current());
     }
 
     @Test
@@ -95,9 +141,5 @@ class AircraftSubclassParsingTest {
         v.loadItemData("addseat", "0, 0, 0");
         v.isValidData();
         assertEquals(1, v.getNumSeat());
-
-        assertNull(v.getItem());
-        v.item = () -> "item.vehicle";
-        assertEquals("item.vehicle", v.getItem().name());
     }
 }

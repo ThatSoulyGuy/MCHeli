@@ -3,7 +3,6 @@ package mcheli.dependent.client;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -73,22 +72,21 @@ public class MchTankRenderer extends MchModelEntityRenderer<MchTank> {
             return;
         }
         int col = wreckColor(entity);
-        Set<String> hidden = hiddenGroups(entity, model); // glass sub-meshes stay hidden inside running-gear spans
-        float wheelDeg = calcRot(entity.wheelSpin(), entity.prevWheelSpin(), partialTick);      // road-wheel spin about X
-        float steer = Mth.lerp(partialTick, entity.prevWheelSteer(), entity.wheelSteer());       // [-1,1] steer fraction
+        float wheelDeg = calcRot(entity.animation().wheelSpin(), entity.animation().prevWheelSpin(), partialTick);      // road-wheel spin about X
+        float steer = Mth.lerp(partialTick, entity.animation().prevWheelSteer(), entity.animation().wheelSteer());       // [-1,1] steer fraction
         for (MCH_AircraftInfo.PartWheel w : info.partWheel) {
-            renderWheel(model, pose, consumer, packedLight, overlay, w, steer, wheelDeg, col, hidden);
+            renderWheel(model, pose, consumer, packedLight, overlay, w, steer, wheelDeg, col);
         }
         // Rollers spin at their OWN side's speed; the belt scrolls at its OWN side's phase (differential on pivot turns).
         float[] rollerDeg = {
-            calcRot(entity.rollerSpin(0), entity.prevRollerSpin(0), partialTick),
-            calcRot(entity.rollerSpin(1), entity.prevRollerSpin(1), partialTick)};
+            calcRot(entity.animation().rollerSpin(0), entity.animation().prevRollerSpin(0), partialTick),
+            calcRot(entity.animation().rollerSpin(1), entity.animation().prevRollerSpin(1), partialTick)};
         for (MCH_AircraftInfo.TrackRoller r : info.partTrackRoller) {
-            spinAboutX(model, pose, consumer, packedLight, overlay, r.pos, rollerDeg[r.side], "$" + r.modelName, col, hidden);
+            spinAboutX(model, pose, consumer, packedLight, overlay, r.pos, rollerDeg[r.side], "$" + r.modelName, col);
         }
         float[] scroll = {
-            lerpScroll(entity.prevTrackScroll(0), entity.trackScroll(0), partialTick),
-            lerpScroll(entity.prevTrackScroll(1), entity.trackScroll(1), partialTick)};
+            lerpScroll(entity.animation().prevTrackScroll(0), entity.animation().trackScroll(0), partialTick),
+            lerpScroll(entity.animation().prevTrackScroll(1), entity.animation().trackScroll(1), partialTick)};
         // Crawler belt: ONE link mesh stamped along the densified point loop, scrolled by this side's phase (0..1).
         for (MCH_AircraftInfo.CrawlerTrack c : info.partCrawlerTrack) {
             int steps = c.lp.size() - 1;
@@ -110,27 +108,27 @@ public class MchTankRenderer extends MchModelEntityRenderer<MchTank> {
                 pose.translate(0.0, x, y);
                 pose.mulPose(Axis.XN.rotationDegrees((float) r)); // glRotatef(r,-1,0,0)
                 MchModelRenderer.renderPartSpan(model, pose, consumer, packedLight, overlay, col, col, col, 255,
-                    group, hidden);
+                    group);
                 pose.popPose();
             }
         }
     }
 
     private static void spinAboutX(MchModel model, PoseStack pose, VertexConsumer consumer, int light, int overlay,
-                                   Vec3d pos, float deg, String group, int c, Set<String> hidden) {
+                                   Vec3d pos, float deg, String group, int c) {
         pose.pushPose();
         pose.translate(pos.x(), pos.y(), pos.z());
         pose.mulPose(Axis.XP.rotationDegrees(deg));
         pose.translate(-pos.x(), -pos.y(), -pos.z());
         MchModelRenderer.renderPartSpan(model, pose, consumer, light, overlay, c, c, c, 255,
-            group, hidden);
+            group);
         pose.popPose();
     }
 
     /** Port of {@code MCH_RenderAircraft.renderWheel}: a steered wheel ({@code rotDir != 0}) first yaws {@code steer ×
      *  rotDir} degrees about its steer axis at {@code pos2}, then every wheel spins about its X axle at {@code pos}. */
     private static void renderWheel(MchModel model, PoseStack pose, VertexConsumer consumer, int light, int overlay,
-                                    MCH_AircraftInfo.PartWheel w, float steer, float spinDeg, int c, Set<String> hidden) {
+                                    MCH_AircraftInfo.PartWheel w, float steer, float spinDeg, int c) {
         pose.pushPose();
         if (w.rotDir != 0.0F) {
             org.joml.Vector3f axis = new org.joml.Vector3f((float) w.rot.x(), (float) w.rot.y(), (float) w.rot.z());
@@ -145,7 +143,7 @@ public class MchTankRenderer extends MchModelEntityRenderer<MchTank> {
         pose.mulPose(Axis.XP.rotationDegrees(spinDeg));
         pose.translate(-w.pos.x(), -w.pos.y(), -w.pos.z());
         MchModelRenderer.renderPartSpan(model, pose, consumer, light, overlay, c, c, c, 255,
-            "$" + w.modelName, hidden);
+            "$" + w.modelName);
         pose.popPose();
     }
 

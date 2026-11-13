@@ -14,7 +14,12 @@ public interface PlaneState extends AircraftState {
     boolean canUseFuel();
     boolean canUseWing();
     boolean isCanopyClose();
+    /** Reference {@code switchGunnerMode(mode)}: leaving restores the throttle saved on entry. */
     void switchGunnerMode(boolean on);
+
+    /** Reference target-drone level-off {@code if (canFoldLandingGear()) foldLandingGear()} (MCP_EntityPlane:723-725):
+     *  retract the landing gear when allowed. Default no-op (no gear). */
+    default void tryFoldLandingGear() {}
 
     /** VTOL nozzle rotation in degrees (0 = level thrust, up to 90 = vertical). */
     float getNozzleRotation();

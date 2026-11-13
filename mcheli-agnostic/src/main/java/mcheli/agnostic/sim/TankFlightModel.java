@@ -1,6 +1,5 @@
 package mcheli.agnostic.sim;
 
-import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.math.MchMath;
 import mcheli.agnostic.spi.EntityRef;
@@ -43,9 +42,9 @@ public final class TankFlightModel implements FlightModel {
             }
         }
 
-        List<EntityRef> riders = self.passengers();
-        boolean liveRider = !riders.isEmpty() && !riders.get(0).isDead();
-        if (liveRider && t.isCanopyClose() && t.canUseFuel() && !t.isDestroyed()) {
+        // Reference gates on getRiddenByEntity() != null && !isDead — the seat-0 PILOT, not passengers().get(0): passenger
+        // order is mount order, so a gunner left aboard (or a lone pilot moved to a gunner seat) must not hold the throttle.
+        if (t.hasPilot() && t.isCanopyClose() && t.canUseFuel() && !t.isDestroyed()) {
             controlSub(self, info, st, in, t);
         } else if (t.isTargetDrone() && t.canUseFuel() && !t.isDestroyed()) {
             controlSub(self, info, st, in.withThrottleUp(), t);
@@ -59,6 +58,12 @@ public final class TankFlightModel implements FlightModel {
             st.setCurrentThrottle(0.0);
         }
         // (client throttle lerp + server setThrottle publish are host-adapter concerns.)
+    }
+
+    /** {@code onUpdateAircraft} between control and server: the wreck throttle bleed (the tank has no hover levelling). */
+    @Override
+    public void afterControl(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, AircraftState mod) {
+        AircraftFlightController.decayWreckThrottle(self, st, mod);
     }
 
     private void controlSub(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, ControlInput in, TankState t) {

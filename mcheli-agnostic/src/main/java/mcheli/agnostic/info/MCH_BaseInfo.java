@@ -53,8 +53,14 @@ public class MCH_BaseInfo {
         return f < min ? min : (f > max ? max : f);
     }
 
+    /**
+     * A colour/hex literal: {@code 0xRRGGBB}, {@code #RRGGBB} or a bare {@code RRGGBB}. The reference's third test was
+     * {@code s.indexOf(0) != 35}, i.e. "the index of a NUL character is not 35": always true, so a {@code #} literal
+     * became {@code "0x#..."}, threw, and dropped the whole vehicle file. The intended {@code #} check is restored
+     * ({@link Long#decode} understands the {@code #} prefix itself).
+     */
     public int hex2dec(String s) {
-        return !s.startsWith("0x") && !s.startsWith("0X") && s.indexOf(0) != 35 ? (int) (Long.decode("0x" + s) & -1L) : (int) (Long.decode(s) & -1L);
+        return !s.startsWith("0x") && !s.startsWith("0X") && !s.startsWith("#") ? (int) (Long.decode("0x" + s) & -1L) : (int) (Long.decode(s) & -1L);
     }
 
     public String[] splitParam(String data) {
@@ -85,6 +91,12 @@ public class MCH_BaseInfo {
         return false;
     }
 
+    /**
+     * Re-parse this definition in place (items {@link #canReloadItem} vetoes keep their first-load value). The
+     * agnostic half of the reference's development hot-reload: the TestMode config-GUI buttons and
+     * {@code MCH_PacketNotifyInfoReloaded} (MCH_ConfigGui:474-516) called it, then re-typed every live entity. The port
+     * has no trigger for it yet; it is kept for that deferred feature.
+     */
     public boolean reload() {
         return this.reload(this);
     }
@@ -116,13 +128,7 @@ public class MCH_BaseInfo {
                 info.postReload();
             }
         } catch (Exception e) {
-            if (info.log != null) {
-                if (line > 0) {
-                    info.log.warn("### Reload failed %s : line=%d", info.filePath, line);
-                } else {
-                    info.log.warn("### Reload failed %s", info.filePath);
-                }
-            }
+            MCH_InfoManagerBase.logLoadFailure(info.log, "Reload", info.filePath, line, e);
         } finally {
             inFile.close();
         }

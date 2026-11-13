@@ -1,5 +1,12 @@
 package mcheli.agnostic.eval.util;
 
+/**
+ * Port of the reference {@code mcheli.eval.util.NumberUtil}. The binary/octal/decimal digit loops restore the
+ * original {@code case '0': continue} arm: the Vineflower decompile this file was copied from (and
+ * {@code mcheli-1.7.10/.../eval/util/NumberUtil.java}) folded {@code '0'} into the {@code default: throw} arm, so
+ * {@code 0b10}, {@code 0o70} or {@code 10L} failed to parse. The independent CFR decompile
+ * ({@code reference/decompiled-srg/mcheli/eval/util/NumberUtil.java}) shows the real bytecode accepts the digit.
+ */
 public class NumberUtil {
    public static long parseLong(String str) {
       if (str == null) {
@@ -47,10 +54,11 @@ public class NumberUtil {
          ret *= 2L;
          char c = str.charAt(pos++);
          switch (c) {
+            case '0':
+               break;
             case '1':
                ret++;
                break;
-            case '0':
             default:
                throw new NumberFormatException(str.substring(pos, len));
          }
@@ -70,6 +78,8 @@ public class NumberUtil {
          ret *= 8L;
          char c = str.charAt(pos++);
          switch (c) {
+            case '0':
+               break;
             case '1':
             case '2':
             case '3':
@@ -79,7 +89,6 @@ public class NumberUtil {
             case '7':
                ret += c - '0';
                break;
-            case '0':
             default:
                throw new NumberFormatException(str.substring(pos, len));
          }
@@ -99,6 +108,8 @@ public class NumberUtil {
          ret *= 10L;
          char c = str.charAt(pos++);
          switch (c) {
+            case '0':
+               break;
             case '1':
             case '2':
             case '3':
@@ -110,7 +121,6 @@ public class NumberUtil {
             case '9':
                ret += c - '0';
                break;
-            case '0':
             default:
                throw new NumberFormatException(str.substring(pos, len));
          }

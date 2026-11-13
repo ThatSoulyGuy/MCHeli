@@ -11,6 +11,7 @@ import mcheli.agnostic.helicopter.MCH_HeliInfoManager;
 import mcheli.agnostic.plane.MCP_PlaneInfoManager;
 import mcheli.agnostic.tank.MCH_TankInfoManager;
 import mcheli.agnostic.vehicle.MCH_VehicleInfoManager;
+import mcheli.dependent.registry.MchRegistries;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
@@ -23,8 +24,14 @@ import org.slf4j.Logger;
  * <p>This is the consumer the port was missing. The reference registered these as plain vanilla recipes at
  * {@code postInit} ({@code MCH_MOD}:217 -> {@code MCH_ItemRecipe.registerItemRecipe}, which walked every info manager
  * and called {@code GameRegistry.addShapedRecipe}); the port carried the PARSER across into
- * {@code MCH_AircraftInfo.recipeString} and never wrote the other half, so all 107 recipe lines were parsed and
+ * {@code MCH_AircraftInfo.recipeString} and never wrote the other half, so all 109 recipe lines were parsed and
  * discarded and no vehicle was obtainable outside creative.
+ *
+ * <p>One deliberate gap: UAV configs get NO recipe yet. The reference registered theirs too, because its UAV station
+ * (or, for a small UAV, the portable controller) deploys the crafted item ({@code MCH_ItemAircraft.spawnAircraft});
+ * the port has neither, so the spawn item of a UAV cannot be used
+ * ({@code VehicleSpawnItem.use} refuses it) and a survival player would only lose the materials. Lift the
+ * {@code isUAV} skip in {@link #build} when the station is ported.
  *
  * <p>Emitting datapack JSON rather than registering a {@code CustomRecipe} is deliberate: these become real
  * {@code ShapedRecipe}/{@code ShapelessRecipe} objects, so they show up in the recipe book and in JEI/EMI, survive
@@ -74,13 +81,26 @@ public final class MchVehicleRecipes {
             if (info.recipeString == null || info.recipeString.isEmpty()) {
                 continue;
             }
-            ResourceLocation resultId = ResourceLocation.fromNamespaceAndPath("mcheli", info.name.toLowerCase(java.util.Locale.ROOT));
-            if (!BuiltInRegistries.ITEM.containsKey(resultId)) {
-                continue; // no spawn item was minted for this config (e.g. a UAV) — nothing to craft
+            if (info.isUAV) {
+                // Deliberate divergence (see the class javadoc): no UAV station yet, so its item would be uncraftable
+                // junk. Bundled UAVs with recipes: ah-6x (2 lines), mq-8b, rc-goblin, rc-goblin-bomb, bqm_74e, mq-9,
+                // mqm170, skylark and x-47b (10 lines; the rc-goblins and skylark are SmallUAVs).
+                skipped += info.recipeString.size();
+                continue;
             }
+            // The result must be the spawn item minted for THIS config, not merely some item of that id: a config whose
+            // id was refused (illegal, or taken by a non-vehicle item such as tab_plane) or lost to a same-named
+            // config of an earlier category (registerVehicles: first wins) would otherwise craft a tab icon or the
+            // OTHER category's vehicle, and a cross-category duplicate would overwrite the winner's recipe below.
+            Item minted = MchRegistries.spawnItemFor(info.name);
+            if (!(minted instanceof VehicleSpawnItem spawn) || spawn.info() != info) {
+                continue;
+            }
+            ResourceLocation resultId = BuiltInRegistries.ITEM.getKey(minted);
             int n = 0;
-            for (String line : info.recipeString) {
-                MCH_RecipeSpec spec = MCH_RecipeSpec.parse(line, info.isShapedRecipe);
+            for (int i = 0; i < info.recipeString.size(); i++) {
+                String line = info.recipeString.get(i);
+                MCH_RecipeSpec spec = MCH_RecipeSpec.parse(line, info.isShapedRecipe(i)); // per line, not the last kind
                 if (spec == null) {
                     LOGGER.warn("MCHeli: {} — skipping unusable recipe line: {}", info.name, line);
                     skipped++;
@@ -119,9 +139,9 @@ public final class MchVehicleRecipes {
     private static String toJson(MCH_RecipeSpec spec, ResourceLocation result, String vehicle) {
         StringBuilder sb = new StringBuilder(256);
         if (spec.shaped) {
-            Map<Character, Item> keys = new LinkedHashMap<>();
+            Map<Character, String> keys = new LinkedHashMap<>();
             for (MCH_RecipeSpec.Key k : spec.keys) {
-                Item item = MchLegacyItemNames.resolve(k.itemName, k.meta);
+                String item = MchLegacyItemNames.ingredientJson(k.itemName, k.meta);
                 if (item == null) {
                     // The reference threw a RuntimeException here (MCH_ItemRecipe:195-200). Crashing the mod because a
                     // config names an item from an absent feature is not acceptable, so skip loudly instead — this is
@@ -143,20 +163,19 @@ public final class MchVehicleRecipes {
             }
             sb.append("],\"key\":{");
             boolean first = true;
-            for (Map.Entry<Character, Item> e : keys.entrySet()) {
+            for (Map.Entry<Character, String> e : keys.entrySet()) {
                 if (!first) {
                     sb.append(',');
                 }
                 first = false;
-                sb.append('"').append(escape(String.valueOf(e.getKey()))).append("\":{\"item\":\"")
-                  .append(BuiltInRegistries.ITEM.getKey(e.getValue())).append("\"}");
+                sb.append('"').append(escape(String.valueOf(e.getKey()))).append("\":").append(e.getValue());
             }
             sb.append('}');
         } else {
             sb.append("{\"type\":\"minecraft:crafting_shapeless\",\"category\":\"misc\",\"ingredients\":[");
             boolean first = true;
             for (MCH_RecipeSpec.Key k : spec.keys) {
-                Item item = MchLegacyItemNames.resolve(k.itemName, k.meta);
+                String item = MchLegacyItemNames.ingredientJson(k.itemName, k.meta);
                 if (item == null) {
                     LOGGER.warn("MCHeli: {} — recipe skipped, unknown ingredient '{}'", vehicle, k.itemName);
                     return null;
@@ -165,7 +184,7 @@ public final class MchVehicleRecipes {
                     sb.append(',');
                 }
                 first = false;
-                sb.append("{\"item\":\"").append(BuiltInRegistries.ITEM.getKey(item)).append("\"}");
+                sb.append(item);
             }
             sb.append(']');
         }

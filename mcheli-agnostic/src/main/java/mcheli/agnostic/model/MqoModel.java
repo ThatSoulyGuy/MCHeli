@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -57,7 +58,11 @@ public class MqoModel extends MchModel {
         int lineCount = 0;
 
         try {
-            reader = new BufferedReader(new InputStreamReader(inputStream));
+            // Pinned to UTF-8 (the reference used the platform default codepage). Bundled .mqo object names are often
+            // Shift-JIS; those bytes decode to U+FFFD here, which is harmless because every functional part name
+            // ($body, $blade0, ...) is ASCII. It matches what a non-Japanese Java 8 reference install saw, including
+            // keeping stinger_390x's one-kanji object (line 279) that MS932 decoding drops as a too-short name.
+            reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
 
             while ((currentLine = reader.readLine()) != null) {
                 lineCount++;
@@ -83,10 +88,9 @@ public class MqoModel extends MchModel {
                                 shading = true;
                             }
 
+                            // MQO's "depth" (Metasequoia's object-tree nesting) is skipped, as the reference
+                            // did: part hierarchy comes from the vehicle config's AddPart* lines, not the model.
                             String[] s = currentLine.split(" ");
-                            if (s.length == 2 && s[0].equalsIgnoreCase("depth")) {
-                                group.depth = Integer.parseInt(s[1]); // MQO part nesting depth (for child grouping)
-                            }
                             if (s.length == 2 && s[0].equalsIgnoreCase("facet")) {
                                 facet = Math.cos(Double.parseDouble(s[1]) * 3.1415926535 / 180.0);
                             }

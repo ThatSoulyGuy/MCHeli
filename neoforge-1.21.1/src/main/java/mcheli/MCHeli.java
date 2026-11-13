@@ -11,11 +11,9 @@ import mcheli.agnostic.value.Vec3d;
 import mcheli.agnostic.vehicle.MCH_VehicleInfoManager;
 import mcheli.agnostic.weapon.MCH_WeaponInfo;
 import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
-import mcheli.dependent.DemoBulletSelfTest;
-import mcheli.dependent.DemoForwardVehicleSelfTest;
-import mcheli.dependent.DemoHeliSelfTest;
-import mcheli.dependent.DemoTankSelfTest;
+import mcheli.dependent.config.MchConfig;
 import mcheli.dependent.control.MchControlNetwork;
+import mcheli.dependent.port.NeoItemHandle;
 import mcheli.dependent.port.NeoLogger;
 import mcheli.dependent.registry.MchRegistries;
 import mcheli.dependent.registry.MchSounds;
@@ -24,7 +22,6 @@ import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.fml.loading.FMLEnvironment;
-import net.neoforged.neoforge.common.NeoForge;
 import org.slf4j.Logger;
 
 // The modid here must match [[mods]] modId in META-INF/neoforge.mods.toml.
@@ -37,80 +34,34 @@ public class MCHeli {
     // ModContainer by parameter type (there is no FMLJavaModLoadingContext as in 1.7.10).
     public MCHeli(IEventBus modEventBus, ModContainer modContainer) {
         modEventBus.addListener(this::commonSetup);
-        // Discover content packs FIRST (under <gamedir>/mcheli/) so pack config filenames + sound basenames are known
+        // The port of mcheli.cfg (reference MCH_MOD.PreInit:136 loadConfig): common + server + client TOML specs. The
+        // common/client files load before common setup; the per-world server file loads with each world.
+        MchConfig.register(modContainer, modEventBus);
+        // Discover content packs FIRST (under <gamedir>/mcheli/) so pack config filenames + sound events are known
         // before the registries freeze — the shared bundled+pack resource set drives everything below.
         mcheli.dependent.port.MchContentPacks.discover();
         // Scan the bundled+pack configs -> one spawn item per vehicle (must run BEFORE register() so the DeferredRegister
         // entries exist when the RegisterEvent fires), then register the 4 category EntityTypes + items + tabs.
         MchRegistries.registerVehicles();
         MchRegistries.register(modEventBus);
-        // Register a SoundEvent per content-pack .ogg (before the sound registry attaches to the bus + freezes), then
-        // register the bundled sounds.
-        MchSounds.registerPackSounds(mcheli.dependent.port.MchContentPacks.packSoundBasenames());
+        // Register a SoundEvent per content-pack sound event (its .ogg files grouped by the reference MCH_SoundsJson
+        // rules, before the sound registry attaches to the bus + freezes), then register the bundled sounds.
+        MchSounds.registerPackSounds(mcheli.dependent.port.MchContentPacks.packSoundEvents());
         MchSounds.register(modEventBus);
-        // Expose content-pack textures + (generated) sounds.json + .ogg files to the vanilla client resource manager.
+        // Expose content-pack textures + (generated) sounds.json, .ogg files and spawn-item models to the vanilla
+        // client resource manager.
         modEventBus.addListener(mcheli.dependent.port.MchPackResourcesFinder::onAddPackFinders);
-        // Register the serverbound player-control payload (client keys -> server ControlInput).
+        // Register every MCHeli network payload, serverbound and clientbound (MchControlNetwork lists them).
         modEventBus.addListener(MchControlNetwork::register);
-        // Dev-only game-bus listener: the headless self-test that proves agnostic-driven movement at
-        // runtime. Gated on !production so a shipped jar never spawns test entities or spams the log — it
-        // runs only under runClient/runServer (FMLEnvironment.production is false in the dev workspace).
+        // Dev-only: the in-game self-tests (mcheli.dependent.MchSelfTests lists them all). Gated on !production so a
+        // shipped jar never spawns test entities, and on the mcheli.selftests system property so an ordinary dev launch
+        // never runs them either. Run them from Gradle, which sets that property from -PmcheliSelfTests:
+        //     ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests            (every test)
+        //     ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests=crush,bomb (a comma list of names)
+        // The run uses its own game directory (run/selftest) and a fresh flat world, runs the tests one after another
+        // in separate areas, logs one "RESULT: PASS|FAIL" line per test plus a SUMMARY, and stops the server.
         if (!FMLEnvironment.production) {
-            // Flight-physics proof: the heli generates collective lift and climbs (vs the vehicle, which falls).
-            //NeoForge.EVENT_BUS.register(new DemoHeliSelfTest());
-            //// Guided-missile homing proof (#25): a guided AA round curves onto an off-axis target + detonates, while
-            //// an unguided control flies straight past (server-side; the client lock UI is verified in a live client).
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHomingSelfTest());
-            //// VTOL proof (#28): a Harrier engages VTOL (nozzle 0->90, mode 0->1->2) + decelerates to a near-hover
-            //// (speed 0.04 vs a conventional 0.96) while nearly holding altitude.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoVtolSelfTest());
-            //// Bomb release proof (#27): a b29-type bomb is selectable, dropped at hull velocity, falls + detonates.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoBombSelfTest());
-            //// Flare decoy proof (#26): a flaring aircraft nulls+kills a guided round homing on it at range;
-            //// an unguided control is untouched; 32 flares spawn.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoFlareSelfTest());
-            //// Torpedo water-run proof (#30): a fast torpedo decelerates + a slow one accelerates to the same cruise
-            //// speed underwater (the ramp), and a level launch stays flat (the gravity->gravityInWater swap).
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoTorpedoSelfTest());
-            //// Forward-thrust proofs: the plane and tank fly/drive forward under rider-gated thrust and stay aloft
-            //// (vs a pilotless copy that free-falls). Distinct X columns, both at y+90 so the pilotless fall clears.
-            //NeoForge.EVENT_BUS.register(new DemoForwardVehicleSelfTest("PLANE", MchRegistries.PLANE, "a-10", 6.0, 11.0, 90.0, 5.0, 20.0));
-            //// The tank is a GROUND vehicle (heavier gravity) -> its own drive-forward-without-flying test.
-            //NeoForge.EVENT_BUS.register(new DemoTankSelfTest());
-            //// Projectile proof: a fired bullet flies downrange, hits a target and damages it, then despawns.
-            //NeoForge.EVENT_BUS.register(new DemoBulletSelfTest());
-            //// Config-driven weapon proof: the AH-64's real selectable weapons build from its config, carry their
-            //// real stats/ballistics, switch, and fire (direct + from the vehicle's own mounts).
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoWeaponSelfTest());
-            //// Config-driven VISUALS proof: the muzzle-flash colour, cartridge model/scale + trail all come from config.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoParticleSelfTest());
-            //// Config-driven HUD proof: the eval engine, the hud/* configs, and the draw pipeline.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHudSelfTest());
-            //// Barrel heat/overheat proof: the Phalanx gun's heat fills under sustained fire, locks out at the cap,
-            //// then cools + re-enables (the HUD wpn_heat gauge).
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHeatSelfTest());
-            //// Vehicle HP/armor/destruction proof: damage accumulation + int truncation, the per-part armor formula
-            //// (m1a2 zones), the lava/onFire/inWall gates, and the faithful eject-explode-fall-despawn wreck.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoHpSelfTest());
-            //// Multi-seat + gunner weapons + ammo/fuel economy proof (#36/#37).
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoCrewFuelSelfTest());
-            //// Content-pack loader proof (#8): a synthetic pack (pre-written to <gamedir>/mcheli/testpack/) is
-            //// discovered, its vehicle gets a spawn item + parses + spawns, its model resolves, its sound registers.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoContentPackSelfTest());
-            //// CAS proof (#31): "cas" is fireable, and a called-in strike rains a bomb volley onto the aimed target.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoCasSelfTest());
-            //// Dispenser proof (#31): "dispenser" is fireable, and a torch dispenser places torches across its radius.
-            //NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoDispenserSelfTest());
-            // Terrain-interaction proof: an UNRIDDEN tank tilts onto a slope server-side, and a driven tank crushes
-            // planks while leaving stone inert and a torch (plus the column above it) intact.
-            //
-            // Unlike the 18 above, this one is PROPERTY-GATED rather than commented out, so it can be run without
-            // editing code and still never pollutes an ordinary dev launch:
-            //     ./gradlew :neoforge-1.21.1:runServer -Dmcheli.selftests=true -Dmcheli.selftest.halt=true
-            // (the second flag stops the server once the verdict is logged, so a one-shot run terminates by itself).
-            if (System.getProperty("mcheli.selftests") != null) {
-                NeoForge.EVENT_BUS.register(new mcheli.dependent.DemoCrushSelfTest());
-            }
+            mcheli.dependent.MchSelfTests.registerIfRequested();
         }
         LOGGER.info("MCHeli (NeoForge 1.21.1) constructed");
     }
@@ -121,17 +72,24 @@ public class MCHeli {
         Vec3d forward = new Vec3d(0.0, 0.0, 1.0).rotateAroundY(Math.toRadians(90.0));
         LOGGER.info("MCHeli agnostic check: (0,0,1) rotated +90deg yaw -> {}", forward);
 
-        // Load REAL vehicle definitions from the shared bundled+content-pack resource set (the agnostic DSL parser
-        // through the composite ResourceSource), replacing the demo entities' hard-coded buildInfo(). This is the same
-        // resource set registerVehicles() used at construction, so the parsed configs line up with the spawn items.
+        // Load the vehicle definitions from the shared bundled+content-pack resource set (the agnostic DSL parser
+        // through the composite ResourceSource). This is the same resource set registerVehicles() used at
+        // construction, so the parsed configs line up with the spawn items.
         mcheli.agnostic.spi.ResourceSource res = mcheli.dependent.port.MchContentPacks.resources();
         NeoLogger log = new NeoLogger(LOGGER);
+        // The All*Speed multipliers are baked into each definition while it parses, so install them first.
+        MchConfig.installAgnosticSettings();
+        // Reference order (MCH_MOD.PreInit:137-142): HUDs, then weapons, then the vehicle kinds. Weapons MUST precede
+        // vehicles: a vehicle's AddWeapon line naming an undefined weapon is dropped at parse time.
+        mcheli.agnostic.hud.MCH_HudManager.getInstance().load(res, log);
+        MCH_WeaponInfoManager.getInstance().load(res, log, "weapons");
+        // The item registry is frozen by now, so resolve every weapon's DispenseItem/Item names once (reference
+        // MCH_WeaponInfoManager.setRoundItems, run from postInit).
+        MCH_WeaponInfoManager.getInstance().resolveItems(NeoItemHandle::resolve, log);
         MCH_HeliInfoManager.getInstance().load(res, log, "helicopters");
         MCP_PlaneInfoManager.getInstance().load(res, log, "planes");
         MCH_TankInfoManager.getInstance().load(res, log, "tanks");
         MCH_VehicleInfoManager.getInstance().load(res, log, "vehicles");
-        MCH_WeaponInfoManager.getInstance().load(res, log, "weapons");
-        mcheli.agnostic.hud.MCH_HudManager.getInstance().load(res, log);
         MCH_WeaponInfo m230 = MCH_WeaponInfoManager.get("m230");
         if (m230 != null) {
             LOGGER.info("MCHeli weapon check: m230 -> type={} power={} reloadTime={}",
@@ -143,9 +101,10 @@ public class MCHeli {
                 m1a2.speed, m1a2.gravity, m1a2.mobilityYawOnGround, m1a2.maxHp);
         }
 
-        // Dev-only pipeline probe: resolve + parse the demo vehicles' REAL models through the agnostic parsers
+        // Dev-only pipeline probe: resolve + parse three representative vehicles' models through the agnostic parsers
         // (models/<category>/<name>.mqo|obj, the reference's MCH_ModelManager convention) and log the geometry.
-        // Models are a CLIENT concern (the renderer loads them via NeoResourceSource, like MCH_ClientProxy did), so
+        // Models are a CLIENT concern (the renderer loads them through MchContentPacks.resources(), the bundled +
+        // content-pack CompositeResourceSource, and caches them per config itself, like MCH_ClientProxy did), so
         // this stays gated off production — a dedicated server never needs to parse 19MB of models.
         if (!FMLEnvironment.production) {
             logModel(res, "helicopters/ah-64");

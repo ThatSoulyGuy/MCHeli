@@ -1,0 +1,34 @@
+modLoader="javafml"
+# FML major version range (NOT the neoforge artifact version).
+loaderVersion="[1,)"
+license="All Rights Reserved"
+
+[[mods]]
+modId="mcheli"
+# Filled in from the Gradle project version by the generateModMetadata task (neoforge-1.21.1/build.gradle).
+version="${mod_version}"
+displayName="MCHeli"
+description='''
+MCHeli ported to NeoForge 1.21.1. Original mod by Minato Tanaka (EMB4).
+'''
+
+# Client-only Mixins (mcheli.mixins.json): CameraMixin parents the camera to a vehicle's full orientation (the eye
+# POSITION in Camera.setup adds eyeHeight on world-Y and has no public event hook), EntityRenderDispatcherMixin lets a
+# search light brighten the living entities in its beam, and EntityTurnMixin hands the raw mouse turn to the flight
+# stick.
+[[mixins]]
+config="mcheli.mixins.json"
+
+[[dependencies.mcheli]]
+    modId="neoforge"
+    type="required"
+    versionRange="[21.1.235,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.mcheli]]
+    modId="minecraft"
+    type="required"
+    versionRange="[1.21.1]"
+    ordering="NONE"
+    side="BOTH"

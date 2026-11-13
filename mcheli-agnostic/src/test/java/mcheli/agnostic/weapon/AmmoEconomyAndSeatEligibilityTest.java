@@ -167,10 +167,14 @@ class AmmoEconomyAndSeatEligibilityTest {
 
     @Test
     void refreshEligibilityBumpsAndReseatsSelections() {
+        // The AddWeapon parse drops names the weapon manager does not know once it has loaded; another test may have
+        // left it loaded, so reset it first to keep both mounts (the vehicle-only parse every unit test relies on).
+        MCH_WeaponInfoManager.getInstance().clear();
         MCH_AircraftInfo ac = new mcheli.agnostic.tank.MCH_TankInfo("crewtank");
-        // Two consecutive AddWeapon groups: one pilot gun, one seat-1 gun that is ALSO pilot-usable.
-        ac.loadItemData("addweapon", "testgun, 0,0,0, 0,0, true,0");
-        ac.loadItemData("addweapon", "borrowgun, 0,0,0, 0,0, true,1");
+        // Two consecutive AddWeapon groups: one pilot gun, one seat-1 gun that is ALSO pilot-usable. The config seat
+        // number is 1-based (MCH_AircraftInfo AddWeapon: seatID = s[7] - 1), so "2" is gunner seat 1.
+        ac.loadItemData("addweapon", "testgun, 0,0,0, 0,0, true,1");
+        ac.loadItemData("addweapon", "borrowgun, 0,0,0, 0,0, true,2");
         MCH_WeaponInfo a = economyWeapon();
         MCH_WeaponInfo b = new MCH_WeaponInfo("borrowgun");
         b.loadItemData("type", "MachineGun1");
@@ -178,18 +182,59 @@ class AmmoEconomyAndSeatEligibilityTest {
 
         VehicleWeapons w = VehicleWeapons.build(ac, n -> "testgun".equals(n) ? a : "borrowgun".equals(n) ? b : null, 2);
         assertNotNull(w);
-        if (w.isEmpty()) {
-            return; // the parse shape differs; the rule itself is covered by the eligible() test above
-        }
-        w.refreshEligibility(seat -> false);            // nobody aboard but the pilot
-        assertTrue(w.selectedIndex(0) >= 0, "the pilot gets a weapon selected");
+        assertEquals(2, w.size(), "one slot per AddWeapon group");
+        assertEquals(0, w.get(0).seatID());
+        assertEquals(1, w.get(1).seatID());
 
-        // A gunner boards seat 1: if the pilot was holding the borrowed gun he must be bumped to an eligible one.
+        w.refreshEligibility(seat -> false);            // nobody aboard but the pilot
+        assertEquals(0, w.selectedIndex(0), "the pilot gets his own gun first");
+        assertEquals(1, w.selectedIndex(1), "seat 1 is pre-seeded with its own gun");
+
+        // The pilot borrows seat 1's gun while seat 1 is empty ...
+        w.cycle(0, 1, seat -> false);
+        assertEquals(1, w.selectedIndex(0), "the pilot may select the empty gunner seat's canUsePilot gun");
+
+        // ... and is bumped back to his own the moment a gunner boards seat 1, who keeps that gun.
         w.refreshEligibility(seat -> seat == 1);
-        WeaponSlot pilotSel = w.selected(0);
-        if (pilotSel != null) {
-            assertTrue(pilotSel.seatID() == 0 || (pilotSel.canUsePilot() && pilotSel.seatID() != 1),
-                "the pilot never keeps a weapon whose gunner seat is now manned");
-        }
+        assertEquals(0, w.selectedIndex(0), "the pilot never keeps a weapon whose gunner seat is now manned");
+        assertEquals(1, w.selectedIndex(1), "the gunner has his own gun");
+    }
+
+    @Test
+    void savedAmmoIsKeyedByWeaponAndALegacyArrayMapsThroughTheOldSlotOrder() {
+        MCH_WeaponInfoManager.getInstance().clear(); // keep every AddWeapon name, as in the test above
+        MCH_AircraftInfo ac = new mcheli.agnostic.tank.MCH_TankInfo("savetank");
+        // smoke, gun a, a guided torpedo, gun b, gun a AGAIN (its own group: not consecutive), a dummy.
+        ac.loadItemData("addweapon", "smoke_red, 0,0,0, 0,0, true,1");
+        ac.loadItemData("addweapon", "gun_a, 0,0,0, 0,0, true,1");
+        ac.loadItemData("addweapon", "mk46, 0,0,0, 0,0, true,1");
+        ac.loadItemData("addweapon", "gun_b, 0,0,0, 0,0, true,1");
+        ac.loadItemData("addweapon", "gun_a, 0,0,0, 0,0, true,1");
+        ac.loadItemData("addweapon", "none, 0,0,0, 0,0, true,1");
+        java.util.Map<String, MCH_WeaponInfo> infos = new java.util.HashMap<>();
+        infos.put("smoke_red", typed("smoke_red", "smoke"));
+        infos.put("gun_a", typed("gun_a", "machinegun1"));
+        MCH_WeaponInfo mk46 = typed("mk46", "torpedo");
+        mk46.loadItemData("guidedtorpedo", "true");
+        infos.put("mk46", mk46);
+        infos.put("gun_b", typed("gun_b", "machinegun1"));
+        infos.put("none", typed("none", "dummy"));
+
+        VehicleWeapons w = VehicleWeapons.build(ac, infos::get, 1);
+        assertEquals(List.of("smoke_red", "gun_a", "mk46", "gun_b", "gun_a#1", "none"), w.ammoKeys(),
+            "one key per slot; a repeated weapon is told apart by its occurrence");
+
+        // A save from before smoke, dummy and guided torpedoes were slots held [gun_a, gun_b, gun_a] by position.
+        java.util.Map<String, Integer> migrated =
+            VehicleWeapons.legacyAmmoByKey(ac, infos::get, new int[] {100, 200, 300, 999});
+        assertEquals(java.util.Map.of("gun_a", 100, "gun_b", 200, "gun_a#1", 300), migrated,
+            "legacy values land on the weapons they were saved for, not on the slots now at those positions");
+        assertTrue(VehicleWeapons.legacyAmmoByKey(null, infos::get, new int[] {1}).isEmpty());
+    }
+
+    private static MCH_WeaponInfo typed(String name, String type) {
+        MCH_WeaponInfo w = new MCH_WeaponInfo(name);
+        w.loadItemData("type", type);
+        return w;
     }
 }

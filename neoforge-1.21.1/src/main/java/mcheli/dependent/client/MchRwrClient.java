@@ -5,7 +5,6 @@ import mcheli.dependent.registry.MchSounds;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.sounds.SoundEvent;
-import net.minecraft.sounds.SoundSource;
 
 /**
  * CLIENT-ONLY handler for the RWR cockpit tone (reference {@code locked} / {@code alert}). Plays a non-positional UI

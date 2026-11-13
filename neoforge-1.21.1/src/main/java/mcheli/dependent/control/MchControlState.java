@@ -5,34 +5,19 @@ import mcheli.agnostic.sim.ControlInput;
 /**
  * Mutable, server-authoritative holder of one rider's <em>raw</em> control inputs for a single piloted vehicle.
  *
- * <p>This is the clean seam between "rider keys" and the agnostic flight sim. In the finished port a
- * {@code ServerboundControlPacket} handler will overwrite these fields every tick from the decoded control-flag
- * bitset (the equivalent of {@code MCH_PacketPlayerControlBase}: {@code throttleUp/throttleDown/moveLeft/moveRight/
- * useBrake} plus the mouse deltas and the derived mode toggles). The agnostic layer never sees this mutable state
- * directly: each tick the server calls {@link #snapshot(float)} to produce an immutable
- * {@link ControlInput} value object, which is what
- * {@link mcheli.agnostic.sim.AircraftFlightController#tickServer} consumes.
+ * <p>This is the clean seam between "rider keys" and the agnostic flight sim. {@link ServerboundControlPayload}
+ * overwrites these fields from the rider's control-flag bitset, sent on change plus a keepalive (the port of
+ * {@code MCH_PacketPlayerControlBase}: {@code throttleUp/throttleDown/moveLeft/moveRight/useBrake}, the fire trigger and
+ * the completed lock id, plus the client settings the reference sent in {@code MCH_PacketNotifyClientSetting}). The
+ * agnostic layer never sees this mutable state directly: each tick the server calls {@link #snapshot(float)} to produce
+ * an immutable {@link ControlInput} value object, which is what
+ * {@link mcheli.agnostic.sim.AircraftFlightController#tickServer} consumes. One instance exists per seat
+ * ({@code AbstractMchVehicle.controlState(seat)}; only seat 0's drive bits are ever set); it is NOT thread safe and is
+ * touched only from the server tick / packet-handler thread. Self-tests drive a vehicle by writing it directly.
  *
- * <p><strong>Deferred plumbing.</strong> The CLIENT capture path (keybinds -&gt; mouse helper -&gt; averaged deltas
- * -&gt; flight-sim roll stick -&gt; encode -&gt; {@code ServerboundControlPacket} -&gt; server) is a networking step
- * that is intentionally NOT implemented here (see the package javadoc). Until that packet exists, an orchestrator /
- * self-test can drive a vehicle by mutating this holder directly (e.g. {@code state.throttleUp = true}) and calling
- * {@link #snapshot(float)}. One instance is expected per piloted vehicle (or per controlling seat); it is NOT thread
- * safe and is meant to be touched only from the server tick / packet-handler thread.
- *
- * <p>Field semantics mirror {@link ControlInput}:
- * <ul>
- *   <li><b>raw control bits</b> ({@link #throttleUp} {@link #throttleDown} {@link #moveLeft} {@link #moveRight}
- *       {@link #brake}) &mdash; the momentary key-held state sent by the rider each tick.</li>
- *   <li><b>mouse delta</b> ({@link #deltaX} {@link #deltaY}) &mdash; the per-frame averaged pointer motion used for
- *       yaw/pitch (and, outside flight-sim mode, roll). Transient: clear it after each tick with
- *       {@link #resetMouseDelta()} if the packet source does not re-send a zero.</li>
- *   <li><b>flight-sim roll stick</b> ({@link #stickX} {@link #stickY}) &mdash; the accumulated virtual stick position
- *       used when {@link #flightSimMode} is on (roll = mouse, yaw = key).</li>
- *   <li><b>mode flags</b> ({@link #freeLook} {@link #gunnerMode} {@link #flightSimMode} {@link #autoThrottleDown})
- *       &mdash; latched modes derived server-side from the packet's toggle bits / seat config / vehicle config,
- *       not momentary key state.</li>
- * </ul>
+ * <p>The mouse stick is not here: rotation is client-authoritative (the rider's client runs the rotation mappings and
+ * ships the result in {@link ServerboundRotationPayload}), so the server snapshot carries a centred stick and no
+ * flight-sim flag (both matter only to those client mappings).
  */
 public final class MchControlState {
 
@@ -53,27 +38,15 @@ public final class MchControlState {
      *  server to fire a guided round at). -1 == no lock. Not part of the flight snapshot. */
     public int lockTargetId = -1;
 
-    // --- mouse delta (per-frame averaged pointer motion) ---
-    /** Averaged horizontal mouse delta for this frame (yaw, or roll outside flight-sim mode). */
-    public double deltaX;
-    /** Averaged vertical mouse delta for this frame (pitch). */
-    public double deltaY;
-
-    // --- flight-sim virtual roll stick ---
-    /** Accumulated flight-sim roll-stick X position (used when {@link #flightSimMode}). */
-    public double stickX;
-    /** Accumulated flight-sim roll-stick Y position (used when {@link #flightSimMode}). */
-    public double stickY;
-
-    // --- latched mode flags (derived server-side; not momentary) ---
+    // --- latched mode flags + client settings (sent with every control packet; not momentary) ---
     /** Free-look camera mode is engaged (decouples view from vehicle heading). */
     public boolean freeLook;
-    /** Rider is in gunner mode (aiming a turret/optic rather than flying). */
-    public boolean gunnerMode;
-    /** Mouse-flight-sim control scheme is active (roll = mouse, yaw = key). */
-    public boolean flightSimMode;
-    /** Vehicle/config auto-throttle-down assist is enabled for this rider. */
+    /** The rider's auto-throttle-down preference for this vehicle kind (reference {@code cs_heliAutoThrottleDown} /
+     *  {@code cs_planeAutoThrottleDown} / {@code cs_tankAutoThrottleDown}, from {@code MchConfig.CLIENT}). */
     public boolean autoThrottleDown;
+    /** The rider's DismountAll preference (reference {@code cs_dismountAll}): when this seat-0 pilot leaves, the mob
+     *  crew dismounts too. Not part of the flight snapshot. */
+    public boolean dismountAll;
 
     public MchControlState() {}
 
@@ -85,28 +58,19 @@ public final class MchControlState {
      */
     public ControlInput snapshot(float partialTicks) {
         return new ControlInput(
-            stickX, stickY,
-            deltaX, deltaY,
+            0.0, 0.0,
             throttleUp, throttleDown, moveLeft, moveRight, brake,
-            freeLook, gunnerMode, flightSimMode, autoThrottleDown,
+            freeLook, false, autoThrottleDown,
             partialTicks);
     }
 
-    /** Zero the per-frame mouse delta; call after a tick has consumed it if the source does not re-send zeros. */
-    public void resetMouseDelta() {
-        deltaX = 0.0;
-        deltaY = 0.0;
-    }
-
     /**
-     * Zero the momentary control bits and mouse delta (the fields a per-tick packet overwrites), leaving the latched
-     * mode flags and the flight-sim stick position intact. Useful when a rider dismounts or a packet is missed and
-     * the vehicle should coast rather than keep the last held keys.
+     * Zero the momentary control bits (the fields a per-tick packet overwrites), leaving the latched mode flags and
+     * client settings intact. Useful when a rider dismounts or a packet is missed and the vehicle should coast rather
+     * than keep the last held keys.
      */
     public void clearMomentary() {
         throttleUp = throttleDown = moveLeft = moveRight = brake = fire = false;
         lockTargetId = -1;
-        deltaX = 0.0;
-        deltaY = 0.0;
     }
 }

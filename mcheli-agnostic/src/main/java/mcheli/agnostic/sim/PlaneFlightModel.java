@@ -1,6 +1,5 @@
 package mcheli.agnostic.sim;
 
-import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.math.MchMath;
 import mcheli.agnostic.plane.MCP_PlaneInfo;
@@ -19,7 +18,7 @@ import mcheli.agnostic.value.Vec3d;
  *
  * <p>Target drones ({@code TargetDrone=true}) self-pilot: forced throttle (in {@link #updateThrottle}) plus the
  * ground-avoidance auto-steer in {@link #integrateForces} (probe 40/5 blocks down, bank by {@code autoPilotRot},
- * ease the nose down or level off). The reference's cosmetic landing-gear fold on level-off has no sim seam.
+ * ease the nose down or level off, retracting the gear through {@link PlaneState#tryFoldLandingGear}).
  */
 public final class PlaneFlightModel implements FlightModel {
 
@@ -33,9 +32,9 @@ public final class PlaneFlightModel implements FlightModel {
 
         st.throttleBack = (float) (st.throttleBack * 0.8);
 
-        List<EntityRef> riders = self.passengers();
-        boolean liveRider = !riders.isEmpty() && !riders.get(0).isDead();
-        if (liveRider && p.isCanopyClose() && p.canUseWing() && p.canUseFuel() && !p.isDestroyed()) {
+        // Reference gates on getRiddenByEntity() != null && !isDead — the seat-0 PILOT, not passengers().get(0): passenger
+        // order is mount order, so a gunner left aboard (or a lone pilot moved to a gunner seat) must not hold the throttle.
+        if (p.hasPilot() && p.isCanopyClose() && p.canUseWing() && p.canUseFuel() && !p.isDestroyed()) {
             controlNotHovering(self, info, st, in, p);
         } else if (p.isTargetDrone() && p.canUseFuel() && !p.isDestroyed()) {
             controlNotHovering(self, info, st, in.withThrottleUp(), p);
@@ -49,6 +48,13 @@ public final class PlaneFlightModel implements FlightModel {
             st.setCurrentThrottle(0.0);
         }
         // (client throttle lerp + server setThrottle publish are host-adapter concerns.)
+    }
+
+    /** {@code onUpdateAircraft} between control and server: hover/gunner pitch levelling + the wreck throttle bleed. */
+    @Override
+    public void afterControl(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, AircraftState mod) {
+        AircraftFlightController.levelHoverPitch(self, mod);
+        AircraftFlightController.decayWreckThrottle(self, st, mod);
     }
 
     private void controlNotHovering(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, ControlInput in, PlaneState p) {
@@ -130,7 +136,8 @@ public final class PlaneFlightModel implements FlightModel {
                     }
                 } else {                                                   // open air below (void / high up)
                     self.setRotation(self.yaw() + info.autoPilotRot * 1.0F, self.pitch() * 0.95F);    // level + gentle bank
-                    levelOff = true; // reference also folds the landing gear here — no gear seam in the sim (cosmetic only)
+                    p.tryFoldLandingGear(); // reference: if (canFoldLandingGear()) foldLandingGear()
+                    levelOff = true;
                 }
             }
             if (!levelOff) {

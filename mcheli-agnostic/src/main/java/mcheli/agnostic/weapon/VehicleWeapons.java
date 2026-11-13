@@ -14,7 +14,7 @@ import mcheli.agnostic.aircraft.MCH_AircraftInfo;
  *
  * <p><b>How the loadout is built</b> (see {@link #build}): the reference groups <em>consecutive</em> same-type
  * {@code AddWeapon} lines into one {@code MCH_AircraftInfo.WeaponSet} (type + mount list); each such group whose type
- * resolves to a loaded, {@linkplain #isFireable fireable} weapon becomes one {@link WeaponSlot}. ALL mounts are kept —
+ * resolves to a loaded, {@linkplain #isFireable selectable} weapon becomes one {@link WeaponSlot}. ALL mounts are kept —
  * a slot is NOT pre-filtered to pilot-usable positions, because a gunner seat's weapon must exist for that gunner.
  *
  * <p><b>Who may select what</b> ({@link #eligible}, reference {@code MCH_EntityAircraft:4840}): a seat may select its
@@ -47,13 +47,6 @@ public final class VehicleWeapons {
             for (MCH_AircraftInfo.WeaponSet ws : info.weaponSetList) {
                 MCH_WeaponInfo wi = resolver.apply(ws.type);
                 if (wi == null || !isFireable(wi.type) || ws.weapons == null || ws.weapons.isEmpty()) {
-                    continue;
-                }
-                // GUIDED torpedoes (GuidedTorpedo=true, e.g. mk46) home onto a look->water target point and hold fire
-                // unless aimed at water (reference MCH_WeaponTorpedo.shotGuided / MCH_EntityTorpedo.onUpdateGuided). That
-                // steer + fire-gate is a deferred sub-port (#30b) — leaving them selectable would silently mis-run them as
-                // dumb water-run torpedoes that fire unconditionally, so they are not fireable until the guided path lands.
-                if (wi.isGuidedTorpedo && "torpedo".equalsIgnoreCase(wi.type)) {
                     continue;
                 }
                 slots.add(new WeaponSlot(ws.type, wi, new ArrayList<>(ws.weapons)));
@@ -115,10 +108,40 @@ public final class VehicleWeapons {
         return (seat >= 0 && seat < seats()) ? this.selectedBySeat[seat] : -1;
     }
 
-    /** Cycle {@code seat} to its next/previous ELIGIBLE weapon, skipping ones it may not use. */
+    /** Cycle {@code seat} to its next/previous ELIGIBLE weapon (no infinite-ammo refill); see
+     *  {@link #cycle(int, int, IntPredicate, boolean)}. */
     public void cycle(int seat, int step, IntPredicate seatHasPlayer) {
-        if (seat < 0 || seat >= seats() || this.slots.isEmpty()) {
+        cycle(seat, step, seatHasPlayer, false);
+    }
+
+    /**
+     * Cycle {@code seat} to its next/previous ELIGIBLE weapon, skipping ones it may not use — the reference
+     * {@code getNextWeaponID} + {@code switchWeapon}. The weapon switched away from reloads a partial magazine
+     * ({@link WeaponSlot#reloadOnSwitchAway}) and the one switched to starts the switch lockout
+     * ({@link WeaponSlot#onSwitchedTo}). With only one eligible weapon the "switch" lands on the same weapon, which is
+     * the reference's manual reload.
+     *
+     * @param infinityAmmo the operator is creative or the server grants infinite ammo (refills the new magazine)
+     */
+    public void cycle(int seat, int step, IntPredicate seatHasPlayer, boolean infinityAmmo) {
+        int cand = nextEligible(seat, step, seatHasPlayer);
+        if (cand < 0) {
             return;
+        }
+        WeaponSlot prev = selected(seat);
+        if (prev != null) {
+            prev.onDeselect();
+            prev.reloadOnSwitchAway();
+        }
+        this.selectedBySeat[seat] = cand;
+        this.slots.get(cand).onSwitchedTo(infinityAmmo);
+    }
+
+    /** The slot index a {@link #cycle} of {@code seat} would land on, or -1 if the seat may use nothing (reference
+     *  {@code getNextWeaponID}). The client uses it to decide whether a mouse-wheel turn is a weapon switch. */
+    public int nextEligible(int seat, int step, IntPredicate seatHasPlayer) {
+        if (seat < 0 || seat >= seats() || this.slots.isEmpty()) {
+            return -1;
         }
         int n = this.slots.size();
         int dir = step >= 0 ? 1 : -1;
@@ -126,13 +149,16 @@ public final class VehicleWeapons {
         for (int k = 1; k <= n; k++) {
             int cand = (((cur < 0 ? -1 : cur) + dir * k) % n + n) % n;
             if (eligible(this.slots.get(cand), seat, seatHasPlayer)) {
-                WeaponSlot prev = selected(seat);
-                if (prev != null && cand != cur) {
-                    prev.onDeselect();
-                }
-                this.selectedBySeat[seat] = cand;
-                return;
+                return cand;
             }
+        }
+        return -1;
+    }
+
+    /** CLIENT mirror: adopt the server's synced selection for {@code seat} without any switch side effects. */
+    public void setSelectedIndex(int seat, int index) {
+        if (seat >= 0 && seat < seats()) {
+            this.selectedBySeat[seat] = index >= 0 && index < this.slots.size() ? index : -1;
         }
     }
 
@@ -150,11 +176,15 @@ public final class VehicleWeapons {
             }
             if (cur != null) {
                 cur.onDeselect();
+                cur.reloadOnSwitchAway(); // the bump is a reference switchWeapon: the old weapon reloads ...
             }
             this.selectedBySeat[seat] = -1;
             for (int i = 0; i < this.slots.size(); i++) {
                 if (eligible(this.slots.get(i), seat, seatHasPlayer)) {
                     this.selectedBySeat[seat] = i;
+                    if (cur != null) {
+                        this.slots.get(i).onSwitchedTo(false); // ... and the new one starts the switch lockout
+                    }
                     break;
                 }
             }
@@ -185,6 +215,25 @@ public final class VehicleWeapons {
         refreshEligibility(seatHasPlayer);
     }
 
+    /**
+     * {@code fired} just fired a shot (call after {@link WeaponSlot#fireOneShot}) — reference
+     * {@code MCH_EntityAircraft.useCurrentWeapon}: every OTHER weapon with the same non-empty config {@code Group} waits
+     * out its delay too, and reloads when that shot emptied {@code fired}'s magazine ({@code prm.reload}), so a tank
+     * cannot fire its main gun again by switching to another round type.
+     */
+    public void shareGroupCooldown(WeaponSlot fired) {
+        String group = fired.info.group;
+        if (group == null || group.isEmpty()) {
+            return;
+        }
+        boolean reload = fired.reloading();
+        for (WeaponSlot s : this.slots) {
+            if (s != fired && group.equals(s.info.group)) {
+                s.waitAndReloadByOther(reload);
+            }
+        }
+    }
+
     /** Advance every weapon's fire-control counters one tick. */
     public void tick() {
         for (WeaponSlot s : this.slots) {
@@ -210,19 +259,84 @@ public final class VehicleWeapons {
         }
     }
 
-    /** A creative rider boarding tops every magazine (reference {@code MCH_WeaponSet:196-199}). */
+    /** A creative rider boarding (or any rider, with the server's infinite ammo) tops every magazine (reference
+     *  {@code MCH_WeaponSet:196-199}, whose {@code isCreative} is {@code isInfinityAmmo}). */
     public void onMount(boolean creative) {
         for (WeaponSlot s : this.slots) {
             s.onMount(creative);
         }
     }
 
+    // ---- saved ammo (the vehicle's AcWeaponsAmmo): keyed by weapon, not by slot position ----
+
+    /** The save key of every slot, in slot order ({@link #ammoKeys(List)} of the slot weapon names). */
+    public List<String> ammoKeys() {
+        List<String> names = new ArrayList<>(this.slots.size());
+        for (WeaponSlot s : this.slots) {
+            names.add(s.weaponName);
+        }
+        return ammoKeys(names);
+    }
+
     /**
-     * Whether a weapon {@code type} spawns a projectile this port fires today. Guns, rockets, marker rockets, guided
-     * missiles (AA/AS/AT/TV — homing + lock-on ported), dropped bombs, torpedoes (water-run), CAS (called-in bombing
-     * run), and dispensers (item-use on impact) are all fireable. The remaining types (targeting pod, smoke, dummy) are
-     * excluded: smoke is a no-op in the reference too, the targeting pod needs the spotting subsystem, and dummy fires
-     * nothing.
+     * Stable save keys for a slot list: the weapon name, and {@code name#n} for its n-th repeat ({@code n >= 1}). A
+     * config can list one weapon in two separate groups (only CONSECUTIVE {@code AddWeapon} lines share a set), so the
+     * name alone does not always identify a slot. A slot keeps its key when the slots around it are added or removed,
+     * so saved ammo stays on its weapon when the selectable-type set changes.
+     */
+    public static List<String> ammoKeys(List<String> weaponNames) {
+        List<String> keys = new ArrayList<>(weaponNames.size());
+        java.util.Map<String, Integer> seen = new java.util.HashMap<>();
+        for (String n : weaponNames) {
+            String name = n == null ? "" : n.toLowerCase(java.util.Locale.ROOT);
+            int k = seen.merge(name, 1, Integer::sum) - 1;
+            keys.add(k == 0 ? name : name + "#" + k);
+        }
+        return keys;
+    }
+
+    /**
+     * Migrate a legacy {@code AcWeaponsAmmo} array, which was stored by SLOT POSITION, to save keys. The positions are
+     * those of the loadout the save was written with: the selectable set before smoke, dummy and guided torpedoes
+     * became slots ({@link #isLegacyFireable}). Entries past that loadout are dropped.
+     */
+    public static java.util.Map<String, Integer> legacyAmmoByKey(MCH_AircraftInfo info,
+                                                                 Function<String, MCH_WeaponInfo> resolver,
+                                                                 int[] legacy) {
+        java.util.Map<String, Integer> out = new java.util.HashMap<>();
+        if (info == null || legacy == null) {
+            return out;
+        }
+        List<String> names = new ArrayList<>();
+        for (MCH_AircraftInfo.WeaponSet ws : info.weaponSetList) {
+            MCH_WeaponInfo wi = resolver.apply(ws.type);
+            if (wi != null && isLegacyFireable(wi) && ws.weapons != null && !ws.weapons.isEmpty()) {
+                names.add(ws.type);
+            }
+        }
+        List<String> keys = ammoKeys(names);
+        for (int i = 0; i < Math.min(keys.size(), legacy.length); i++) {
+            out.put(keys.get(i), legacy[i]);
+        }
+        return out;
+    }
+
+    /** The slot filter of saves written before smoke and dummy weapons were selectable and guided torpedoes were
+     *  ported: {@link #isFireable} without {@code smoke}/{@code dummy}, and no {@code GuidedTorpedo} torpedo. */
+    static boolean isLegacyFireable(MCH_WeaponInfo wi) {
+        String t = wi.type == null ? "" : wi.type.toLowerCase(java.util.Locale.ROOT);
+        return isFireable(t) && !t.equals("smoke") && !t.equals("dummy")
+            && !(wi.isGuidedTorpedo && t.equals("torpedo"));
+    }
+
+    /**
+     * Whether a weapon {@code type} is SELECTABLE in this port (the reference {@code MCH_WeaponCreator} type list). Guns,
+     * rockets, marker rockets, guided missiles (AA/AT lock-on homing, AS ground-point homing, TV operator-steered), dropped
+     * bombs, torpedoes (water-run, or homing on an aimed water point when {@code GuidedTorpedo}), CAS (called-in bombing
+     * run) and dispensers (item-use on impact) fire projectiles. Smoke ({@code MCH_WeaponSmoke}) and dummy
+     * ({@code MCH_WeaponDummy}) are selectable and fire nothing, as in the reference: a selected smoke weapon trails
+     * coloured smoke while the throttle is up, and a dummy is an empty "safe" slot ({@code none},
+     * {@code dummy_bay_closed}). Only the targeting pod is left out: it needs the unported multiplay spotting system.
      */
     public static boolean isFireable(String type) {
         if (type == null) {
@@ -241,6 +355,8 @@ public final class VehicleWeapons {
             case "torpedo": // forward-launched round that self-steers underwater (MchBullet water-run: level + cruise)
             case "cas": // close air support — aim at the ground to call in a bombing run (fireSelectedWeapon cas branch)
             case "dispenser": // drops a round that "uses" its configured item across a radius on impact (MchBullet dispenseAt)
+            case "smoke": // selectable, fires nothing; trails coloured smoke while selected (AbstractMchVehicle weapon smoke)
+            case "dummy": // selectable, fires nothing (reference MCH_WeaponDummy.shot returns false)
                 return true;
             default:
                 return false;

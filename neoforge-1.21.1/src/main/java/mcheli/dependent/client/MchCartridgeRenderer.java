@@ -42,7 +42,7 @@ public class MchCartridgeRenderer extends EntityRenderer<MchCartridge> {
             float scale = entity.cartridgeScale();
             pose.scale(scale, scale, scale);
             float yaw = Mth.rotLerp(partialTick, entity.yRotO, entity.getYRot());
-            float pitch = Mth.lerp(partialTick, entity.xRotO, entity.getXRot());
+            float pitch = entity.cartridgePitch(partialTick);
             pose.mulPose(Axis.YP.rotationDegrees(-yaw)); // reference negates the render yaw
             pose.mulPose(Axis.XP.rotationDegrees(pitch));
             MchModelRenderer.render(model, pose, buffers.getBuffer(RenderType.entityCutoutNoCull(getTextureLocation(entity))),

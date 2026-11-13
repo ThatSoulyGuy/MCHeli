@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -18,9 +19,14 @@ import java.util.regex.Pattern;
  *   <li>texture V flipped ({@code 1 - v}); vertices are NOT scaled (unlike {@code .mqo});</li>
  *   <li>triangles set {@code glDrawingMode=4}, quads {@code =7} (kept as faces of 4 vertices, not split);</li>
  *   <li>the upstream group predicate {@code startsWith("g ") | startsWith("o ") && charAt(2)=='$'} is
- *       reproduced verbatim (Java {@code &&} binds tighter than {@code |}): every {@code g} line, but only
- *       {@code o} lines whose name starts with {@code $}.</li>
+ *       reproduced verbatim. Java's {@code |} binds tighter than {@code &&}, so it reads
+ *       {@code (g|o) && charAt(2)=='$'}: only {@code $}-named groups start a part; any other {@code g}/{@code o}
+ *       line is ignored and its faces fold into the current group (or an auto-created {@code "Default"}).</li>
  * </ul>
+ *
+ * <p>Deliberate divergences: a file with no faces at all yields an empty group list instead of the reference's
+ * single {@code null} group (which made {@link #containsPart} and the renderer's group walk throw), and
+ * {@link #getFaceNum()} counts parsed faces rather than the reference's {@code vertices / 3} estimate.
  */
 public class ObjModel extends MchModel {
     private static final Pattern vertexPattern =
@@ -62,9 +68,15 @@ public class ObjModel extends MchModel {
         return this.vertices.size();
     }
 
+    /** Parsed face count (a quad counts once). The reference returned {@code vertices / 3}, a guess only its
+     *  drafting-table draw-in animation consumed; the port's only consumer is a dev log, so report the truth. */
     @Override
     public int getFaceNum() {
-        return this.getVertexNum() / 3;
+        int n = 0;
+        for (ModelGroup g : this.groupObjects) {
+            n += g.faces.size();
+        }
+        return n;
     }
 
     private void loadModel(InputStream inputStream) throws ModelFormatException {
@@ -73,7 +85,8 @@ public class ObjModel extends MchModel {
         int lineCount = 0;
 
         try {
-            reader = new BufferedReader(new InputStreamReader(inputStream));
+            // Pinned to UTF-8 (the reference used the platform default codepage); see MqoModel for why that is safe.
+            reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
 
             while ((currentLine = reader.readLine()) != null) {
                 lineCount++;
@@ -115,7 +128,10 @@ public class ObjModel extends MchModel {
                 }
             }
 
-            this.groupObjects.add(this.currentGroupObject);
+            // The reference added the trailing group unconditionally, so a face-less file produced a null entry.
+            if (this.currentGroupObject != null) {
+                this.groupObjects.add(this.currentGroupObject);
+            }
         } catch (IOException e) {
             throw new ModelFormatException("IO Exception reading model format", e);
         } finally {

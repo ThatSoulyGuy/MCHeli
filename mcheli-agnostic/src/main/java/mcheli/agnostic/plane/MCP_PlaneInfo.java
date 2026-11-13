@@ -3,10 +3,9 @@ package mcheli.agnostic.plane;
 import java.util.ArrayList;
 import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
-import mcheli.agnostic.spi.ItemHandle;
+import mcheli.agnostic.config.MchSettings;
 
 public class MCP_PlaneInfo extends MCH_AircraftInfo {
-   public ItemHandle item = null;
    public List<MCH_AircraftInfo.DrawnPart> nozzles = new ArrayList<>();
    public List<MCP_PlaneInfo.Rotor> rotorList = new ArrayList<>();
    public List<MCP_PlaneInfo.Wing> wingList = new ArrayList<>();
@@ -17,11 +16,6 @@ public class MCP_PlaneInfo extends MCH_AircraftInfo {
    public boolean isEnableAutoPilot = false;
    public boolean isVariableSweepWing = false;
    public float sweepWingSpeed = this.speed;
-
-   @Override
-   public ItemHandle getItem() {
-      return this.item;
-   }
 
    public MCP_PlaneInfo(String name) {
       super(name);
@@ -74,13 +68,11 @@ public class MCP_PlaneInfo extends MCH_AircraftInfo {
          this.hatchList.clear();
       }
 
-      this.speed = (float)(this.speed * this.getSpeedMultiplier());
-      this.sweepWingSpeed = (float)(this.sweepWingSpeed * this.getSpeedMultiplier());
+      // Reference MCP_PlaneInfo:79-80: the server-wide AllPlaneSpeed multiplier, baked in at load.
+      double mult = MchSettings.current().allPlaneSpeed();
+      this.speed = (float)(this.speed * mult);
+      this.sweepWingSpeed = (float)(this.sweepWingSpeed * mult);
       return super.isValidData();
-   }
-
-   protected double getSpeedMultiplier() {
-      return 1.0;
    }
 
    @Override
@@ -204,14 +196,6 @@ public class MCP_PlaneInfo extends MCH_AircraftInfo {
       this.nozzles.clear();
       this.rotorList.clear();
       this.wingList.clear();
-   }
-
-   @Override
-   public void postReload() {
-      this.registerModels();
-   }
-
-   protected void registerModels() {
    }
 
    public static class Blade extends MCH_AircraftInfo.DrawnPart {

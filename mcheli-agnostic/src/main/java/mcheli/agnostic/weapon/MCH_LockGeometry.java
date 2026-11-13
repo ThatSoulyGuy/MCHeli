@@ -37,7 +37,8 @@ public final class MCH_LockGeometry {
 
     // ---- stealth scalers (reference lock() lines 142-144 + getLockCountMax) ----
     // A stealthier target (entityStealth 0..1) shrinks the effective lock RANGE and CONE and inflates the lock TIME.
-    // With entityStealth 0 (the port default until aircraft stealth is ported) these are identities: range=lockRange,
+    // The stealth is the target vehicle's config Stealth, or that of the vehicle a target rides, and 0 for anything
+    // else (reference getEntityStealth; AbstractMchVehicle.lockStealth). At 0 these are identities: range=lockRange,
     // angle=lockAngle, countMax=lockCountMax.
 
     /** Effective lock range = {@code lockRange * (1 - entityStealth)}. */

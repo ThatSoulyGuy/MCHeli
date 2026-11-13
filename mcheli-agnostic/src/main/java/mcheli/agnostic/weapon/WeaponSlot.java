@@ -22,11 +22,18 @@ import mcheli.agnostic.aircraft.MCH_AircraftInfo;
  *       alternates instead of firing every barrel at once.</li>
  * </ul>
  *
- * <p><b>Deferred (documented, not faked):</b> the ammo <em>reserve</em> economy ({@code MaxAmmo}/{@code SuppliedNum}/
- * ammo items / dispensers) is not modelled — the magazine simply refills after each reload, so the visible cadence
- * (rate of fire, burst size, reload pause) is fully config-driven while a demo craft never runs permanently dry. Recoil
- * and shared-group cooldown are likewise deferred behind this same object; barrel <b>heat/overheat</b> IS modelled now
- * ({@code currentHeat}/{@code cooldownSpeed}, config {@code HeatCount}/{@code MaxHeatCount}).
+ * <p>Also modelled: the ammo <b>reserve</b> economy ({@code MaxAmmo}/{@code SuppliedNum}: {@link #restAllAmmo},
+ * {@link #supplyRestAllAmmo}, {@link #reloadMag}); barrel <b>heat/overheat</b> ({@code currentHeat}/{@code cooldownSpeed},
+ * config {@code HeatCount}/{@code MaxHeatCount}); the weapon <b>mode</b> ({@link #switchMode}, {@link MCH_WeaponMode});
+ * and the <b>switch lockout</b> ({@link #onSwitchedTo}: a negative {@code countWait} that ticks back up to 0, reference
+ * {@code MCH_WeaponSet.onSwitchWeapon}); and the shared-barrel cooldown of a config {@code Group}
+ * ({@link #waitAndReloadByOther}).
+ *
+ * <p><b>Which reference timer is "the" timer.</b> The reference keeps a copy of every weapon set on both sides, and the
+ * CLIENT decides when to shoot: its copy gates {@code use()}, and the server's copy runs shorter timers only so that it
+ * is ready when the client's shot packet arrives (switch lockout 15 ticks against the client's 25; magazine reload
+ * {@code reloadTime - 20} against the client's full {@code reloadTime}). What a player sees is the client's timing, so
+ * that is what this server-authoritative port uses for the lockout and the reload.
  */
 public final class WeaponSlot {
 
@@ -34,7 +41,7 @@ public final class WeaponSlot {
     public final String weaponName;
     /** The resolved weapon definition (stats, sound, model). */
     public final MCH_WeaponInfo info;
-    /** The mounts this weapon fires from (already filtered to pilot-usable positions). Never empty. */
+    /** The mounts this weapon fires from (every mount of the config group, whichever seat operates it). Never empty. */
     public final List<MCH_AircraftInfo.Weapon> mounts;
 
     private final boolean infiniteMagazine;
@@ -52,6 +59,14 @@ public final class WeaponSlot {
     private int restAllAmmo; // RESERVE behind the magazine; a fresh vehicle spawns DRY (reference MCH_WeaponSet:51-52)
     private int currentHeat;       // accumulated barrel heat (reference MCH_WeaponSet.currentHeat)
     private int cooldownSpeed = 1; // ramps the cooldown rate the longer the barrel goes un-fired (reference)
+    private int currentMode;       // reference MCH_WeaponBase.currentMode (all mounts of a set switch together)
+    private MCH_WeaponInfo[] modeInfo; // per-mode shot variant of info (explosion/piercing), built lazily
+
+    /** Reference {@code MCH_WeaponSet.onSwitchWeapon}: {@code cntSwitch = 15}, plus 10 on the client, whose copy is the
+     *  one that gates fire (see the class javadoc). */
+    static final int SWITCH_LOCKOUT_TICKS = 25;
+    /** Reference {@code MCH_WeaponSet.switchMode}: {@code cntSwitch = 15} on both sides. */
+    static final int MODE_LOCKOUT_TICKS = 15;
 
     public WeaponSlot(String weaponName, MCH_WeaponInfo info, List<MCH_AircraftInfo.Weapon> mounts) {
         if (mounts == null || mounts.isEmpty()) {
@@ -125,14 +140,15 @@ public final class WeaponSlot {
         }
     }
 
-    /** A creative rider boarding tops the magazine straight up (reference {@code MCH_WeaponSet:196-199}). */
+    /** A creative / infinite-ammo rider boarding tops the magazine straight up (reference {@code MCH_WeaponSet:196-199}). */
     public void onMount(boolean creative) {
         if (creative && this.economy && !this.infiniteMagazine) {
             this.magazine = magSize();
         }
     }
 
-    /** Burst/magazine size. {@code checkData} has already coerced {@code round<=0 -> maxAmmo}; if still 0, infinite. */
+    /** Burst/magazine size. The loader's {@code checkData} has already coerced {@code round<=0 -> maxAmmo}; the fallback
+     *  keeps a definition built without the loader (unit tests) the same. 0 == an endless magazine. */
     private int magSize() {
         if (this.info.round > 0) {
             return this.info.round;
@@ -157,6 +173,9 @@ public final class WeaponSlot {
         if (this.countWait > 0) {
             this.countWait--;
         }
+        if (this.countWait < 0) {
+            this.countWait++; // a switch / mode lockout counts back up to 0 (reference MCH_WeaponSet.update:248-250)
+        }
         if (this.reloadWait > 0) {
             this.reloadWait--;
             if (this.reloadWait == 0) {
@@ -169,8 +188,9 @@ public final class WeaponSlot {
         }
     }
 
-    /** True if the trigger can fire this tick: cooldown elapsed, not mid-reload, ammo in the magazine, and not overheated
-     *  (reference {@code MCH_WeaponSet.use} gate {@code currentHeat < maxHeatCount}). */
+    /** True if the trigger can fire this tick: cooldown and switch lockout over ({@code countWait == 0}, reference
+     *  {@code canUse}), not mid-reload, ammo in the magazine, and not overheated (reference {@code MCH_WeaponSet.use}
+     *  gate {@code currentHeat < maxHeatCount}). */
     public boolean canFire() {
         return this.countWait == 0 && this.reloadWait == 0 && this.magazine > 0 && !overheated();
     }
@@ -222,8 +242,11 @@ public final class WeaponSlot {
             this.magazine--;
             if (this.magazine <= 0) {
                 if (infinityAmmo && this.economy && this.restAllAmmo < magSize()) {
-                    this.restAllAmmo = magSize(); // creative tops the RESERVE, not the magazine
+                    // Creative tops the RESERVE, not the magazine, through the maxAmmo clamp as the reference's
+                    // setRestAllAmmoNum(getAmmoNumMax()) does (MCH_WeaponSet:384-386 -> :96-99).
+                    setRestAllAmmo(magSize());
                 }
+                // The full reloadTime, not the reference server's reloadTime - 20 (see the class javadoc).
                 this.reloadWait = Math.max(1, this.info.reloadTime);
             }
         }
@@ -235,12 +258,116 @@ public final class WeaponSlot {
         this.barrel = 0;
     }
 
+    /**
+     * The weapon a seat switches AWAY from reloads a magazine that is not full: reference
+     * {@code MCH_EntityAircraft.switchWeapon} first calls {@code getCurrentWeapon(entity).reload()}, and
+     * {@code MCH_WeaponSet.reload} restarts {@code countReloadWait} whenever {@code ammo < round} (the client copy also
+     * empties its magazine, so the weapon cannot fire until the reload ends). Switching to the same weapon is therefore
+     * the reference's manual reload.
+     */
+    public void reloadOnSwitchAway() {
+        if (!this.infiniteMagazine && this.magazine < magSize() && this.info.reloadTime > 0) {
+            this.reloadWait = this.info.reloadTime;
+        }
+    }
+
+    /**
+     * The weapon a seat switches TO, reference {@code MCH_WeaponSet.onSwitchWeapon}: a switch lockout (a negative
+     * {@code countWait}, see {@link #lockout}), the barrel round-robin restarts, and a creative / infinite-ammo operator
+     * gets a full magazine.
+     */
+    public void onSwitchedTo(boolean infinityAmmo) {
+        lockout(SWITCH_LOCKOUT_TICKS);
+        this.barrel = 0;
+        if (infinityAmmo && !this.infiniteMagazine) {
+            this.magazine = magSize();
+        }
+    }
+
+    /** The reference lockout rule shared by {@code onSwitchWeapon} and {@code switchMode}: unless a longer lockout
+     *  already runs, a cooldown longer than {@code ticks} becomes an equally long lockout, anything shorter becomes
+     *  {@code ticks}. */
+    private void lockout(int ticks) {
+        if (this.countWait >= -ticks) {
+            this.countWait = this.countWait > ticks ? -this.countWait : -ticks;
+        }
+    }
+
+    /** How many modes this weapon cycles through ({@link MCH_WeaponMode#numMode}). */
+    public int numMode() {
+        return MCH_WeaponMode.numMode(this.info);
+    }
+
+    /** The mode a shot uses (a config {@code FixMode} wins over the switched one). */
+    public int mode() {
+        return MCH_WeaponMode.effectiveMode(this.info, this.currentMode);
+    }
+
+    /** Restore a mode (the client mirror of the synced mode); an out-of-range value falls back to 0. */
+    public void setMode(int mode) {
+        this.currentMode = mode >= 0 && mode < Math.max(1, numMode()) ? mode : 0;
+    }
+
+    /**
+     * Cycle to the next mode, reference {@code MCH_WeaponSet.switchMode}. Returns whether the mode changed; a change
+     * starts the {@value #MODE_LOCKOUT_TICKS}-tick lockout. A fixed-mode or single-mode weapon never changes.
+     */
+    public boolean switchMode() {
+        int before = mode();
+        this.currentMode = MCH_WeaponMode.nextMode(this.info, this.currentMode);
+        boolean changed = mode() != before;
+        if (changed) {
+            lockout(MODE_LOCKOUT_TICKS);
+        }
+        return changed;
+    }
+
+    /** The definition a round fired in the current mode carries: {@link #info} itself, or a shallow variant with the
+     *  mode's explosion and piercing ({@link MCH_WeaponInfo#shotVariant}). */
+    public MCH_WeaponInfo shotInfo() {
+        int m = mode();
+        if (this.modeInfo == null || this.modeInfo.length <= m) {
+            this.modeInfo = java.util.Arrays.copyOf(this.modeInfo == null ? new MCH_WeaponInfo[0] : this.modeInfo, m + 1);
+        }
+        MCH_WeaponInfo v = this.modeInfo[m];
+        if (v == null) {
+            v = this.info.shotVariant(MCH_WeaponMode.explosion(this.info, m), MCH_WeaponMode.piercing(this.info, m));
+            this.modeInfo[m] = v;
+        }
+        return v;
+    }
+
+    /** The HUD name: the config display name plus the mode suffix (reference {@code MCH_WeaponSet.getName}). */
+    public String displayName() {
+        String base = this.info.displayName != null && !this.info.displayName.isEmpty()
+            ? this.info.displayName : this.weaponName;
+        return base + MCH_WeaponMode.suffix(this.info.type, mode());
+    }
+
     public int magazine() {
         return this.infiniteMagazine ? -1 : this.magazine;
     }
 
     public boolean reloading() {
         return this.reloadWait > 0;
+    }
+
+    /**
+     * Another weapon of this weapon's config {@code Group} (one barrel, several rounds: a tank's APFSDS / HE / HEAT)
+     * just fired — reference {@code MCH_WeaponSet.waitAndReloadByOther}: wait out this weapon's own delay, drop any reload
+     * in progress, and start a fresh one when the shot emptied the shared magazine ({@code reload}).
+     */
+    public void waitAndReloadByOther(boolean reload) {
+        this.countWait = this.info.delay;
+        this.reloadWait = 0;
+        if (reload && !this.infiniteMagazine && this.info.reloadTime > 0) {
+            this.reloadWait = this.info.reloadTime; // the full reloadTime (see the class javadoc)
+        }
+    }
+
+    /** Reference {@code isInPreparation}: reloading, or inside a switch / mode lockout (the HUD {@code reloading}). */
+    public boolean inPreparation() {
+        return this.countWait < 0 || this.reloadWait > 0;
     }
 
     /** True if this weapon overheats at all (config {@code MaxHeatCount > 0}) — gates the HUD heat gauge. */

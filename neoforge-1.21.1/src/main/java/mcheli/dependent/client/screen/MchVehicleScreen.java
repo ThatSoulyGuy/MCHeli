@@ -6,7 +6,6 @@ import mcheli.agnostic.weapon.WeaponSlot;
 import mcheli.dependent.control.ServerboundVehicleGuiPayload;
 import mcheli.dependent.entity.AbstractMchVehicle;
 import mcheli.dependent.menu.MchVehicleMenu;
-import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
@@ -43,8 +42,8 @@ public class MchVehicleScreen extends AbstractContainerScreen<MchVehicleMenu> {
 
     private final AbstractMchVehicle vehicle;
     private Button reload;
-    private Button next;
     private Button prev;
+    private Button next;
     /** Which weapon the GUI is SHOWING (the reference's {@code currentWeaponId}) — independent of the one selected for
      *  firing, so you can inspect and rearm a weapon you are not currently holding. */
     private int shownWeapon;
@@ -64,15 +63,15 @@ public class MchVehicleScreen extends AbstractContainerScreen<MchVehicleMenu> {
 
         this.reload = addRenderableWidget(Button.builder(Component.translatable("gui.mcheli.reload"), b -> sendReload())
             .bounds(this.leftPos + 85, this.topPos + 40, 50, 20).build());
-        this.next = addRenderableWidget(Button.builder(Component.literal("<<"), b -> cycle(-1))
+        this.prev = addRenderableWidget(Button.builder(Component.literal("<<"), b -> cycle(-1))
             .bounds(this.leftPos + 140, this.topPos + 40, 20, 20).build());
-        this.prev = addRenderableWidget(Button.builder(Component.literal(">>"), b -> cycle(1))
+        this.next = addRenderableWidget(Button.builder(Component.literal(">>"), b -> cycle(1))
             .bounds(this.leftPos + 160, this.topPos + 40, 20, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.mcheli.close"), b -> onClose())
             .bounds(this.leftPos + 160, this.topPos + 10, 40, 20).build());
 
-        this.next.active = weapons >= 2;
         this.prev.active = weapons >= 2;
+        this.next.active = weapons >= 2;
         this.reload.active = canReload();
     }
 
@@ -126,8 +125,8 @@ public class MchVehicleScreen extends AbstractContainerScreen<MchVehicleMenu> {
         return true;
     }
 
-    /** How many of {@code ri} the local player holds in the MAIN inventory (0..35), matched by registry path — the
-     *  same match the server uses. */
+    /** How many of {@code ri} the local player holds in the MAIN inventory (0..35), matched against the resolved
+     *  item — the same match the server uses. */
     private int countHeld(MCH_WeaponInfo.RoundItem ri) {
         Player p = this.minecraft.player;
         Item want = itemOf(ri);
@@ -143,15 +142,11 @@ public class MchVehicleScreen extends AbstractContainerScreen<MchVehicleMenu> {
         return n;
     }
 
-    /** Resolve a {@code RoundItem}'s config name (e.g. {@code "iron_ingot"}) to a vanilla item; AIR if it does not
-     *  exist in 1.21 (e.g. legacy metadata items like {@code dye}). */
+    /** The item a {@code RoundItem} costs, as resolved at load (1.7.10 name + metadata, so {@code dye, 15} is bone
+     *  meal); AIR if the config names an item this version does not have. The server matches the same handle. */
     private static Item itemOf(MCH_WeaponInfo.RoundItem ri) {
-        if (ri.itemName == null || ri.itemName.isEmpty()) {
-            return Items.AIR;
-        }
-        ResourceLocation rl = ResourceLocation.tryParse(
-            ri.itemName.contains(":") ? ri.itemName : "minecraft:" + ri.itemName);
-        return rl != null ? BuiltInRegistries.ITEM.get(rl) : Items.AIR;
+        Item it = mcheli.dependent.port.NeoItemHandle.itemOf(ri.item);
+        return it != null ? it : Items.AIR;
     }
 
     @Override

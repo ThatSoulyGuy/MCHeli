@@ -1,10 +1,15 @@
 package mcheli.dependent.entity;
 
+import mcheli.agnostic.weapon.MCH_Detonation;
 import mcheli.agnostic.weapon.MCH_MissileGuidance;
 import mcheli.agnostic.weapon.MCH_WeaponBallistics;
 import mcheli.agnostic.weapon.MCH_WeaponInfo;
+import mcheli.dependent.config.MchConfig;
+import mcheli.dependent.config.MchServerRules;
+import mcheli.dependent.particle.MchSmokeOptions;
 import mcheli.dependent.particle.MuzzleFxOptions;
 import mcheli.dependent.port.NeoEntityRef;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.particles.BlockParticleOption;
 import net.minecraft.core.particles.ParticleTypes;
@@ -12,11 +17,16 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.FluidTags;
+import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
@@ -36,15 +46,27 @@ import net.neoforged.neoforge.entity.PartEntity;
  *       factor — <i>in addition</i> to the direct-hit power damage.</li>
  *   <li><b>Fuses</b> in the reference tick order (server block runs BEFORE gravity): {@code delayFuse} (arm + block
  *       ricochet), {@code timeFuse} (self-detonate), {@code explosionAltitude} (airburst), and {@code proximityFuseDist}
- *       (detonate near a target, checked at tick end).</li>
- *   <li><b>Piercing</b> — passes through BLOCKS (decrementing, tiny burst each); a direct ENTITY hit forcibly zeroes
- *       piercing so the round dies on the entity (faithful to {@code onImpact}).</li>
+ *       (detonate near a target: gun rounds at tick end, bombs every 10 ticks). A fuse that runs out follows the
+ *       reference timeout rules, which differ from the impact rules ({@link MCH_Detonation}).</li>
+ *   <li><b>Piercing</b> — passes through BLOCKS (decrementing, a small burst each); a direct ENTITY hit forcibly zeroes
+ *       piercing so the round dies on the entity (faithful to {@code onImpact}). Blocks on the server's
+ *       bullet-breakable list are shot through outright.</li>
  *   <li><b>Cluster bomblets</b> — after {@code bombletSTime} ticks a parent sprinkles {@code bomblet} child rounds
  *       (spread by {@code bombletDiff}, rendered with {@code ModelBomblet}) that never re-split.</li>
  * </ul>
  *
  * <p>Effects + collision + damage are server-authoritative; the flight integrator runs both sides (from the synced
- * gravity/accelerationFactor) so the client dead-reckons smoothly. Homing/guidance is a separate deferred effort.
+ * gravity/accelerationFactor) so the client dead-reckons smoothly. Guided kinds ({@link #DATA_GUIDED}: AA, AT direct and
+ * top attack, AS, TV; plus the guided torpedo) steer server-side ({@link #tickGuidance}, {@link #tickTorpedo}) and the
+ * client takes their path through {@link #lerpTo}.
+ *
+ * <p><b>Who fired it</b> (one model, the reference's). {@link #shooter} is the reference {@code shootingEntity}, the
+ * entity operating the weapon (the seat's player): it gets the damage and kill credit (so the PvP/team rules apply)
+ * and the hit marker, the round despawns when it dies and 5820 blocks from it, it steers a TV missile, its height
+ * sets an AT top attack's climb, and a guided AA/AT round that has none is discarded. {@link #launcher} is the
+ * reference {@code shootingAircraft}, the vehicle the round left: neither it nor anyone aboard it is hit by the round
+ * or its blast, and rounds of the same launcher pass through each other. Child rounds (bomblets, a marker's airstrike)
+ * inherit both from their parent.
  */
 public class MchBullet extends Entity {
 
@@ -69,7 +91,7 @@ public class MchBullet extends Entity {
      *  (a beacon pulses on the client while the server counts down to the airstrike). */
     private static final EntityDataAccessor<Byte> DATA_MARKER =
         SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.BYTE);
-    /** Guided-missile kind (0 = not guided, 1 = AA air-homing, 2 = AT direct-homing). Synced so the client knows to
+    /** Guided-missile kind ({@link #GUIDED_NONE} ... {@link #GUIDED_TV}). Synced so the client knows to
      *  accept the server's curved position/orientation via {@link #lerpTo} instead of dead-reckoning a straight line. */
     private static final EntityDataAccessor<Byte> DATA_GUIDED =
         SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.BYTE);
@@ -81,20 +103,42 @@ public class MchBullet extends Entity {
      *  the instant a round is submerged; synced so both sides integrate the same value while dead-reckoning. */
     private static final EntityDataAccessor<Float> DATA_GRAVITY_WATER =
         SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.FLOAT);
+    /** True for a {@code delayFuse} round: its block ricochets are computed on the server, so the client accepts the
+     *  server's path via {@link #lerpTo} instead of dead-reckoning straight through the block it bounced off. */
+    private static final EntityDataAccessor<Boolean> DATA_RICOCHET =
+        SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.BOOLEAN);
+    /** The weapon's {@code Power}, for the client's water-entry splash (reference {@code updateSplash}); 0 = none. */
+    private static final EntityDataAccessor<Integer> DATA_SPLASH_POWER =
+        SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.INT);
+    /** A bomb's per-tick motion multiplier while in water ({@code MCH_WeaponInfo.velocityInWater}); 1 = none. Synced so
+     *  the client dead-reckons the same underwater slow-down. */
+    private static final EntityDataAccessor<Float> DATA_VELOCITY_WATER =
+        SynchedEntityData.defineId(MchBullet.class, EntityDataSerializers.FLOAT);
 
     /** Squared horizontal despawn distance from the shooter (5820², reference {@code checkValid}). */
     private static final double MAX_DIST_SQ = 3.38724E7;
 
-    // Guided-round kinds (the DATA_GUIDED byte). Kind 3 (AT top-attack) is reserved for when weapon-mode plumbing lands.
+    // Guided-round kinds (the DATA_GUIDED byte).
     public static final byte GUIDED_NONE = 0;
+    /** AA: pursuit blend onto the locked target (reference {@code MCH_EntityAAMissile}). */
     public static final byte GUIDED_AA = 1;
+    /** AT direct attack: hard-snap onto the locked target (reference {@code MCH_EntityATMissile} guidanceType 0). */
     public static final byte GUIDED_AT_DIRECT = 2;
+    /** AT top attack: climb, level, dive (guidanceType 1, the AT weapon's mode 1). */
+    public static final byte GUIDED_AT_TOP = 3;
+    /** AS: steers at the ground point the operator aimed at (reference {@code MCH_EntityASMissile}). */
+    public static final byte GUIDED_AS = 4;
+    /** TV: steered toward the operator's current aim point (reference {@code MCH_EntityTvMissile}, mode 0). */
+    public static final byte GUIDED_TV = 5;
+
+    /** Reference {@code MCH_EntityTvMissile.onUpdate}: a TV missile dies 1200 blocks from its operator. */
+    private static final double TV_MAX_DIST_SQ = 1440000.0;
 
     private float damage = 5.0F;
     private int life;
     private int maxLife = 200;
     private int age;                    // reference countOnUpdate (timeFuse clock + proximity age gate)
-    private Entity shooter;             // server-side only; excluded from collision + blast
+    private Entity shooter;             // server-side only; the operator who fired it (reference shootingEntity)
     private MCH_WeaponInfo weaponInfo;  // server-side only; source of all effect params
     private int piercing;               // live counter (blocks pierced remaining)
     private int delayFuseCounter;       // live countdown; 0 == unarmed (bounces off blocks)
@@ -104,6 +148,10 @@ public class MchBullet extends Entity {
     private Entity targetEntity;        // guided missile: the locked target (server-side only; resolved live each tick)
     private float guideSpeed;           // guided missile: cruise speed for the guidance blend (reference this.acceleration)
     private double torpedoAccel;        // torpedo: the live water-run speed, ramped toward accelerationInWater (reference this.acceleration)
+    private Entity launcher;            // server-side only; the vehicle it left (reference shootingAircraft), or null
+    private boolean hasGuidePoint;      // AS missile / guided torpedo: steering at a fixed world point
+    private double guideX, guideY, guideZ; // that point (reference targetPosX/Y/Z)
+    private net.minecraft.core.BlockPos guideBlock; // AS: the block the operator's aim ray hit (steering ends with it)
 
     public MchBullet(EntityType<? extends MchBullet> type, Level level) {
         super(type, level);
@@ -111,25 +159,40 @@ public class MchBullet extends Entity {
         this.noCulling = true;
     }
 
-    /** Spawn a projectile carrying a weapon's real stats + effects. {@code wi} may be null (a plain tracer). */
+    /**
+     * Spawn a projectile carrying a weapon's real stats + effects. {@code wi} may be null (a plain tracer).
+     *
+     * <p>Every spawn takes the {@code shooter} (the operator, reference {@code shootingEntity}); the launcher (reference
+     * {@code shootingAircraft}) is the vehicle the shooter rides at the moment of the shot, or the shooter itself when
+     * a vehicle fires with no operator ({@link #launcherOf}).
+     */
     public static MchBullet spawnWeapon(Level level, Vec3 pos, Vec3 dir, float speed, float accelerationFactor,
                                         float gravity, float damage, int maxLife, Entity shooter, String modelName,
                                         int color, MCH_WeaponInfo wi) {
-        return create(level, pos, dir, speed, accelerationFactor, gravity, damage, maxLife, shooter, modelName, color,
-            wi, false);
+        return create(level, pos, dir, speed, accelerationFactor, gravity, damage, maxLife, shooter,
+            launcherOf(shooter), modelName, color, wi, false, false);
+    }
+
+    /** The vehicle a round fired by {@code shooter} leaves (reference {@code shootingAircraft}): the shooter's MCHeli
+     *  mount when a rider fires, the shooter itself when it is the vehicle, otherwise none. */
+    private static Entity launcherOf(Entity shooter) {
+        if (shooter instanceof AbstractMchVehicle) {
+            return shooter;
+        }
+        return shooter != null && shooter.getVehicle() instanceof AbstractMchVehicle v ? v : null;
     }
 
     /**
      * Spawn a GUIDED missile: a normal projectile that, after {@code rigidityTime} ticks, homes toward {@code target}
      * (server-authoritative; the client accepts the curved path via {@link #lerpTo}). {@code guidedKind} is
-     * {@link #GUIDED_AA} (pursuit blend) or {@link #GUIDED_AT_DIRECT} (hard-snap). Falls back to an unguided round if
-     * {@code target} is null.
+     * {@link #GUIDED_AA} (pursuit blend), {@link #GUIDED_AT_DIRECT} (hard-snap) or {@link #GUIDED_AT_TOP} (top attack).
+     * Falls back to an unguided round if {@code target} is null.
      */
     public static MchBullet spawnGuided(Level level, Vec3 pos, Vec3 dir, float speed, float accelerationFactor,
                                         float gravity, float damage, int maxLife, Entity shooter, String modelName,
                                         int color, MCH_WeaponInfo wi, Entity target, byte guidedKind) {
-        MchBullet b = create(level, pos, dir, speed, accelerationFactor, gravity, damage, maxLife, shooter, modelName,
-            color, wi, false);
+        MchBullet b = create(level, pos, dir, speed, accelerationFactor, gravity, damage, maxLife, shooter,
+            launcherOf(shooter), modelName, color, wi, false, target != null);
         if (target != null) {
             // Server-side fields; DATA_GUIDED syncs to the client within a tick (the missile is at the muzzle on a
             // straight boost until rigidityTime, so the brief pre-sync window has nothing to dead-reckon wrong).
@@ -141,14 +204,55 @@ public class MchBullet extends Entity {
     }
 
     /**
+     * Spawn a missile that steers at a POINT rather than a locked entity: {@link #GUIDED_AS} at the ground point the
+     * operator's aim ray hit ({@code hitBlock}, the block it hit), or {@link #GUIDED_TV} at the operator's live aim point
+     * ({@code point} unused, may be null). The point is server-side only; the client takes the path via {@link #lerpTo}.
+     */
+    public static MchBullet spawnPointGuided(Level level, Vec3 pos, Vec3 dir, float speed, float accelerationFactor,
+                                             float gravity, float damage, int maxLife, Entity shooter, String modelName,
+                                             int color, MCH_WeaponInfo wi, Vec3 point,
+                                             net.minecraft.core.BlockPos hitBlock, byte guidedKind) {
+        MchBullet b = create(level, pos, dir, speed, accelerationFactor, gravity, damage, maxLife, shooter,
+            launcherOf(shooter), modelName, color, wi, false, true);
+        b.guideSpeed = speed;
+        if (point != null) {
+            b.setGuidePoint(point);
+            b.guideBlock = hitBlock;
+        }
+        b.entityData.set(DATA_GUIDED, guidedKind);
+        return b;
+    }
+
+    /**
+     * Spawn a GUIDED torpedo (config {@code GuidedTorpedo = true}): launched like {@link #spawnTorpedo}, then, while
+     * submerged, it runs straight at {@code point}, the water the operator aimed at (reference
+     * {@code MCH_WeaponTorpedo.shotGuided} + {@code MCH_EntityTorpedo.onUpdateGuided}).
+     */
+    public static MchBullet spawnGuidedTorpedo(Level level, Vec3 pos, Vec3 velocity, float gravity, float damage,
+                                               int maxLife, Entity shooter, String modelName, int color,
+                                               MCH_WeaponInfo wi, Vec3 point) {
+        MchBullet b = createWithVelocity(level, pos, velocity, 1.0F, gravity, damage, maxLife, shooter,
+            launcherOf(shooter), modelName, color, wi, false, false);
+        b.setGuidePoint(point);
+        return b;
+    }
+
+    private void setGuidePoint(Vec3 p) {
+        this.hasGuidePoint = true;
+        this.guideX = p.x;
+        this.guideY = p.y;
+        this.guideZ = p.z;
+    }
+
+    /**
      * Spawn a DROPPED munition (bomb) — released at an EXPLICIT initial velocity (the aircraft's own motion, per the
      * reference {@code MCH_WeaponBomb.shot}) instead of a forward muzzle launch, so config gravity carries it down.
      * Reuses the whole projectile pipeline (gravity, explosion, cluster bomblets) the #21 airstrike already proves.
      */
     public static MchBullet spawnDropped(Level level, Vec3 pos, Vec3 velocity, float gravity, float damage, int maxLife,
                                          Entity shooter, String modelName, int color, MCH_WeaponInfo wi) {
-        return createWithVelocity(level, pos, velocity, 1.0F, gravity, damage, maxLife, shooter, modelName, color, wi,
-            false);
+        return createWithVelocity(level, pos, velocity, 1.0F, gravity, damage, maxLife, shooter, launcherOf(shooter),
+            modelName, color, wi, false, false);
     }
 
     /**
@@ -161,24 +265,36 @@ public class MchBullet extends Entity {
      */
     public static MchBullet spawnTorpedo(Level level, Vec3 pos, Vec3 velocity, float gravity, float damage, int maxLife,
                                          Entity shooter, String modelName, int color, MCH_WeaponInfo wi) {
-        return createWithVelocity(level, pos, velocity, 1.0F, gravity, damage, maxLife, shooter, modelName, color, wi,
-            false);
+        return createWithVelocity(level, pos, velocity, 1.0F, gravity, damage, maxLife, shooter, launcherOf(shooter),
+            modelName, color, wi, false, false);
     }
 
     private static MchBullet create(Level level, Vec3 pos, Vec3 dir, float speed, float accelerationFactor,
-                                    float gravity, float damage, int maxLife, Entity shooter, String modelName,
-                                    int color, MCH_WeaponInfo wi, boolean isBomblet) {
+                                    float gravity, float damage, int maxLife, Entity shooter, Entity launcher,
+                                    String modelName, int color, MCH_WeaponInfo wi, boolean isBomblet,
+                                    boolean steered) {
         Vec3 v = dir.lengthSqr() > 1.0e-9 ? dir.normalize().scale(speed) : new Vec3(0.0, 0.0, speed);
-        return createWithVelocity(level, pos, v, accelerationFactor, gravity, damage, maxLife, shooter, modelName,
-            color, wi, isBomblet);
+        return createWithVelocity(level, pos, v, accelerationFactor, gravity, damage, maxLife, shooter, launcher,
+            modelName, color, wi, isBomblet, steered);
+    }
+
+    /** Whether a round's path is the server's, which the client takes through {@link #lerpTo} (a guided missile, a
+     *  torpedo, a ricocheting delay-fuse round): it is built as {@code STEERED_BULLET}, which updates every tick. */
+    private static boolean steeredPath(MCH_WeaponInfo wi, boolean steered) {
+        return steered || wi != null && ("torpedo".equalsIgnoreCase(wi.type) || wi.delayFuse > 0);
     }
 
     /** The projectile builder, taking the initial velocity DIRECTLY (a forward muzzle shot via {@link #create}, or an
-     *  inherited-velocity drop via {@link #spawnDropped}). All effect setup (trail/bomblet/marker/model/gravity) is here. */
+     *  inherited-velocity drop via {@link #spawnDropped}). All effect setup (trail/bomblet/marker/model/gravity) is here.
+     *  {@code launcher} is passed explicitly so a child round inherits its parent's instead of re-deriving one;
+     *  {@code steered} marks a guided round (the entity type is fixed at construction, {@link #steeredPath}). */
     private static MchBullet createWithVelocity(Level level, Vec3 pos, Vec3 v, float accelerationFactor,
-                                    float gravity, float damage, int maxLife, Entity shooter, String modelName,
-                                    int color, MCH_WeaponInfo wi, boolean isBomblet) {
-        MchBullet b = new MchBullet(mcheli.dependent.registry.MchRegistries.DEMO_BULLET.get(), level);
+                                    float gravity, float damage, int maxLife, Entity shooter, Entity launcher,
+                                    String modelName, int color, MCH_WeaponInfo wi, boolean isBomblet,
+                                    boolean steered) {
+        MchBullet b = new MchBullet(steeredPath(wi, steered)
+            ? mcheli.dependent.registry.MchRegistries.STEERED_BULLET.get()
+            : mcheli.dependent.registry.MchRegistries.BULLET.get(), level);
         // Reference nudges the round half a step past the muzzle so it clears the barrel / registers point-blank.
         Vec3 start = pos.add(v.scale(0.5));
         b.setPos(start.x, start.y, start.z);
@@ -186,6 +302,7 @@ public class MchBullet extends Entity {
         b.damage = damage;
         b.maxLife = maxLife;
         b.shooter = shooter;
+        b.launcher = launcher;
         b.weaponInfo = wi;
         b.isBomblet = isBomblet;
         if (wi != null) {
@@ -205,11 +322,10 @@ public class MchBullet extends Entity {
         if (wi != null && !isBomblet && "mkrocket".equalsIgnoreCase(wi.type)) {
             b.entityData.set(DATA_MARKER, (byte) 1); // a marker rocket: flies, plants a spotting marker, then calls a strike
         }
-        // Torpedo (non-guided only): self-steers underwater (water-run). Seed the live run speed from the launch-motion
-        // magnitude (reference sets the entity's acceleration to it) so it ramps toward accelerationInWater from there. A
-        // GUIDED torpedo would need the onUpdateGuided target-seek (deferred #30b) — it is not fireable, but guard here
-        // too so a stray one is never silently mis-run as a dumb water-run round.
-        if (wi != null && "torpedo".equalsIgnoreCase(wi.type) && !wi.isGuidedTorpedo) {
+        // Torpedo: self-steers underwater (a level water-run, or a guided run at its aim point; see tickTorpedo). Seed
+        // the live run speed from the launch-motion magnitude (reference sets the entity's acceleration to it) so it
+        // ramps toward accelerationInWater from there.
+        if (wi != null && "torpedo".equalsIgnoreCase(wi.type)) {
             b.entityData.set(DATA_TORPEDO, true);
             b.torpedoAccel = v.length();
         }
@@ -219,6 +335,13 @@ public class MchBullet extends Entity {
         // In-water gravity: from config for a real weapon; mirror the air gravity for a wi-less test tracer (unchanged).
         b.entityData.set(DATA_GRAVITY_WATER, wi != null ? wi.gravityInWater : gravity);
         b.entityData.set(DATA_ACCEL_FACTOR, accelerationFactor);
+        if (wi != null) {
+            b.entityData.set(DATA_RICOCHET, wi.delayFuse > 0);
+            b.entityData.set(DATA_SPLASH_POWER, Math.max(0, wi.power));
+            if (b.isBombType()) {
+                b.entityData.set(DATA_VELOCITY_WATER, wi.velocityInWater); // reference MCH_EntityBomb/DispensedItem
+            }
+        }
         double horiz = Math.sqrt(v.x * v.x + v.z * v.z);
         b.setYRot((float) Math.toDegrees(Math.atan2(-v.x, v.z)));
         b.setXRot((float) Math.toDegrees(Math.atan2(-v.y, horiz)));
@@ -236,10 +359,30 @@ public class MchBullet extends Entity {
     public String bulletModelName() { return this.entityData.get(DATA_MODEL); }
     public int bulletColor() { return this.entityData.get(DATA_COLOR); }
 
+    /** SERVER: whether this is a child round a cluster carrier emitted when it split ({@link #sprinkleBomblets}). */
+    public boolean isBomblet() { return this.isBomblet; }
+
     // ---- flare-decoy hooks (reference MCH_MissileDetector.destroyMissile) ----
 
-    /** Whether this is a guided homing round (server-side target present). */
+    /** Whether this is a guided round (any {@link #DATA_GUIDED} kind; only AA/AT ones home on an entity). */
     public boolean isGuided() { return this.entityData.get(DATA_GUIDED) != GUIDED_NONE; }
+
+    /** Whether {@code e} is on the firing side: the shooter, the vehicle it fired from, or anyone riding either
+     *  (reference {@code canBeCollidedEntity}: never the shooting entity, the shooting aircraft or its mounted crew). */
+    private boolean isOwnSide(Entity e) {
+        if (this.shooter != null
+            && (e == this.shooter || this.shooter.getPassengers().contains(e) || e.getVehicle() == this.shooter)) {
+            return true;
+        }
+        return this.launcher != null
+            && (e == this.launcher || this.launcher.getPassengers().contains(e) || e.getVehicle() == this.launcher);
+    }
+
+    /** Tell the operating player one of their rounds hit something (reference {@code notifyHitBullet}: the
+     *  {@code MCH_PacketNotifyHitBullet} hit marker). */
+    private void notifyHit() {
+        mcheli.dependent.control.ClientboundHitMarkPayload.sendTo(this.shooter);
+    }
 
     /** Whether this guided round is homing on {@code ac} or one of its passengers — the flare-decoy match. */
     public boolean isHomingOn(Entity ac) {
@@ -251,16 +394,23 @@ public class MchBullet extends Entity {
      *  {@code targetEntity}). */
     public void decoyClear() { this.targetEntity = null; }
 
+    /** Reference {@code canBeCollidedEntity}: what this round can strike (server side). */
     private boolean canHit(Entity e) {
-        if (e == this || e instanceof MchBullet || !e.isPickable() || e.isSpectator() || !e.isAlive()) {
+        if (e == this || e.isSpectator() || !e.isAlive()) {
             return false;
         }
-        if (this.shooter != null) {
-            if (e == this.shooter || this.shooter.getPassengers().contains(e) || e.getVehicle() == this.shooter) {
-                return false;
-            }
+        if (e instanceof MchBullet other) {
+            // Another side's round can be shot down (it detonates when a thrown hit hurts it, see hurt()); rounds of
+            // the same launcher or the same operator pass through each other (reference :704-710: same
+            // shootingAircraft, then same shootingEntity), so a gunner's burst never meets the pilot's missile. As in
+            // the reference's W_Entity.isEqual (a null entity is id -1 on both sides), two null owners count as the same
+            // side: ownerless rounds (e.g. the sibling bomblets of an ownerless cluster) pass through each other.
+            return !(other.launcher == this.launcher || other.shooter == this.shooter);
         }
-        return true;
+        if (!e.isPickable() || MchServerRules.ignoresBulletHit(e)) {
+            return false; // ignoresBulletHit: the server's IgnoreBulletHit list (reference :735-739)
+        }
+        return !isOwnSide(e);
     }
 
     @Override
@@ -288,22 +438,22 @@ public class MchBullet extends Entity {
                 this.discard();
                 return;
             }
-            // delayFuse countdown -> timeout detonation.
+            // delayFuse countdown -> timeout detonation (the reference onUpdateTimeout rules, not the impact rules).
             if (this.delayFuseCounter > 0 && --this.delayFuseCounter == 0) {
-                detonate(this.position());
+                timeout();
                 return;
             }
-            // Despawn if the shooter is gone or the round has flown too far (horizontal only).
+            // Despawn if the shooter died or the round has flown too far (horizontal only).
             if (!checkValid()) {
                 this.discard();
                 return;
             }
             // timeFuse: detonate once the age exceeds the threshold.
             if (this.weaponInfo != null && this.weaponInfo.timeFuse > 0 && this.age > this.weaponInfo.timeFuse) {
-                detonate(this.position());
+                timeout();
                 return;
             }
-            // explosionAltitude airburst: detonate when ground is within N blocks below.
+            // explosionAltitude airburst: impact on the spot when a block is within N blocks below (a 3x3 column).
             if (this.weaponInfo != null && this.weaponInfo.explosionAltitude > 0
                 && groundWithin(this.weaponInfo.explosionAltitude)) {
                 onImpact(this.position(), null);
@@ -328,8 +478,7 @@ public class MchBullet extends Entity {
         Vec3 to = from.add(step);
 
         if (!this.level().isClientSide) {
-            BlockHitResult block = this.level().clip(
-                new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this));
+            BlockHitResult block = clipShootingThrough(from, to);
             boolean blockHit = block.getType() != HitResult.Type.MISS;
             Vec3 segEnd = blockHit ? block.getLocation() : to;
             EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(
@@ -381,7 +530,7 @@ public class MchBullet extends Entity {
                     // zones resolve — the reference tests the whole bullet segment against every box, nearest wins.
                     v.setLastBBDamageFactor(v.boundingBoxDamageFactorAt(from, to));
                 }
-                onImpact(entityHit.getLocation(), entityHit.getEntity());
+                onImpact(entityHit.getLocation(), null, entityHit.getEntity());
                 if (this.isRemoved()) {
                     return;
                 }
@@ -391,7 +540,7 @@ public class MchBullet extends Entity {
                     return;
                 }
                 spawnBlockImpact(block);
-                onImpact(block.getLocation(), null);
+                onImpact(block.getLocation(), block.getBlockPos(), null);
                 if (this.isRemoved()) {
                     return;
                 }
@@ -405,6 +554,13 @@ public class MchBullet extends Entity {
         // Advance, keeping the post-gravity (or reflected) motion for the next tick + render orientation.
         this.setPos(to.x, to.y, to.z);
         this.setDeltaMovement(motion);
+        // A bomb or dispenser round slows by its velocityInWater each tick it ends in water (reference MCH_EntityBomb /
+        // MCH_EntityDispensedItem.onUpdate, after the move). The factor is synced, so both sides slow it alike.
+        float velocityInWater = this.entityData.get(DATA_VELOCITY_WATER);
+        if (velocityInWater != 1.0F && inWater()) {
+            motion = motion.scale(velocityInWater);
+            this.setDeltaMovement(motion);
+        }
         double horiz = Math.sqrt(motion.x * motion.x + motion.z * motion.z);
         if (motion.lengthSqr() > 1.0e-9) {
             this.setYRot((float) Math.toDegrees(Math.atan2(-motion.x, motion.z)));
@@ -429,8 +585,10 @@ public class MchBullet extends Entity {
             tickTorpedo();
         }
 
-        // Client cosmetics: the config-driven smoke/flame trail (rocket/missile) + in-water bubbles.
+        // Client cosmetics: the water-entry splash, the config-driven smoke/flame trail (rocket/missile) + in-water
+        // bubbles.
         if (this.level().isClientSide) {
+            updateSplash(from, to);
             emitTrail(from, to);
             if (this.isInWater()) {
                 this.level().addParticle(ParticleTypes.BUBBLE, this.getX(), this.getY(), this.getZ(),
@@ -438,12 +596,18 @@ public class MchBullet extends Entity {
             }
         }
 
-        // Proximity fuse (gun rounds), checked at the very end of the tick after the move. Guided rounds are EXCLUDED —
-        // they run their own target-relative proximity in tickGuidance() (different semantics), so this would double.
-        if (!this.level().isClientSide && this.weaponInfo != null && this.weaponInfo.explosion > 0
-            && this.weaponInfo.proximityFuseDist > 0.1F && this.age > 1 && !this.isRemoved()
-            && this.entityData.get(DATA_GUIDED) == GUIDED_NONE) {
-            proximityCheck();
+        // Proximity fuses, checked at the very end of the tick after the move. Only gun rounds (reference
+        // MCH_EntityBullet) and bombs (MCH_EntityBomb, a different rule) have one. Guided rounds are EXCLUDED — they
+        // run their own target-relative proximity in tickGuidance() (different semantics), so this would double.
+        if (!this.level().isClientSide && this.weaponInfo != null && this.weaponInfo.proximityFuseDist > 0.1F
+            && !this.isRemoved() && this.entityData.get(DATA_GUIDED) == GUIDED_NONE) {
+            if (isGunType()) {
+                if (this.weaponInfo.explosion > 0 && this.age > 1) {
+                    proximityCheck();
+                }
+            } else if ("bomb".equalsIgnoreCase(this.weaponInfo.type)) {
+                bombProximityCheck();
+            }
         }
     }
 
@@ -451,14 +615,23 @@ public class MchBullet extends Entity {
      * Server-side guided-missile steering (reference {@code MCH_EntityAAMissile}/{@code MCH_EntityATMissile}
      * {@code onUpdate}): dies if the target/shooter is gone or the target is beyond the per-type range; before
      * {@code rigidityTime} it flies straight (the launch boost); after, it proximity-detonates near the target or
-     * steers toward it (AA = pure-pursuit blend, AT = direct hard-snap). Sets the motion for the NEXT tick.
+     * steers toward it (AA = pure-pursuit blend, AT direct = hard-snap, AT top attack = climb/level/dive blend). The
+     * point-guided AS and TV kinds branch off first. Sets the motion for the NEXT tick.
      */
     private void tickGuidance() {
         byte g = this.entityData.get(DATA_GUIDED);
-        // Reference guidance guard needs a shooter REFERENCE + a live target — but does NOT require the shooter to be
-        // ALIVE: a fired missile keeps homing after the launching aircraft is destroyed (fire-and-forget; the reference
-        // AA/AT onUpdate only null-checks shootingEntity here). Shooter-death despawn for plain rounds lives in
-        // checkValid(), which excludes guided rounds.
+        if (g == GUIDED_AS) {
+            tickAsMissile();
+            return;
+        }
+        if (g == GUIDED_TV) {
+            tickTvMissile();
+            return;
+        }
+        // Reference guidance guard (AA/AT onUpdate): a shooter REFERENCE and a live target. It does not ask whether the
+        // shooter is alive: the round's despawn on its shooter's death is checkValid(), which runs for every round,
+        // guided ones included (reference onUpdate -> checkValid). The launcher may be gone: a missile keeps homing
+        // after the aircraft that fired it is destroyed.
         if (this.targetEntity == null || !this.targetEntity.isAlive() || this.shooter == null) {
             this.discard();
             return;
@@ -481,7 +654,28 @@ public class MchBullet extends Entity {
         // FIDELITY: the reference gates AA's proximity AND steering behind rigidityTime (MCH_EntityAAMissile), but the
         // AT missile checks its proximity fuse EVERY tick (only AT steering is rigidity-gated, MCH_EntityATMissile) —
         // so an AT round detonates on a target caught inside the fuse even during its launch boost.
-        if (g == GUIDED_AT_DIRECT) {
+        if (g == GUIDED_AT_TOP) {
+            if (proximityHit) {
+                detonateOnTarget(g);
+                return;
+            }
+            if (this.age <= rigidity) {
+                return; // launch boost
+            }
+            // Reference guidanceType 1: climb to 150 above the SHOOTER over the target, level off, dive; arming the dive
+            // raises the round's power by 20 % and its explosion by one (MCH_EntityATMissile:56-70).
+            if (MCH_MissileGuidance.isTopAttackDiveTick(this.age, rigidity)) {
+                this.damage = (int) (this.damage * 1.2F);
+                if (this.weaponInfo != null && this.weaponInfo.explosion > 0) {
+                    this.weaponInfo = this.weaponInfo.shotVariant(this.weaponInfo.explosion + 1, this.weaponInfo.piercing);
+                }
+            }
+            double[] aim = MCH_MissileGuidance.topAttackAim(this.age, rigidity, this.targetEntity.getX(),
+                this.targetEntity.getY(), this.targetEntity.getZ(), this.shooter.getY());
+            Vec3 m = this.getDeltaMovement();
+            applyGuidedMotion(MCH_MissileGuidance.guide(m.x, m.y, m.z, this.getX(), this.getY(), this.getZ(),
+                aim[0], aim[1], aim[2], this.guideSpeed));
+        } else if (g == GUIDED_AT_DIRECT) {
             if (proximityHit) {
                 detonateOnTarget(g);
                 return;
@@ -507,6 +701,118 @@ public class MchBullet extends Entity {
         }
     }
 
+    /**
+     * AS missile steering (reference {@code MCH_EntityASMissile.onUpdate}, non-bomblet rounds): while the aimed block
+     * still stands, detonate (or release the cluster) inside {@code proximityFuseDist} of the point, else steer at it
+     * ({@link MCH_MissileGuidance#asMissile}). A destroyed block ends the steering; the round flies on.
+     *
+     * <p>Deliberate divergence: the reference tests the block at the integer-cast hit POINT, which is the air block in
+     * front of three of the six faces (and off by one at negative coordinates), so it stopped steering at those; the
+     * port tests the block the aim ray actually hit.
+     */
+    private void tickAsMissile() {
+        if (!this.hasGuidePoint || this.guideBlock == null || this.weaponInfo == null) {
+            return;
+        }
+        BlockState bs = this.level().getBlockState(this.guideBlock);
+        if (bs.isAir() || !bs.getFluidState().isEmpty()) {
+            return; // reference block.isCollidable(): the target is gone
+        }
+        double dx = this.guideX - this.getX();
+        double dy = this.guideY - this.getY();
+        double dz = this.guideZ - this.getZ();
+        if (Math.sqrt(dx * dx + dy * dy + dz * dz) < this.weaponInfo.proximityFuseDist) {
+            if (this.weaponInfo.bomblet > 0) {
+                sprinkleBomblets();
+                this.discard();
+            } else {
+                detonateInPlace();
+            }
+            return;
+        }
+        Vec3 m = this.getDeltaMovement();
+        boolean ballistic = this.entityData.get(DATA_GRAVITY) != 0.0F;
+        applyGuidedMotion(MCH_MissileGuidance.asMissile(m.x, m.y, m.z, this.getX(), this.getY(), this.getZ(),
+            this.guideX, this.guideY, this.guideZ, this.guideSpeed, ballistic, this.age));
+    }
+
+    /**
+     * TV missile steering (reference {@code MCH_EntityTvMissile.onUpdate}/{@code onUpdateMotion}): dies without an
+     * operator or 1200 blocks from them; while the operator still rides the launcher and this is the launcher's latest
+     * TV missile, it is steered each tick at its own speed with no turn limit. The reference sets the motion to the
+     * operator's LOOK ({@code setMotion(look)}), which is right when the operator looks out of the missile-eye camera.
+     * The port has no missile camera, so the operator aims from the vehicle and a look-parallel missile would miss by
+     * the launch offset: when the operator's sight line meets a block a little beyond the missile, the missile turns
+     * at that point instead; otherwise (open sky, or terrain still far ahead) it takes the reference's look motion.
+     * The sight ray stops where the missile is plus {@link #TV_AIM_MARGIN} and at the first chunk that is not fully
+     * loaded ({@link #loadedSightHit}), so steering never loads or generates terrain, nor waits for it.
+     */
+    private void tickTvMissile() {
+        Entity op = this.shooter;
+        if (op == null || this.distanceToSqr(op) > TV_MAX_DIST_SQ) {
+            this.discard();
+            return;
+        }
+        if (!op.isAlive() || !(this.launcher instanceof AbstractMchVehicle v) || op.getVehicle() != v
+            || !v.isActiveTvMissile(this)) {
+            return; // a superseded or orphaned TV missile flies on straight
+        }
+        Vec3 eye = op.getEyePosition();
+        // The BODY rotation, as the fire path aims: a passenger's server-side yHeadRot (behind getViewVector) is stale.
+        Vec3 look = Vec3.directionFromRotation(op.getXRot(), op.getYRot());
+        double reach = Math.min(Math.sqrt(TV_MAX_DIST_SQ), eye.distanceTo(this.position()) + TV_AIM_MARGIN);
+        Vec3 aim = loadedSightHit(eye, look, reach, op);
+        if (aim != null) {
+            applyGuidedMotion(MCH_MissileGuidance.hardSnap(this.getX(), this.getY(), this.getZ(),
+                aim.x, aim.y, aim.z, this.guideSpeed, 1.0F));
+        } else {
+            applyGuidedMotion(new MCH_MissileGuidance.Motion(
+                look.x * this.guideSpeed, look.y * this.guideSpeed, look.z * this.guideSpeed));
+        }
+    }
+
+    /** How far past the TV missile the operator's sight is followed for an aim point (blocks). */
+    private static final double TV_AIM_MARGIN = 64.0;
+
+    /**
+     * The first block along {@code dir} from {@code from} within {@code maxDist} blocks (fluids ignored), or null. The
+     * ray is clipped in legs of at most a chunk, and stops at the first leg whose chunks are not all fully loaded
+     * ({@link #chunkReady}): {@code Level.clip} reads every block through {@code getBlockState}, which on the server
+     * waits on the main thread for a chunk that is still loading, and loads (or generates) a missing one.
+     */
+    private Vec3 loadedSightHit(Vec3 from, Vec3 dir, double maxDist, Entity op) {
+        Vec3 start = from;
+        for (double done = 0.0; done < maxDist; done += 16.0) {
+            Vec3 end = start.add(dir.scale(Math.min(16.0, maxDist - done)));
+            int ax = Mth.floor(start.x) >> 4;
+            int az = Mth.floor(start.z) >> 4;
+            int bx = Mth.floor(end.x) >> 4;
+            int bz = Mth.floor(end.z) >> 4;
+            // A leg of <= 16 blocks lies within the 2x2 chunks spanned by its ends.
+            if (!chunkReady(ax, az) || !chunkReady(bx, bz) || !chunkReady(ax, bz) || !chunkReady(bx, az)) {
+                return null;
+            }
+            BlockHitResult hit = this.level().clip(
+                new ClipContext(start, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, op));
+            if (hit.getType() != HitResult.Type.MISS) {
+                return hit.getLocation();
+            }
+            start = end;
+        }
+        return null;
+    }
+
+    /**
+     * Whether chunk ({@code cx}, {@code cz}) is present and fully loaded, so reading its blocks never waits. On the
+     * server that is {@code getChunkNow}: {@code Level.hasChunk} there only checks that the chunk's ticket level reaches
+     * FULL, which a chunk still loading or generating inside the view distance passes too.
+     */
+    private boolean chunkReady(int cx, int cz) {
+        return this.level() instanceof ServerLevel sl
+            ? sl.getChunkSource().getChunkNow(cx, cz) != null
+            : this.level().hasChunk(cx, cz);
+    }
+
     /** Detonate a guided round on its target — reference explodes at the TARGET position ({@code mop.hitVec}), not the
      *  missile/target midpoint: AA also delivers a direct hit on the target, AT blasts only. */
     private void detonateOnTarget(byte g) {
@@ -527,20 +833,22 @@ public class MchBullet extends Entity {
      * Server-side torpedo water-run (reference {@code MCH_EntityTorpedo.onUpdateNoGuided}): while submerged, damp the
      * vertical motion ({@code motionY *= 0.8}) so the run levels off, ramp the cruise speed toward
      * {@code accelerationInWater} (±0.1/tick into a +0.2 dead-band), then re-normalize the whole motion vector to that
-     * speed — a torpedo cruises at a constant underwater speed regardless of how fast it was launched. Sets the motion
+     * speed — a torpedo cruises at a constant underwater speed regardless of how fast it was launched. A GUIDED torpedo
+     * ({@code onUpdateGuided}) instead points that speed straight at its aim point, without the damping. Sets the motion
      * for the NEXT tick + the nose orientation.
      */
     private void tickTorpedo() {
+        double accInWater = this.weaponInfo != null ? this.weaponInfo.accelerationInWater : 1.0;
+        this.torpedoAccel = MCH_MissileGuidance.torpedoSpeed(this.torpedoAccel, accInWater);
+        if (this.hasGuidePoint) {
+            applyGuidedMotion(MCH_MissileGuidance.hardSnap(this.getX(), this.getY(), this.getZ(),
+                this.guideX, this.guideY, this.guideZ, this.torpedoAccel, 1.0F));
+            return;
+        }
         Vec3 m = this.getDeltaMovement();
         double mx = m.x;
         double my = m.y * 0.8; // level the descent (reference motionY *= 0.8F)
         double mz = m.z;
-        double accInWater = this.weaponInfo != null ? this.weaponInfo.accelerationInWater : 1.0;
-        if (this.torpedoAccel < accInWater) {
-            this.torpedoAccel += 0.1;
-        } else if (this.torpedoAccel > accInWater + 0.2) {
-            this.torpedoAccel -= 0.1;
-        }
         double d = Math.sqrt(mx * mx + my * my + mz * mz);
         if (d > 1.0e-6) {
             double s = this.torpedoAccel / d;
@@ -566,66 +874,177 @@ public class MchBullet extends Entity {
 
     // ---- impact / detonation ----
 
-    /** Impact resolution mirroring {@code MCH_EntityBaseBullet.onImpact}: direct entity damage zeroes piercing; a
-     *  piercing round survives block/airburst/proximity impacts (tiny burst each); otherwise it detonates + dies. */
+    /** {@link #onImpact(Vec3, BlockPos, Entity)} at {@code pos}: an entity hit, or else a tile hit on the block holding
+     *  {@code pos} (the reference fabricates that tile hit for its airburst, proximity and missile-fuse impacts). */
     private void onImpact(Vec3 pos, Entity entity) {
+        onImpact(pos, entity == null ? BlockPos.containing(pos) : null, entity);
+    }
+
+    /**
+     * Impact resolution mirroring {@code MCH_EntityBaseBullet.onImpact} (server only): a direct entity hit deals the
+     * power damage and zeroes piercing; a piercing round survives a block/airburst/proximity impact with a small burst;
+     * otherwise the round makes its impact blast ({@link MCH_Detonation#onImpact}) and dies. A dispenser round uses its
+     * item instead, on any impact and without a direct hit (reference {@code MCH_EntityDispensedItem.onImpact}).
+     *
+     * @param block the struck block of a tile hit, or null for an entity hit
+     */
+    private void onImpact(Vec3 pos, BlockPos block, Entity entity) {
+        if (!(this.level() instanceof ServerLevel sl)) {
+            this.discard();
+            return;
+        }
+        if (isDispenserType()) {
+            dispenseAt(sl, pos);
+            this.discard();
+            return;
+        }
         if (entity != null) {
             onImpactEntity(entity);
             this.piercing = 0;
         }
-        int expPower = this.weaponInfo != null ? this.weaponInfo.explosion : 0;
+        MCH_WeaponInfo wi = this.weaponInfo;
         if (this.piercing > 0) {
             this.piercing--;
-            if (expPower > 0 && !this.level().isClientSide) {
-                MchExplosion.explode((ServerLevel) this.level(), pos, 1, 1, false, false, 0, null, this.shooter);
+            if (wi != null && wi.explosion > 0) {
+                // Reference newExplosion(hit, 1, 1, false): the normal blast at power 1 — the weapon's flaming, block
+                // damage and damage factor all apply.
+                MchExplosion.explode(sl, pos, 1, 1, wi.flaming, true, 0, wi, this.launcher, this.shooter, false,
+                    blastSound(), true);
             }
-            // keep flying
-        } else {
-            detonate(pos);
+            return; // keep flying
         }
+        if (wi != null) {
+            boolean blockInWater = block != null && isBlockInWater(block);
+            explode(MCH_Detonation.onImpact(wi.explosion, wi.explosionInWater, wi.explosionBlock, wi.isFAE,
+                entity != null, inWater(), blockInWater), pos, block);
+        }
+        this.discard();
     }
 
-    /** Direct-hit power damage (× per-victim damage factor), then this round always detonates/dies via onImpact. */
-    private void onImpactEntity(Entity target) {
-        Entity real = target instanceof PartEntity<?> part ? part.getParent() : target;
-        float factor = this.weaponInfo != null ? this.weaponInfo.getDamageFactor(new NeoEntityRef(real)) : 1.0F;
-        DamageSource src = this.damageSources().thrown(this, this.shooter);
-        real.invulnerableTime = 0; // reference zeroes the hurt-cooldown so rapid fire + the follow-up blast all land
-        real.hurt(src, this.damage * factor);
+    /**
+     * Reference {@code onImpact(new MovingObjectPosition(this))} (the AS missile's proximity detonation): an ENTITY hit
+     * on the round itself, so piercing is zeroed and the round always makes its full blast, by the entity-hit rules,
+     * where it is, then dies. Not reproduced: the reference's direct hit on itself, whose 'thrown' damage set off a
+     * second, tile-rule blast through {@code attackEntityFrom} and sent a hit marker for every detonation.
+     */
+    private void detonateInPlace() {
+        this.piercing = 0;
+        MCH_WeaponInfo wi = this.weaponInfo;
+        if (wi != null) {
+            explode(MCH_Detonation.onImpact(wi.explosion, wi.explosionInWater, wi.explosionBlock, wi.isFAE, true,
+                inWater(), false), this.position(), null);
+        }
+        this.discard();
     }
 
-    /** Full explosion (FAE / in-water / normal variant selection) then despawn. Non-explosive rounds just despawn. */
-    private void detonate(Vec3 pos) {
-        if (this.level().isClientSide) {
-            this.discard();
-            return;
+    /** A fuse ran out in flight ({@code delayFuse}, {@code timeFuse}; reference {@code onUpdateTimeout}): the timeout
+     *  blast ({@link MCH_Detonation#onTimeout}), using the same water probe as the gravity swap, then despawn. */
+    private void timeout() {
+        MCH_WeaponInfo wi = this.weaponInfo;
+        if (wi != null) {
+            explode(MCH_Detonation.onTimeout(wi.explosion, wi.explosionInWater, wi.explosionBlock, inWater()),
+                this.position(), null);
         }
-        // A dispenser round "uses" its configured item across a radius instead of exploding (reference
-        // MCH_EntityDispensedItem.onImpact), then despawns.
-        if (isDispenserType() && this.level() instanceof ServerLevel dsl) {
-            dispenseAt(dsl, pos);
-            this.discard();
+        this.discard();
+    }
+
+    /** Make the chosen blast — reference {@code newExplosion}, {@code newExplosionInWater}, {@code newFAExplosion} or
+     *  {@code playExplosionSound}: the launcher and its crew are spared, the shooter is credited and, when the blast
+     *  reaches anything, gets the hit marker (every one of them notifies on {@code result.hitEntity}). */
+    private void explode(MCH_Detonation.Blast blast, Vec3 hit, BlockPos block) {
+        if (!(this.level() instanceof ServerLevel sl) || blast.kind() == MCH_Detonation.Kind.NONE) {
             return;
         }
         MCH_WeaponInfo wi = this.weaponInfo;
-        if (wi != null) {
-            ServerLevel sl = (ServerLevel) this.level();
-            int expPower = wi.explosion;
-            int expPowerInWater = wi.explosionInWater;
-            if (expPowerInWater == 0) {
-                if (wi.isFAE && expPower > 0) {
-                    // FAE: no block destruction, strong entity ignition, no per-victim damage factor.
-                    MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, false, 15, null, this.shooter);
-                } else if (expPower > 0) {
-                    MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, true, 0, wi, this.shooter);
-                }
-            } else if (this.isInWater()) {
-                MchExplosion.explode(sl, pos, expPowerInWater, expPowerInWater, wi.flaming, true, 0, wi, this.shooter);
-            } else {
-                MchExplosion.explode(sl, pos, expPower, wi.explosionBlock, wi.flaming, true, 0, wi, this.shooter);
+        Vec3 at = switch (blast.at()) {
+            case HIT -> hit;
+            case SELF -> this.position();
+            // The reference passes the struck block's integer coordinates (its corner) for an in-water block hit.
+            case BLOCK -> block != null ? Vec3.atLowerCornerOf(block) : hit;
+        };
+        switch (blast.kind()) {
+            case SOUND -> MchExplosion.playExplosionSound(sl, at);
+            // FAE: no block destruction, strong entity ignition, no damage factor, always heard.
+            case FAE -> MchExplosion.explode(sl, at, blast.power(), blast.sizeBlock(), wi.flaming, false, 15, null,
+                this.launcher, this.shooter, false, true, true);
+            case NORMAL, WATER -> MchExplosion.explode(sl, at, blast.power(), blast.sizeBlock(), wi.flaming, true, 0,
+                wi, this.launcher, this.shooter, blast.kind() == MCH_Detonation.Kind.WATER, blastSound(), true);
+            default -> { }
+        }
+    }
+
+    /** Reference {@code newExplosion}: a bomblet's blast is heard one time in three, any other round's always. */
+    private boolean blastSound() {
+        return !this.isBomblet || this.random.nextInt(3) == 0;
+    }
+
+    private static final int[][] WATER_PROBE = {{0, -1, 0}, {0, 0, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0},
+        {0, 1, 0}};
+
+    /** Reference {@code MCH_Lib.isBlockInWater}: the block, or one of its six neighbours, is water. */
+    private boolean isBlockInWater(BlockPos p) {
+        if (p.getY() <= this.level().getMinBuildHeight()) {
+            return false;
+        }
+        for (int[] o : WATER_PROBE) {
+            if (this.level().getFluidState(p.offset(o[0], o[1], o[2])).is(FluidTags.WATER)) {
+                return true;
             }
         }
-        this.discard();
+        return false;
+    }
+
+    /**
+     * Direct-hit power damage (reference {@code onImpactEntity}), dealt to the real entity behind a part hitbox: the
+     * server's {@code applyDamageVsEntity} factor first, then the weapon's per-victim {@code DamageFactor}. Credited
+     * to the shooter ({@code causeThrownDamage(this, shootingEntity)}).
+     */
+    private void onImpactEntity(Entity target) {
+        Entity real = target instanceof PartEntity<?> part ? part.getParent() : target;
+        if (!real.isAlive()) {
+            return;
+        }
+        DamageSource src = this.damageSources().thrown(this, this.shooter);
+        float damage = MchServerRules.applyDamageVsEntity(real, this.damage);
+        damage *= this.weaponInfo != null ? this.weaponInfo.getDamageFactor(new NeoEntityRef(real)) : 1.0F;
+        // Reference applyEntityHurtResistantTimeConfig: the victim's hurt immunity is scaled by the server's
+        // hurtResistantTime (0 by default), so rapid fire and the follow-up blast all land.
+        MchExplosion.applyHurtResistantTime(real);
+        real.hurt(src, damage);
+        notifyHit(); // reference onImpactEntity ends with notifyHitBullet() for every direct hit
+    }
+
+    /** Reference {@code attackEntityFrom}: a round struck by another round ({@code thrown} damage) goes off where it
+     *  is. A marker rocket ignores it (reference {@code MCH_EntityMarkerRocket.attackEntityFrom} returns false). */
+    @Override
+    public boolean hurt(DamageSource source, float amount) {
+        if (this.isInvulnerableTo(source) || this.level().isClientSide || this.isRemoved() || amount <= 0.0F
+            || !source.is(DamageTypes.THROWN) || this.entityData.get(DATA_MARKER) != 0) {
+            return false;
+        }
+        this.markHurt();
+        onImpact(this.position(), null);
+        return true;
+    }
+
+    /**
+     * This tick's block clip, shooting through any block on the server's bullet-breakable list (reference
+     * {@code onUpdateCollided}:627-643): that block is destroyed, dropping its items, and the clip runs again, at most
+     * five times. Only a round with a shooter does this, as in the reference ({@code shootingEntity != null}).
+     */
+    private BlockHitResult clipShootingThrough(Vec3 from, Vec3 to) {
+        BlockHitResult hit = this.level().clip(
+            new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this));
+        Entity owner = this.shooter;
+        for (int i = 0; i < 5 && owner != null && hit.getType() == HitResult.Type.BLOCK; i++) {
+            BlockPos bp = hit.getBlockPos();
+            if (!MchServerRules.bulletBreaks(this.level().getBlockState(bp))) {
+                break;
+            }
+            this.level().destroyBlock(bp, true, owner);
+            hit = this.level().clip(new ClipContext(from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this));
+        }
+        return hit;
     }
 
     // ---- marker rocket (reference MCH_EntityMarkerRocket) ----
@@ -651,13 +1070,18 @@ public class MchBullet extends Entity {
         }
     }
 
-    /** A marker rocket hit a block: seat the marker on the open block just outside the struck face (unless buried under
-     *  5+ blocks with no line to the sky) and start the airstrike countdown (reference {@code onImpact}). */
+    /** A marker rocket hit a block: set the open block just outside the struck face alight (when the server's
+     *  {@code explosionFlamingBlock} allows), seat the marker there (unless buried under 5+ blocks with no line to the
+     *  sky) and start the airstrike countdown (reference {@code onImpact}:139-178). */
     private void plantMarker(BlockHitResult block) {
         net.minecraft.core.BlockPos open = block.getBlockPos().relative(block.getDirection());
         if (!this.level().getBlockState(open).isAir()) {
             this.discard();
             return;
+        }
+        if (MchConfig.SERVER.explosionFlamingBlock()) {
+            this.level().setBlockAndUpdate(open,
+                net.minecraft.world.level.block.BaseFireBlock.getState(this.level(), open));
         }
         int covered = 0;
         for (int y = open.getY() + 1; y < this.level().getMaxBuildHeight() && covered < 5; y++) {
@@ -675,10 +1099,11 @@ public class MchBullet extends Entity {
         this.markerCountdown = 100;
     }
 
-    /** The marked-point strike: 6-8 bombs rain from high above THIS entity's position (reference marker rocket). */
+    /** The marked-point strike: 6-8 bombs rain from high above THIS entity's position (reference marker rocket), fired
+     *  by the marker's own shooter from its own launcher. */
     private void spawnAirstrike() {
         if (this.level() instanceof ServerLevel sl) {
-            callAirstrike(sl, this.getX(), this.getY(), this.getZ(), this.shooter,
+            callAirstrike(sl, this.getX(), this.getY(), this.getZ(), this.shooter, this.launcher,
                 3 + this.random.nextInt(2), 30, 6 + this.random.nextInt(2));
         }
     }
@@ -687,9 +1112,11 @@ public class MchBullet extends Entity {
      * Call in a bombing run at a ground TARGET: {@code num} bombs rain from high above the point, scattered, each
      * exploding on impact with {@code explosion} power (reference: {@code MCH_EntityBomb} volley). Shared by the marker
      * rocket (#21) and the CAS weapon (#31 — a called-in bombing run standing in for the reference A-10 gun run, whose
-     * flying {@code MCH_EntityA10} strafing entity is a deferred sub-port). Reuses the projectile/gravity path.
+     * flying {@code MCH_EntityA10} strafing entity is a deferred sub-port). Reuses the projectile/gravity path. The
+     * bombs carry {@code shooter} and {@code launcher} as given (either may be null): the caller's, not whatever the
+     * shooter happens to ride when the strike lands.
      */
-    public static void callAirstrike(ServerLevel sl, double tx, double ty, double tz, Entity shooter,
+    public static void callAirstrike(ServerLevel sl, double tx, double ty, double tz, Entity shooter, Entity launcher,
                                      int explosion, int power, int num) {
         double ceiling = sl.getMaxBuildHeight() - 2;
         net.minecraft.util.RandomSource rnd = sl.getRandom();
@@ -699,8 +1126,8 @@ public class MchBullet extends Entity {
             double by = Math.min(ty + 140.0 + rnd.nextFloat() * 10.0F + i * 15, ceiling);
             double bz = tz + (rnd.nextFloat() - 0.5F) * 15.0F;
             MCH_WeaponInfo bombWi = airstrikeBombInfo(p);
-            spawnWeapon(sl, new Vec3(bx, by, bz), new Vec3(0.0, -1.0, 0.0), 0.5F, 1.0F, -0.05F,
-                power > 0 ? power : 30, 1200, shooter, "bullet", 0xFF303030, bombWi);
+            create(sl, new Vec3(bx, by, bz), new Vec3(0.0, -1.0, 0.0), 0.5F, 1.0F, -0.05F,
+                power > 0 ? power : 30, 1200, shooter, launcher, "bullet", 0xFF303030, bombWi, false, false);
         }
     }
 
@@ -717,20 +1144,27 @@ public class MchBullet extends Entity {
         return wi;
     }
 
-    /** CLIENT: the pulsing red spotting beacon at the marked point — a few small reddish explosion puffs per tick that
-     *  rise, mirroring the reference status-2 {@code "explode"} particles. */
+    /** CLIENT: the red spotting beacon at the marked point — the reference status-2
+     *  {@code spawnParticle("explode", 5, 10 + rand(4), ...)}, whose "explode" puffs are MCHeli smoke: five reddish
+     *  puffs a tick, all thrown up with one shared velocity, so they climb as a smoke column. (The reference also lets
+     *  nearby rotors blow them about, {@code isEffectWind}; the port's smoke has no wind.) */
     private void spawnBeacon() {
-        for (int i = 0; i < 3; i++) {
-            float g = this.random.nextFloat() * 0.3F;
-            int argb = 0xFF000000
-                | ((int) ((this.random.nextFloat() * 0.2F + 0.8F) * 255) << 16)
-                | ((int) (g * 255) << 8)
-                | (int) (g * 255);
-            this.level().addParticle(
-                new mcheli.dependent.particle.MchExplodeOptions(2.0F + this.random.nextFloat(), argb, 10 + this.random.nextInt(4)),
-                this.getX(), this.getY(), this.getZ(),
-                (this.random.nextFloat() - 0.5F) * 0.7F, 0.3F + this.random.nextFloat() * 0.3F, (this.random.nextFloat() - 0.5F) * 0.7F);
+        float size = 10 + this.random.nextInt(4);
+        float r = this.random.nextFloat() * 0.2F + 0.8F;
+        float gb = this.random.nextFloat() * 0.3F;
+        double mx = (this.random.nextFloat() - 0.5F) * 0.7F;
+        double my = 0.3F + this.random.nextFloat() * 0.3F;
+        double mz = (this.random.nextFloat() - 0.5F) * 0.7F;
+        int argb = 0xFF000000 | (channel(r) << 16) | (channel(gb) << 8) | channel(gb);
+        for (int i = 0; i < 5; i++) {
+            this.level().addParticle(new MchSmokeOptions(0.1F * (size + this.random.nextFloat()), argb, 0,
+                MchSmokeOptions.PLAIN), this.getX(), this.getY(), this.getZ(), mx, my, mz);
         }
+    }
+
+    private static int channel(float f) {
+        int i = Math.round(f * 255.0F);
+        return i < 0 ? 0 : (i > 255 ? 255 : i);
     }
 
     /** Reflect the motion off the hit block face, scaled by the weapon's restitution (reference {@code boundBullet}). */
@@ -751,17 +1185,36 @@ public class MchBullet extends Entity {
         return new Vec3(mx, my, mz);
     }
 
-    /** True if solid ground is within {@code n} blocks straight below (a simplified airburst probe; the reference
-     *  scans a 3×3 column). */
+    /**
+     * The airburst probe — reference {@code MCH_Lib.getBlockIdY(this, 3, -explosionAltitude) != 0}: any block in the
+     * 3×3 column running {@code n} cells down from the round's cell, a liquid only as a source block (1.7.10
+     * {@code canCollideCheck(meta, true)}). The reference's {@code (int)(pos + 0.5)} cell is floored here, so the
+     * column stays under the round at negative coordinates too.
+     */
     private boolean groundWithin(int n) {
-        Vec3 from = this.position();
-        Vec3 down = from.subtract(0.0, n, 0.0);
-        BlockHitResult hit = this.level().clip(
-            new ClipContext(from, down, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, this));
-        return hit.getType() != HitResult.Type.MISS;
+        int px = Mth.floor(this.getX() + 0.5);
+        int py = Mth.floor(this.getY() + 0.5);
+        int pz = Mth.floor(this.getZ() + 0.5);
+        BlockPos.MutableBlockPos mp = new BlockPos.MutableBlockPos();
+        for (int y = 0; y < n; y++) {
+            int by = py - y;
+            if (by < this.level().getMinBuildHeight()) {
+                return false;
+            }
+            for (int x = -1; x <= 1; x++) {
+                for (int z = -1; z <= 1; z++) {
+                    BlockState st = this.level().getBlockState(mp.set(px + x, by, pz + z));
+                    if (!st.isAir() && (!(st.getBlock() instanceof LiquidBlock) || st.getFluidState().isSource())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
-    /** Proximity fuse: detonate at the midpoint to a valid target within {@code proximityFuseDist+1} blocks. */
+    /** Gun-round proximity fuse (reference {@code MCH_EntityBullet.onUpdate}): a valid target within
+     *  {@code proximityFuseDist+1} blocks pulls the round to the midpoint, where it impacts as on a block. */
     private void proximityCheck() {
         float pDist = this.weaponInfo.proximityFuseDist + 1.0F;
         float rng = pDist + Math.abs(this.weaponInfo.acceleration);
@@ -770,10 +1223,32 @@ public class MchBullet extends Entity {
         for (Entity e : this.level().getEntitiesOfClass(Entity.class, box, this::canHit)) {
             if (e.distanceToSqr(this) < pSq) {
                 Vec3 mid = this.position().add(e.position()).scale(0.5);
-                detonate(mid);
+                this.setPos(mid.x, mid.y, mid.z);
+                onImpact(mid, null);
                 return;
             }
         }
+    }
+
+    /** Bomb proximity fuse (reference {@code MCH_EntityBomb.onUpdate}): every 10 ticks, any living target within
+     *  {@code proximityFuseDist} of the bomb's box sets it off where it is. */
+    private void bombProximityCheck() {
+        if (this.age % 10 != 0) {
+            return;
+        }
+        float dist = this.weaponInfo.proximityFuseDist;
+        for (Entity e : this.level().getEntitiesOfClass(Entity.class, this.getBoundingBox().inflate(dist),
+                e -> e instanceof LivingEntity && canHit(e))) {
+            onImpact(this.position(), BlockPos.containing(this.getX() + 0.5, this.getY() + 0.5, this.getZ() + 0.5),
+                null);
+            return;
+        }
+    }
+
+    /** True for a gun round (config type {@code machinegun1/2}, the reference {@code MCH_EntityBullet}). */
+    private boolean isGunType() {
+        return this.weaponInfo != null && ("machinegun1".equalsIgnoreCase(this.weaponInfo.type)
+            || "machinegun2".equalsIgnoreCase(this.weaponInfo.type));
     }
 
     /** True if this round is a dropped bomb (config type {@code bomb}) — gates the bomb-specific horizontal drag and
@@ -797,16 +1272,12 @@ public class MchBullet extends Entity {
      */
     private void dispenseAt(ServerLevel sl, Vec3 pos) {
         MCH_WeaponInfo wi = this.weaponInfo;
-        String itemName = wi != null ? wi.dispenseItemName : null;
-        if (itemName == null || itemName.isEmpty()) {
+        // Resolved once at load (MCH_WeaponInfoManager.resolveItems), 1.7.10 names + metadata included; null when the
+        // config names no item or one this version does not have — then the dispenser is a no-op.
+        net.minecraft.world.item.Item item = wi != null
+            ? mcheli.dependent.port.NeoItemHandle.itemOf(wi.dispenseItem) : null;
+        if (item == null) {
             return;
-        }
-        net.minecraft.resources.ResourceLocation id = net.minecraft.resources.ResourceLocation.tryParse(
-            itemName.indexOf(':') >= 0 ? itemName : "minecraft:" + itemName);
-        net.minecraft.world.item.Item item = id == null ? null
-            : net.minecraft.core.registries.BuiltInRegistries.ITEM.get(id);
-        if (item == null || item == net.minecraft.world.item.Items.AIR) {
-            return; // config named an item this version doesn't have — no-op (a 1.7.10 name that didn't survive, etc.)
         }
         net.neoforged.neoforge.common.util.FakePlayer fake =
             net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(sl);
@@ -840,7 +1311,11 @@ public class MchBullet extends Entity {
             return;
         }
         if (item == net.minecraft.world.item.Items.WATER_BUCKET) {
-            // Reference special case: extinguish fire, and turn lava to obsidian (source) / cobblestone (flow).
+            // Reference special case: extinguish fire, and turn lava to obsidian (source) / cobblestone (flow) — only
+            // while the server's collisionDestroyBlock allows MCHeli to change blocks (MCH_EntityDispensedItem:106).
+            if (!MchConfig.SERVER.collisionDestroyBlock()) {
+                return;
+            }
             net.minecraft.core.BlockPos above = bp.above();
             if (sl.getBlockState(above).is(net.minecraft.world.level.block.Blocks.FIRE)) {
                 sl.removeBlock(above, false);
@@ -869,7 +1344,8 @@ public class MchBullet extends Entity {
     }
 
     /** Emit {@code bomblet} child rounds spread by {@code bombletDiff}, rendered with the bomblet model; they never
-     *  re-split (reference {@code sprinkleBomblet} + {@code setBomblet}). */
+     *  re-split, and fly for the parent's shooter and launcher (reference {@code sprinkleBomblet} + {@code setBomblet},
+     *  {@code setParameterFromWeapon(this, shootingAircraft, shootingEntity)}). */
     private void sprinkleBomblets() {
         MCH_WeaponInfo wi = this.weaponInfo;
         if (wi == null || wi.bomblet <= 0) {
@@ -885,8 +1361,18 @@ public class MchBullet extends Entity {
         int childColor = bulletColor();
         float diff = wi.bombletDiff;
         boolean bomb = isBombType();
+        boolean asMissile = "asmissile".equalsIgnoreCase(wi.type);
         for (int i = 0; i < wi.bomblet; i++) {
-            if (bomb) {
+            if (asMissile) {
+                // Reference MCH_EntityASMissile.sprinkleBomblet: half the parent's motion (a quarter vertically) plus the
+                // bombletDiff spread, and the children fall at -0.03 (getGravity of a bomblet) without steering.
+                Vec3 childMotion = new Vec3(
+                    motion.x * 0.5 + (this.random.nextFloat() - 0.5F) * diff,
+                    motion.y * 0.5 / 2.0 + (this.random.nextFloat() - 0.5F) * diff / 2.0F,
+                    motion.z * 0.5 + (this.random.nextFloat() - 0.5F) * diff);
+                createWithVelocity(sl, this.position(), childMotion, accFactor, -0.03F, this.damage, this.maxLife,
+                    this.shooter, this.launcher, childModel, childColor, wi, true, false);
+            } else if (bomb) {
                 // Reference MCH_EntityBomb.sprinkleBomblet: children INHERIT the parent descent (vertical HALVED),
                 // spread by bombletDiff, with NO renormalize — a cluster bomb rains its submunitions instead of
                 // re-launching them at initialSpeed (the generic rocket path below).
@@ -895,16 +1381,65 @@ public class MchBullet extends Entity {
                     motion.y / 2.0 + (this.random.nextFloat() - 0.5F) * diff / 2.0,
                     motion.z + (this.random.nextFloat() - 0.5F) * diff);
                 createWithVelocity(sl, this.position(), childMotion, accFactor, gravity, this.damage, this.maxLife,
-                    this.shooter, childModel, childColor, wi, true);
+                    this.shooter, this.launcher, childModel, childColor, wi, true, false);
             } else {
                 Vec3 dir = motion.add(
                     (this.random.nextFloat() - 0.5F) * diff,
                     (this.random.nextFloat() - 0.5F) * diff,
                     (this.random.nextFloat() - 0.5F) * diff);
                 create(sl, this.position(), dir, speed, accFactor, gravity, this.damage, this.maxLife, this.shooter,
-                    childModel, childColor, wi, true);
+                    this.launcher, childModel, childColor, wi, true, false);
             }
         }
+    }
+
+    /**
+     * CLIENT: the splash a powered round throws up as it enters water (reference {@code updateSplash}): walking this
+     * tick's segment in unit steps, the first water cell gets {@code rand(1+p/3) + p/2 + 1} falling splash puffs
+     * ({@code p = min(Power, 20)}), thrown up harder and larger for a heavier round.
+     */
+    private void updateSplash(Vec3 from, Vec3 to) {
+        int power = this.entityData.get(DATA_SPLASH_POWER);
+        if (power <= 0 || isWaterCell(from.x, from.y, from.z) || !isWaterCell(to.x, to.y, to.z)) {
+            return;
+        }
+        double x = to.x - from.x;
+        double y = to.y - from.y;
+        double z = to.z - from.z;
+        double d = Math.sqrt(x * x + y * y + z * z);
+        if (d <= 0.15) {
+            return;
+        }
+        x /= d;
+        y /= d;
+        z /= d;
+        double px = from.x;
+        double py = from.y;
+        double pz = from.z;
+        for (int i = 0; i <= d; i++) {
+            px += x;
+            py += y;
+            pz += z;
+            if (isWaterCell(px, py, pz)) {
+                float pwr = power < 20 ? power : 20.0F;
+                int n = this.random.nextInt(1 + (int) pwr / 3) + (int) pwr / 2 + 1;
+                pwr *= 0.03F;
+                for (int j = 0; j < n; j++) {
+                    this.level().addParticle(new MchSmokeOptions(0.1F * pwr * 5.0F, 0xFFFFFFFF, 0,
+                            MchSmokeOptions.SPLASH), px, py + 0.5, pz,
+                        pwr * (this.random.nextDouble() - 0.5) * 0.3,
+                        pwr * (this.random.nextDouble() * 0.5 + 0.5) * 1.8,
+                        pwr * (this.random.nextDouble() - 0.5) * 0.3);
+                }
+                break;
+            }
+        }
+    }
+
+    /** Reference {@code W_WorldFunc.isBlockWater} at {@code (int)(pos + 0.5)}, floored for negative coordinates. */
+    private boolean isWaterCell(double x, double y, double z) {
+        return this.level().getFluidState(BlockPos.containing(Mth.floor(x + 0.5), Mth.floor(y + 0.5),
+            Mth.floor(z + 0.5))).is(FluidTags.WATER);
     }
 
     /** CLIENT: emit the config-driven smoke/flame trail along this tick's flight segment (3 interpolated puffs, like
@@ -956,18 +1491,24 @@ public class MchBullet extends Entity {
         sl.sendParticles(new BlockParticleOption(ParticleTypes.BLOCK, state), p.x, p.y, p.z, count, 0.1, 0.1, 0.1, 0.15);
     }
 
+    /**
+     * Reference {@code checkValid} (MCH_EntityBaseBullet:350-366): every round, missiles included, despawns when its
+     * SHOOTER dies (or logs out); the launcher's death is ignored (its branch is empty in the reference), so a round
+     * fired from a vehicle that is then destroyed flies on. Beyond that, a round despawns 5820 blocks (horizontally)
+     * from its shooter, else from its launcher.
+     */
     private boolean checkValid() {
-        if (this.shooter == null) {
-            return true; // a shooter-less test round relies on maxLife
+        if (this.shooter == null && this.launcher == null) {
+            // Reference: false. Such rounds now only come from the headless self-tests (the entity type can be
+            // neither summoned nor saved), which rely on maxLife instead.
+            return true;
         }
-        // A plain round despawns when its shooter dies; a GUIDED missile keeps flying (fire-and-forget — the reference
-        // does not despawn a missile when its launching vehicle is destroyed). The distance bound below still applies
-        // (using the shooter's last position).
-        if (!this.shooter.isAlive() && this.entityData.get(DATA_GUIDED) == GUIDED_NONE) {
+        if (this.shooter != null && !this.shooter.isAlive()) {
             return false;
         }
-        double dx = this.getX() - this.shooter.getX();
-        double dz = this.getZ() - this.shooter.getZ();
+        Entity anchor = this.shooter != null ? this.shooter : this.launcher;
+        double dx = this.getX() - anchor.getX();
+        double dz = this.getZ() - anchor.getZ();
         return dx * dx + dz * dz < MAX_DIST_SQ;
     }
 
@@ -983,22 +1524,34 @@ public class MchBullet extends Entity {
         builder.define(DATA_GUIDED, GUIDED_NONE);
         builder.define(DATA_TORPEDO, false);
         builder.define(DATA_GRAVITY_WATER, 0.0F);
+        builder.define(DATA_RICOCHET, false);
+        builder.define(DATA_SPLASH_POWER, 0);
+        builder.define(DATA_VELOCITY_WATER, 1.0F);
     }
-    @Override protected void readAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {}
+    // Rounds are never saved (the entity type is noSave/noSummon): their weapon, shooter and fuses are live state.
+    // Should one be read anyway, it is dropped, as the reference's readEntityFromNBT does (setDead).
+    @Override protected void readAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {
+        this.discard();
+    }
     @Override protected void addAdditionalSaveData(net.minecraft.nbt.CompoundTag tag) {}
 
     @Override public boolean isPickable() { return false; }
-    @Override public boolean shouldRenderAtSqrDistance(double d) { return d < 4096.0; }
+    // Reference isInRangeToRenderDist: (box edge 1 x 4 x 64)^2, so every round draws to 256 blocks; the tracking
+    // range (MchRegistries.BULLET, the reference's 530) lets the client have it that far.
+    @Override public boolean shouldRenderAtSqrDistance(double d) { return d < 65536.0; }
     @Override public void lerpTo(double x, double y, double z, float yr, float xr, int steps) {
         // In-flight straight rounds dead-reckon (no lerp). Exceptions accept the server position:
         //  - a PLANTED marker snaps to its block so the client beacon isn't dead-reckoned past the wall;
         //  - a GUIDED missile curves under server authority, which the client can't reproduce from straight motion;
-        //  - a TORPEDO self-steers underwater (level + re-normalize to cruise speed) server-side, the same way.
-        // The latter two accept the server position AND nose orientation each update (dead-reckoning between updates
-        // keeps it smooth).
+        //  - a TORPEDO self-steers underwater (level + re-normalize to cruise speed) server-side, the same way;
+        //  - a RICOCHET (delayFuse) round bounces off blocks on the server only (the client never clips blocks).
+        // The latter three accept the server position AND nose orientation each update (dead-reckoning between updates
+        // keeps it smooth); they are built as STEERED_BULLET, which the server updates every tick, while the other
+        // rounds' type updates every five (steeredPath).
         if (this.entityData.get(DATA_MARKER) == 2) {
             this.setPos(x, y, z);
-        } else if (this.entityData.get(DATA_GUIDED) != GUIDED_NONE || this.entityData.get(DATA_TORPEDO)) {
+        } else if (this.entityData.get(DATA_GUIDED) != GUIDED_NONE || this.entityData.get(DATA_TORPEDO)
+            || this.entityData.get(DATA_RICOCHET)) {
             this.setPos(x, y, z);
             this.setYRot(yr);
             this.setXRot(xr);

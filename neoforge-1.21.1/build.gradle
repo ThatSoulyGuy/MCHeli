@@ -15,6 +15,28 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+// META-INF/neoforge.mods.toml is a TEMPLATE (src/main/templates) expanded with this project's version, so the mod
+// version the game shows can never drift from `version` above. This is the NeoForge MDK pattern: a generated resource
+// dir that Gradle builds before processResources and that an IDE sync generates too.
+def generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    def replaceProperties = [mod_version: project.version]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into layout.buildDirectory.dir('generated/sources/modMetadata')
+}
+sourceSets.main.resources.srcDir generateModMetadata
+
+// In-game self-tests (mcheli.dependent.MchSelfTests), opt-in per run:
+//     ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests             (every test)
+//     ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests=crush,bomb  (a comma list of test names)
+// The selection is passed to the game as the mcheli.selftests system property (see the server run below); the run
+// directory, fresh world and synthetic content packs are prepared by selftest.gradle.
+ext.mcheliSelfTestSelection = !project.hasProperty('mcheliSelfTests') ? null
+    : (project.property('mcheliSelfTests').toString().trim() in ['', 'true', 'all'] ? 'all'
+        : project.property('mcheliSelfTests').toString().trim())
+apply from: 'selftest.gradle'
+
 // NOTE: do NOT add a repositories { } block here — declaring any repo disables ModDevGradle's
 // centrally-managed NeoForge repositories for this project. Rely on settings.gradle instead.
 
@@ -32,11 +54,14 @@ neoForge {
             server()
             programArgument '--nogui'
             // Headless self-tests are OFF by default so an ordinary dev launch is not polluted with probe entities.
-            // Opt in with:  ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests
-            // (which also halts the server once the verdict is logged, so the run terminates by itself).
-            if (project.hasProperty('mcheliSelfTests')) {
-                systemProperty 'mcheli.selftests', 'true'
+            // With -PmcheliSelfTests[=names] the server runs in its own game directory (run/selftest, prepared fresh by
+            // prepareSelfTestRun), runs the selected tests, and halts once the summary is logged, so the run ends by
+            // itself; runServer then fails if any test failed (see selftest.gradle).
+            if (mcheliSelfTestSelection != null) {
+                gameDirectory = mcheliSelfTestDir
+                systemProperty 'mcheli.selftests', mcheliSelfTestSelection
                 systemProperty 'mcheli.selftest.halt', 'true'
+                taskBefore tasks.named('prepareSelfTestRun')
             }
         }
     }
@@ -46,6 +71,9 @@ neoForge {
             sourceSet sourceSets.main
         }
     }
+
+    // Generate the expanded neoforge.mods.toml on IDE sync too, so IDE-launched runs see a real version.
+    ideSyncTask generateModMetadata
 }
 
 dependencies {

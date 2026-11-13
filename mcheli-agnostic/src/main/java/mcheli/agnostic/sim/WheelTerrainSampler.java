@@ -167,14 +167,16 @@ public final class WheelTerrainSampler {
             .add(pos);
     }
 
-    /** Top surface Y of the first collidable block at or below the wheel (its resting height), or NaN if none within
-     *  {@link #SCAN_DOWN} blocks — the analogue of the reference wheel entity falling and coming to rest. */
+    /** Top surface Y of the first block with a collision shape at or below the wheel (its resting height), or NaN if
+     *  none within {@link #SCAN_DOWN} blocks — the analogue of the reference wheel entity falling and coming to rest.
+     *  {@link WorldView#hasCollision}, not the probe's {@code isCollidable}: a wheel entity collided only with
+     *  collision boxes, so it sank through water and grass instead of resting on them. */
     private static double groundSurfaceY(WorldView world, Vec3d wheel) {
         int bx = (int) Math.floor(wheel.x());
         int bz = (int) Math.floor(wheel.z());
         int top = (int) Math.floor(wheel.y()) + 1;
         for (int y = top; y >= top - SCAN_DOWN; y--) {
-            if (world.getBlockId(bx, y, bz) != 0 && world.isCollidable(bx, y, bz)) {
+            if (world.getBlockId(bx, y, bz) != 0 && world.hasCollision(bx, y, bz)) {
                 return y + 1.0; // block's top face = the wheel's resting Y
             }
         }

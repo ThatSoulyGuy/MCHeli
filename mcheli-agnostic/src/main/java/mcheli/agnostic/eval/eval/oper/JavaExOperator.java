@@ -32,63 +32,63 @@ public class JavaExOperator implements Operator {
 
    Object n(long n, Object x) {
       if (x instanceof Long) {
-         return new Long(n);
+         return Long.valueOf(n);
       } else if (x instanceof Double) {
-         return new Double(n);
+         return Double.valueOf(n);
       } else if (x instanceof Integer) {
-         return new Integer((int)n);
+         return Integer.valueOf((int)n);
       } else if (x instanceof Short) {
-         return new Short((short)n);
+         return Short.valueOf((short)n);
       } else if (x instanceof Byte) {
-         return new Byte((byte)n);
+         return Byte.valueOf((byte)n);
       } else if (x instanceof Float) {
-         return new Float((float)n);
+         return Float.valueOf((float)n);
       } else if (x instanceof BigInteger) {
          return BigInteger.valueOf(n);
       } else if (x instanceof BigDecimal) {
          return BigDecimal.valueOf(n);
       } else {
-         return x instanceof String ? String.valueOf(n) : new Long(n);
+         return x instanceof String ? String.valueOf(n) : Long.valueOf(n);
       }
    }
 
    Object n(long n, Object x, Object y) {
       if (x instanceof Byte || y instanceof Byte) {
-         return new Byte((byte)n);
+         return Byte.valueOf((byte)n);
       } else if (x instanceof Short || y instanceof Short) {
-         return new Short((short)n);
+         return Short.valueOf((short)n);
       } else if (x instanceof Integer || y instanceof Integer) {
-         return new Integer((int)n);
+         return Integer.valueOf((int)n);
       } else if (x instanceof Long || y instanceof Long) {
-         return new Long(n);
+         return Long.valueOf(n);
       } else if (x instanceof BigInteger || y instanceof BigInteger) {
          return BigInteger.valueOf(n);
       } else if (x instanceof BigDecimal || y instanceof BigDecimal) {
          return BigDecimal.valueOf(n);
       } else if (x instanceof Float || y instanceof Float) {
-         return new Float((float)n);
+         return Float.valueOf((float)n);
       } else if (x instanceof Double || y instanceof Double) {
-         return new Double(n);
+         return Double.valueOf(n);
       } else {
-         return !(x instanceof String) && !(y instanceof String) ? new Long(n) : String.valueOf(n);
+         return !(x instanceof String) && !(y instanceof String) ? Long.valueOf(n) : String.valueOf(n);
       }
    }
 
    Object n(double n, Object x) {
       if (x instanceof Float) {
-         return new Float(n);
+         return Float.valueOf((float)n);
       } else {
-         return x instanceof String ? String.valueOf(n) : new Double(n);
+         return x instanceof String ? String.valueOf(n) : Double.valueOf(n);
       }
    }
 
    Object n(double n, Object x, Object y) {
       if (x instanceof Float || y instanceof Float) {
-         return new Float(n);
+         return Float.valueOf((float)n);
       } else if (x instanceof Number || y instanceof Number) {
-         return new Double(n);
+         return Double.valueOf(n);
       } else {
-         return !(x instanceof String) && !(y instanceof String) ? new Double(n) : String.valueOf(n);
+         return !(x instanceof String) && !(y instanceof String) ? Double.valueOf(n) : String.valueOf(n);
       }
    }
 
@@ -96,7 +96,7 @@ public class JavaExOperator implements Operator {
       if (x instanceof BigDecimal) {
          return BigDecimal.valueOf(n);
       } else {
-         return x instanceof BigInteger ? BigInteger.valueOf(n) : new Long(n);
+         return x instanceof BigInteger ? BigInteger.valueOf(n) : Long.valueOf(n);
       }
    }
 
@@ -104,16 +104,16 @@ public class JavaExOperator implements Operator {
       if (x instanceof BigDecimal || y instanceof BigDecimal) {
          return BigDecimal.valueOf(n);
       } else {
-         return !(x instanceof BigInteger) && !(y instanceof BigInteger) ? new Long(n) : BigInteger.valueOf(n);
+         return !(x instanceof BigInteger) && !(y instanceof BigInteger) ? Long.valueOf(n) : BigInteger.valueOf(n);
       }
    }
 
    Object nn(double n, Object x) {
-      return this.inLong(x) ? (Object)new Long((long)n) : new Double(n);
+      return this.inLong(x) ? (Object)Long.valueOf((long)n) : Double.valueOf(n);
    }
 
    Object nn(double n, Object x, Object y) {
-      return this.inLong(x) && this.inLong(y) ? (Object)new Long((long)n) : new Double(n);
+      return this.inLong(x) && this.inLong(y) ? (Object)Long.valueOf((long)n) : Double.valueOf(n);
    }
 
    RuntimeException undefined(Object x) {

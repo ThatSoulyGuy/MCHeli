@@ -9,8 +9,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 import mcheli.MCHeli;
 import mcheli.agnostic.model.MchModel;
@@ -28,15 +26,14 @@ import org.slf4j.Logger;
  * point, without the assets-vs-datapack split or a resource reload — the reference read these off disk at mod init.
  *
  * <p>{@link #loadModel} resolves a model NAME ({@code <category>/<vehicle>}, as the reference's
- * {@code MCH_ModelManager.load} did) to {@code models/<name>.mqo} then {@code .obj}, parses it through the
- * agnostic {@link MchModelLoader}, and caches the result. The parsed {@link MchModel} is the {@link ModelHandle}
- * the dependent renderer downcasts.
+ * {@code MCH_ModelManager.load} did) to {@code models/<name>.mqo} then {@code .obj} and parses it through the
+ * agnostic {@link MchModelLoader}. The parsed {@link MchModel} is the {@link ModelHandle} the dependent renderer
+ * downcasts. No caching here: this source is always wrapped by {@link CompositeResourceSource}, which owns the one
+ * (reload-clearable) model cache, the reference's static model map.
  */
 public final class NeoResourceSource implements ResourceSource {
     private static final String ROOT = "assets/mcheli/";
     private static final Logger LOGGER = LogUtils.getLogger();
-    /** Shared across instances, like the reference's static model map — a model is parsed at most once. */
-    private static final Map<String, MchModel> MODEL_CACHE = new ConcurrentHashMap<>();
 
     @Override
     public List<String> list(String dir) {
@@ -70,17 +67,10 @@ public final class NeoResourceSource implements ResourceSource {
         if (name == null || name.isEmpty()) {
             return null;
         }
-        MchModel cached = MODEL_CACHE.get(name);
-        if (cached != null) {
-            return cached;
-        }
         // MCH_ModelManager tried .mqo, then .obj, then .tcn — we support .mqo/.obj (no .tcn in the assets).
         MchModel model = tryParse("models/" + name + ".mqo");
         if (model == null) {
             model = tryParse("models/" + name + ".obj");
-        }
-        if (model != null) {
-            MODEL_CACHE.put(name, model);
         }
         // A miss is NOT warned here: this source is one of several (bundled + content packs); the composite that unions
         // them owns the single "no model found anywhere" warning so a pack-only model does not warn against the bundle.

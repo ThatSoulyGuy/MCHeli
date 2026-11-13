@@ -1,0 +1,153 @@
+// Run setup for the in-game self-tests (applied from build.gradle; the runner is mcheli.dependent.MchSelfTests):
+//
+//     ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests             (every test)
+//     ./gradlew :neoforge-1.21.1:runServer -PmcheliSelfTests=crush,bomb  (a comma list of test names)
+//
+// A self-test run uses its own game directory, run/selftest, so it never touches the ordinary dev world, configs or
+// content packs. prepareSelfTestRun runs before the server and
+//   - deletes the previous self-test world, so every run starts from a freshly generated one;
+//   - writes server.properties: a superflat world (the same flat ground under every test, whatever the seed) with no
+//     structures and no monster spawning, and port 0 (an OS-chosen port, so a self-test run never fights another
+//     server over 25565);
+//   - when the contentpack test is selected, writes the synthetic content packs it checks into run/selftest/mcheli/
+//     (packs are discovered while the mod is constructed, so they must exist before the server starts); otherwise it
+//     removes them, so the other tests run against the bundled content only;
+//   - copies this module's eula.txt (eula=true, tracked in the repository) into the run directory if it has none.
+// After the server has halted, runServer reads the results file the runner wrote and fails the build if any test
+// failed or no results were written.
+
+ext.mcheliSelfTestDir = layout.projectDirectory.dir('run/selftest')
+
+def selfTestDir = file('run/selftest')
+def selfTestSelection = mcheliSelfTestSelection
+
+/** The synthetic packs DemoContentPackSelfTest asserts on (keep the two in step). */
+def writeSyntheticPacks = { File root, File ogg ->
+    def put = { String rel, String text ->
+        def f = new File(root, rel)
+        f.parentFile.mkdirs()
+        f.setText(text, 'UTF-8')
+    }
+    def putOgg = { String rel ->
+        def f = new File(root, rel)
+        f.parentFile.mkdirs()
+        f.bytes = ogg.bytes
+    }
+    def heli = { String displayName -> """DisplayName = ${displayName}
+MaxHp = 100
+Speed = 0.6
+HUD = civilian_aircraft, none
+AddSeat = 0.50,  0.96,  0.29
+BoundingBox =  0.0, 1.7, 0.0,  2.4, 2.5
+""" }
+    // A 2x2x2 box, triangulated (the OBJ parser wants decimal vertex coordinates and takes plain "f a b c" faces).
+    def box = '''g body
+v -1.0 0.0 -1.0
+v 1.0 0.0 -1.0
+v 1.0 2.0 -1.0
+v -1.0 2.0 -1.0
+v -1.0 0.0 1.0
+v 1.0 0.0 1.0
+v 1.0 2.0 1.0
+v -1.0 2.0 1.0
+f 1 2 3
+f 1 3 4
+f 5 8 7
+f 5 7 6
+f 1 5 6
+f 1 6 2
+f 2 6 7
+f 2 7 3
+f 3 7 8
+f 3 8 4
+f 5 1 4
+f 5 4 8
+'''
+    // testpack_rp: the resource-pack layout (<pack>/assets/mcheli/...), with its own item model for its vehicle.
+    def rp = 'testpack_rp/assets/mcheli/'
+    put(rp + 'helicopters/mch_testpack_heli.txt', heli('MCHeli Test Pack Heli'))
+    put(rp + 'models/helicopters/mch_testpack_heli.obj', box)
+    put(rp + 'models/item/mch_testpack_heli.json', '{"parent":"builtin/entity","mch_shipped":true}\n')
+    putOgg(rp + 'sounds/mch_testpack_snd.ogg')
+    putOgg(rp + 'sounds/mch_grouped3.ogg')          // the event mch_grouped belongs to the earlier pack: ignored
+    // testpack_flat: the FLAT layout (content right at the pack root), plus the adversarial files.
+    def flat = 'testpack_flat/'
+    put(flat + 'helicopters/mch_flatpack_heli.txt', heli('MCHeli Flat Pack Heli'))
+    put(flat + 'models/helicopters/mch_flatpack_heli.obj', box)
+    put(flat + 'helicopters/bad heli.txt', heli('Illegal Name'))          // illegal id: skipped with a warning
+    put(flat + 'helicopters/fuel.txt', heli('Reserved Id'))               // clashes with the fuel can: skipped
+    put(flat + 'planes/mch_flatpack_heli.txt', heli('Cross-Category Dup')) // the helicopter wins the id
+    putOgg(flat + 'sounds/mch_flatpack_snd.ogg')
+    putOgg(flat + 'sounds/mch_grouped1.ogg')        // mch_grouped1 + mch_grouped2 = one event, mch_grouped
+    putOgg(flat + 'sounds/mch_grouped2.ogg')
+    putOgg(flat + 'sounds/MixedCase_Snd.OGG')       // the event is lower-cased: mixedcase_snd
+    putOgg(flat + 'sounds/Bad Sound.ogg')           // illegal name: skipped, must not crash mod construction
+    putOgg(flat + 'sounds/hit.ogg')                 // a bundled event: bundled wins
+    // Not a pack: no content directory at all.
+    put('notapack/readme.txt', 'not an MCHeli content pack\n')
+}
+
+def prepareSelfTestRun = tasks.register('prepareSelfTestRun') {
+    group = 'mcheli'
+    description = 'Prepares run/selftest for an in-game self-test run (-PmcheliSelfTests): fresh flat world, ' +
+        'server.properties, eula and, when selected, the synthetic content packs.'
+    outputs.upToDateWhen { false }
+    def dir = selfTestDir
+    def selection = (selfTestSelection ?: 'all').toLowerCase(Locale.ROOT)
+    def eulaSource = file('eula.txt')
+    def ogg = file('src/main/resources/assets/mcheli/sounds/hit.ogg')
+    def packs = writeSyntheticPacks
+    doLast {
+        dir.mkdirs()
+        new File(dir, 'world').deleteDir()
+        new File(dir, 'mcheli').deleteDir()
+        new File(dir, 'mcheli-selftest-results.txt').delete()
+        // NOT spawn-animals=false / spawn-npcs=false: those make the server DISCARD every animal / villager each tick
+        // (ServerLevel.shouldDiscardEntity), which would delete the tests' pig pilots and targets. With no player
+        // online nothing spawns naturally anyway.
+        new File(dir, 'server.properties').setText([
+            '# Written by prepareSelfTestRun (neoforge-1.21.1/selftest.gradle) before every self-test run.',
+            'level-name=world',
+            'level-type=minecraft\\:flat',
+            'generator-settings={"layers"\\:[{"block"\\:"minecraft\\:bedrock","height"\\:1},' +
+                '{"block"\\:"minecraft\\:dirt","height"\\:2},{"block"\\:"minecraft\\:grass_block","height"\\:1}],' +
+                '"biome"\\:"minecraft\\:plains"}',
+            'generate-structures=false',
+            'spawn-monsters=false',
+            'server-port=0',
+            'online-mode=false',
+            'max-tick-time=-1',
+            'view-distance=4',
+            'simulation-distance=4',
+            'sync-chunk-writes=false',
+            ''
+        ].join('\n'), 'UTF-8')
+        def eula = new File(dir, 'eula.txt')
+        if (!eula.exists() && eulaSource.exists()) {
+            eula.text = eulaSource.text
+        }
+        def names = selection.split(/[,\s]+/) as List
+        if (selection == 'all' || names.contains('contentpack')) {
+            packs(new File(dir, 'mcheli'), ogg)
+        }
+        logger.lifecycle("MCHeli self-tests: '{}' in {}", selection, dir)
+    }
+}
+
+if (selfTestSelection != null) {
+    // Fail the build when the run reports a failure (or never got as far as reporting).
+    def results = new File(selfTestDir, 'mcheli-selftest-results.txt')
+    tasks.matching { it.name == 'runServer' }.configureEach {
+        doLast {
+            if (!results.exists()) {
+                throw new GradleException("MCHeli self-tests wrote no results (${results}); see the server log")
+            }
+            def lines = results.readLines('UTF-8')
+            lines.each { logger.lifecycle(it) }
+            def failed = lines.findAll { it.startsWith('FAIL ') }
+            if (!failed.isEmpty()) {
+                throw new GradleException("MCHeli self-tests failed: " + failed.collect { it.split(' ')[1] }.join(', '))
+            }
+        }
+    }
+}

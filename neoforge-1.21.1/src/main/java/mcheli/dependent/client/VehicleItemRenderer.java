@@ -4,8 +4,11 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.spi.ModelHandle;
+import mcheli.dependent.config.MchConfig;
 import mcheli.dependent.item.VehicleSpawnItem;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.BlockEntityWithoutLevelRenderer;
@@ -22,14 +25,29 @@ import net.minecraft.world.item.ItemStack;
  * via {@code IClientItemExtensions.getCustomRenderer} + a {@code builtin/entity} item model. The model is fit into the
  * item cell (scaled by its largest dimension, centered); the item model JSON's {@code display} block supplies the
  * viewing angle.
+ *
+ * <p>The icon is the in-world vehicle at rest: the {@code $body} span plus every config-declared part, exactly the
+ * groups {@link MchModelEntityRenderer} draws, so hidden weapon variants and dummy/marker groups stay hidden. A model
+ * without {@code $body} draws whole, as the reference {@code renderBody} fallback does. Re-emitting the geometry each
+ * frame is what a {@link BlockEntityWithoutLevelRenderer} does (and what the reference item render did); drawing only
+ * the composed groups keeps it to the vehicle's visible faces.
  */
 public class VehicleItemRenderer extends BlockEntityWithoutLevelRenderer {
 
     private final Map<String, MchModel> modelCache = new HashMap<>();
     private final Map<String, ResourceLocation> texCache = new HashMap<>();
+    private final Map<String, Set<String>> declaredCache = new HashMap<>();
 
     public VehicleItemRenderer() {
         super(Minecraft.getInstance().getBlockEntityRenderDispatcher(), Minecraft.getInstance().getEntityModels());
+    }
+
+    /** Drop the per-icon model/texture caches (render thread only). Unlike the entity renderers this instance is not
+     *  rebuilt on a resource reload, so the client reload listener in {@link MchClientEvents} calls this. */
+    public void clearCaches() {
+        this.modelCache.clear();
+        this.texCache.clear();
+        this.declaredCache.clear();
     }
 
     @Override
@@ -68,7 +86,23 @@ public class VehicleItemRenderer extends BlockEntityWithoutLevelRenderer {
                        -(model.minY + model.maxY) / 2.0F,
                        -(model.minZ + model.maxZ) / 2.0F);
         VertexConsumer consumer = buffers.getBuffer(RenderType.entityCutoutNoCull(tex));
-        MchModelRenderer.render(model, pose, consumer, light, OverlayTexture.NO_OVERLAY, 255, 255, 255, 255);
+        MCH_AircraftInfo info = item.info();
+        boolean prevShade = MchModelRenderer.shadeModel(
+            MchConfig.CLIENT.smoothShading() && (info == null || info.smoothShading));
+        try {
+            if (MchModelRenderer.hasGroup(model, "$body")) {
+                MchModelRenderer.renderPartSpan(model, pose, consumer, light, OverlayTexture.NO_OVERLAY,
+                    255, 255, 255, 255, "$body");
+                for (String g : this.declaredCache.computeIfAbsent(path, p -> MchModelEntityRenderer.declaredGroupsOf(info))) {
+                    MchModelRenderer.renderPartSpan(model, pose, consumer, light, OverlayTexture.NO_OVERLAY,
+                        255, 255, 255, 255, g);
+                }
+            } else {
+                MchModelRenderer.render(model, pose, consumer, light, OverlayTexture.NO_OVERLAY, 255, 255, 255, 255);
+            }
+        } finally {
+            MchModelRenderer.shadeModel(prevShade);
+        }
         pose.popPose();
     }
 }

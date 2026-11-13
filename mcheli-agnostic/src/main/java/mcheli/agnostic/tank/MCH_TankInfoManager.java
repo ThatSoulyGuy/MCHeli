@@ -9,7 +9,8 @@ import mcheli.agnostic.info.MCH_InfoManagerBase;
  * Loads + holds the parsed tank definitions ({@code tanks/*.txt} → {@link MCH_TankInfo}). A thin subclass of
  * {@link MCH_InfoManagerBase}: the base's {@code load(ResourceSource, Logger, "tanks")} does the DSL parsing/
  * validation; this only supplies the concrete {@link MCH_TankInfo} factory and the name→info map. (The reference
- * {@code MCH_AircraftInfoManager}'s crafting-recipe list + {@code Item} lookup are MC-specific and deferred.)
+ * {@code MCH_AircraftInfoManager}'s crafting-recipe list + {@code Item} lookup are MC-specific and live dependent-side:
+ * {@code MchVehicleRecipes} and {@code MchRegistries.spawnItemFor}.)
  */
 public final class MCH_TankInfoManager extends MCH_InfoManagerBase {
 

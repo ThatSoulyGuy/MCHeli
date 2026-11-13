@@ -82,11 +82,11 @@ public abstract class AbstractExpression {
    }
 
    protected void let(long val, int pos) {
-      this.let(new Long(val), pos);
+      this.let(Long.valueOf(val), pos);
    }
 
    protected void let(double val, int pos) {
-      this.let(new Double(val), pos);
+      this.let(Double.valueOf(val), pos);
    }
 
    protected Object getVariable() {
@@ -95,11 +95,11 @@ public abstract class AbstractExpression {
    }
 
    protected void evalArgsLong(List args) {
-      args.add(new Long(this.evalLong()));
+      args.add(Long.valueOf(this.evalLong()));
    }
 
    protected void evalArgsDouble(List args) {
-      args.add(new Double(this.evalDouble()));
+      args.add(Double.valueOf(this.evalDouble()));
    }
 
    protected void evalArgsObject(List args) {

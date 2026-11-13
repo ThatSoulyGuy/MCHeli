@@ -7,6 +7,7 @@ import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
@@ -53,7 +54,12 @@ public record ServerboundRotationPayload(int vehicleId, float yaw, float pitch, 
             // Only the PILOT (seat 0) may steer. Without the seat check a gunner's client-authoritative rotation packets
             // would turn the whole vehicle, defeating the drive gate on the control payload.
             if (e instanceof AbstractMchVehicle v && v.supportsMouseRotation() && v.seatIndexOf(player) == 0) {
-                v.applyServerRotation(p.yaw(), p.pitch(), p.roll());
+                // Rotation stays client-authoritative with no rate limit, exactly as in the reference (the thrust that
+                // follows from it is bounded by each model's speed clamp). Only the RANGE is normalised: a legitimate
+                // client never exceeds it (setAngles' MatrixToEuler yields pitch in [-90, 90]; roll is wrapped to
+                // [-180, 180]), and it keeps a modified client from parking absurd magnitudes on the server copy.
+                v.applyServerRotation(Mth.wrapDegrees(p.yaw()), Mth.clamp(p.pitch(), -90.0F, 90.0F),
+                    Mth.wrapDegrees(p.roll()));
             }
         });
     }

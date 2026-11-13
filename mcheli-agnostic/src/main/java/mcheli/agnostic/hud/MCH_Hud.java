@@ -2,46 +2,92 @@ package mcheli.agnostic.hud;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
-import mcheli.agnostic.eval.MchExpr;
+import mcheli.agnostic.spi.Logger;
 
 /**
  * A parsed HUD — the config-driven overlay for one vehicle/seat. A {@code hud/*.txt} file is a list of draw commands
- * whose numeric arguments are {@link MchExpr expressions} evaluated live against the vehicle each frame; this class
- * parses them into an item list and, on {@link #draw}, walks them emitting into a {@link HudRenderer}. Faithful to
- * {@code mcheli.hud.MCH_Hud}: centre-origin coordinates ({@code x = width/2 + calc(posX)}), a mutable current colour, a
- * single-level {@code If}/{@code EndIf} skip flag, {@code Call} include-recursion, and {@code Exit}.
+ * whose numeric arguments are {@link HudExpression expressions} evaluated live against the vehicle each frame; this
+ * class parses them into an item list and, on {@link #draw}, walks them emitting into a {@link HudRenderer}. Faithful to
+ * {@code mcheli.hud.MCH_Hud}: the reference line grammar ({@code MCH_HudManager.load} + {@code loadItemData}), strict
+ * {@code If}/{@code EndIf} pairing, each item's own argument preprocessing, centre-origin coordinates
+ * ({@code x = width/2 + calc(posX)}), ONE static current colour, a per-HUD {@code If} skip flag, {@code Call}
+ * include-recursion guarded against cycles, and {@code Exit}.
  *
- * <p>Implements the cockpit commands: {@code Color}, {@code DrawString}/{@code DrawCenteredString}, {@code DrawLine},
+ * <p>Commands: {@code Color} (1 or 4 args), {@code DrawString}/{@code DrawCenteredString}, {@code DrawLine},
  * {@code DrawLineStipple}, {@code DrawRect}, {@code DrawTexture}, {@code DrawGraduationYaw}/{@code Pitch1}/{@code Pitch2}/
  * {@code Pitch3} (the heading/pitch ladders, which bank with roll via a pushed rotation), {@code DrawEntityRadar}/
- * {@code DrawEnemyRadar} (the radar dial's neutral/hostile blips), {@code If}/{@code EndIf}, {@code Call}, {@code Exit}.
- * Still parse-and-skipped: {@code DrawCameraRot} (a gunner-camera reticle — draws only with an active {@code MCH_Camera}
- * object the port does not yet have).
+ * {@code DrawEnemyRadar} (the radar dial's neutral/hostile blips), {@code DrawCameraRot} (the camera-direction box:
+ * where the viewer looks relative to the hull; drawn whenever a HUD lists it, as the reference drew it whenever
+ * {@code ac.camera != null}, which every aircraft built in its constructor), {@code If}/{@code EndIf}, {@code Call},
+ * {@code Exit}.
+ *
+ * <p>Errors. This is a deliberate divergence: the reference threw and stopped the client, at load for a structural
+ * error and at draw time for a bad expression.
+ * <ul>
+ *   <li>A structural error throws from {@link #parseLine}/{@link #checkData} with the reference's message. That covers
+ *       an {@code If} inside an open {@code If}, a stray {@code EndIf}, and an {@code If} still open at the end of the
+ *       file. {@link MCH_HudManager} then rejects that one file, as the reference refused to load it.</li>
+ *   <li>An expression that does not parse drops only its own item, with a warning naming the file and line. An
+ *       {@code If} whose condition does not parse stays in place and reads as false, so its block stays hidden and the
+ *       {@code EndIf} pairing holds.</li>
+ *   <li>An item that throws while drawing is skipped for that frame and logged once. Causes include an undefined
+ *       variable, an unparseable literal and a format string that does not match its arguments. A failing
+ *       {@code If} hides its block. Every such failure, each frame, also goes to the caller's
+ *       {@link DrawErrorListener} when it passes one, so a test can still fail on a HUD error the log only warns
+ *       about once.</li>
+ * </ul>
  */
 public final class MCH_Hud {
 
-    private enum Kind { COLOR1, COLOR4, STRING, TEXTURE, RECT, LINE, LINE_STIPPLE, GRADUATION, RADAR, CAMERA_ROT, IF, ENDIF, EXIT, CALL }
+    private enum Kind { COLOR, STRING, TEXTURE, RECT, LINE, LINE_STIPPLE, GRADUATION, RADAR, CAMERA_ROT, IF, ENDIF, EXIT, CALL }
 
     private static final class Item {
         final Kind kind;
-        MchExpr.Node[] num = new MchExpr.Node[0]; // numeric expressions (coords / colour / rotation)
-        String text = "";                          // format string / texture name / call target
-        String[] args = new String[0];             // DrawString %-arg names
+        final int line;                             // 1-based source line (reference fileLine)
+        HudExpression[] num = new HudExpression[0]; // numeric args; an If's condition is null when it did not parse
+        String text = "";                           // format string / texture name / call target
+        MCH_HudItemStringArgs[] args = new MCH_HudItemStringArgs[0]; // DrawString format arguments
         boolean centered;
-        int aux;                                   // graduation type (0=Yaw, 1=Pitch1, 2=Pitch2, 3=Pitch3)
+        int aux;                                    // graduation type (0=Yaw..3=Pitch3) / radar list (1 = hostile)
+        boolean reported;                           // a draw-time failure of this item was already logged
 
-        Item(Kind kind) {
+        Item(Kind kind, int line) {
             this.kind = kind;
+            this.line = line;
         }
     }
 
+    /** Reference {@code MCH_HudItem.colorSetting}: ONE static current colour, opaque black at start-up and never reset,
+     *  so it carries across {@code Call}s, across HUD files and from one frame to the next. Render thread only. */
+    private static int colorSetting = 0xFF000000;
+    /** Reference {@code MCH_HudItem.varMap}: one static variable scope shared by every HUD. It reads the
+     *  {@link HudState} only while a {@link #draw} runs. Render thread only. */
+    private static final HudVariables VARS = new HudVariables(HudVariables.NO_STATE);
+
+    /** Receives every draw-time item failure of a {@link #draw(HudRenderer, HudState, Function, DrawErrorListener)}
+     *  call, including the items of the HUDs it {@code Call}s: the failing item's file and 1-based line and what it
+     *  threw. Unlike the log it hears about the failure on every frame, not only the first time. */
+    @FunctionalInterface
+    public interface DrawErrorListener {
+        void onDrawError(String fileName, int line, RuntimeException error);
+    }
+
     public final String name;
+    private final String fileName;
+    private final Logger log;                    // null = silent
     private final List<Item> items = new ArrayList<>();
+    private int lineNo;                          // lines fed to parseLine so far
+    private int openIfLine = -1;                 // line of the If awaiting its EndIf (reference isWaitEndif), or -1
     private boolean drawing; // re-entrancy guard (reference isDrawing) — terminates direct + indirect Call cycles
 
-    public MCH_Hud(String name) {
+    /** A HUD named {@code name}, read from {@code fileName} (used in messages, e.g. {@code hud/heli.txt}). Parse and
+     *  draw warnings go to {@code log}, or nowhere when it is null. */
+    public MCH_Hud(String name, String fileName, Logger log) {
         this.name = name;
+        this.fileName = fileName;
+        this.log = log;
     }
 
     public boolean isEmpty() {
@@ -50,217 +96,356 @@ public final class MCH_Hud {
 
     // ---- parsing ----
 
-    /** Parse one raw config line ({@code ;} comments stripped, bare or {@code key = data}). */
+    /**
+     * Parse the next line of the file (reference {@code MCH_HudManager.load}). The line is trimmed, and a bare
+     * {@code EndIf} or {@code Exit} becomes {@code EndIf=0}/{@code Exit=0}. Any other line needs an {@code =} with data
+     * after it, else it is ignored. A {@code ;} comment line is ignored because no command matches it, and a {@code ;}
+     * later in a line is data, as in the reference.
+     *
+     * @throws IllegalStateException on an If/EndIf pairing error (the reference's load-time RuntimeException)
+     */
     public void parseLine(String raw) {
-        String line = raw;
-        int c = line.indexOf(';');
-        if (c >= 0) {
-            line = line.substring(0, c);
+        this.lineNo++;
+        String str = raw.trim();
+        if (str.equalsIgnoreCase("endif")) {
+            str = "endif=0";
         }
-        line = line.trim();
-        if (line.isEmpty()) {
+        if (str.equalsIgnoreCase("exit")) {
+            str = "exit=0";
+        }
+        int eq = str.indexOf('=');
+        if (eq >= 0 && str.length() > eq + 1) {
+            loadItemData(str.substring(0, eq).trim().toLowerCase(Locale.ROOT), str.substring(eq + 1).trim());
+        }
+    }
+
+    /** End of file (reference {@code checkData}). @throws IllegalStateException if an {@code If} is still open */
+    public void checkData() {
+        if (this.openIfLine >= 0) {
+            throw new IllegalStateException("Endif not found! (If at line " + this.openIfLine + ")");
+        }
+    }
+
+    /** Reference {@code MCH_Hud.loadItemData}: the argument count each command accepts, and each item class's own
+     *  argument preprocessing (an {@code If} condition is used raw, {@code DrawString}/{@code DrawLine} positions are
+     *  only lower-cased, the {@code DrawLineStipple} pattern/factor are raw, everything else goes through
+     *  {@link HudExpression#toFormula}). */
+    private void loadItemData(String item, String data) {
+        String[] prm = data.split("\\s*,\\s*");
+        if (prm.length == 0) {
             return;
         }
-        int eq = line.indexOf('=');
-        String cmd = eq >= 0 ? line.substring(0, eq).trim() : line;
-        String data = eq >= 0 ? line.substring(eq + 1).trim() : "";
-        add(cmd, data);
-    }
-
-    private void add(String cmd, String data) {
-        String[] p = data.isEmpty() ? new String[0] : data.split("\\s*,\\s*");
-        if (cmd.equalsIgnoreCase("If") && p.length >= 1) {
-            Item it = new Item(Kind.IF);
-            it.num = new MchExpr.Node[]{MchExpr.compile(p[0])};
-            items.add(it);
-        } else if (cmd.equalsIgnoreCase("EndIf")) {
-            items.add(new Item(Kind.ENDIF));
-        } else if (cmd.equalsIgnoreCase("Exit")) {
-            items.add(new Item(Kind.EXIT));
-        } else if (cmd.equalsIgnoreCase("Call") && p.length == 1) {
-            Item it = new Item(Kind.CALL);
-            it.text = p[0].trim().toLowerCase();
-            items.add(it);
-        } else if (cmd.equalsIgnoreCase("Color")) {
-            if (p.length == 1) {
-                Item it = new Item(Kind.COLOR1);
-                it.num = new MchExpr.Node[]{MchExpr.compile(p[0])};
-                items.add(it);
-            } else if (p.length == 4) {
-                Item it = new Item(Kind.COLOR4);
-                it.num = compileAll(p, 0, 4);
-                items.add(it);
+        int line = this.lineNo;
+        if (item.equals("if")) {
+            if (this.openIfLine >= 0) {
+                throw new IllegalStateException("Endif not found! (If at line " + this.openIfLine + ", next If at line "
+                    + line + ")");
             }
-        } else if ((cmd.equalsIgnoreCase("DrawString") || cmd.equalsIgnoreCase("DrawCenteredString")) && p.length >= 3) {
-            String fmt = p[2];
-            if (fmt.length() >= 2 && fmt.charAt(0) == '"' && fmt.charAt(fmt.length() - 1) == '"') {
-                Item it = new Item(Kind.STRING);
-                it.num = new MchExpr.Node[]{MchExpr.compile(p[0]), MchExpr.compile(p[1])};
-                it.text = fmt.substring(1, fmt.length() - 1);
-                it.centered = cmd.equalsIgnoreCase("DrawCenteredString");
-                int n = p.length - 3;
-                it.args = new String[n];
-                for (int i = 0; i < n; i++) {
-                    it.args[i] = p[3 + i].trim();
+            Item it = new Item(Kind.IF, line);
+            it.num = new HudExpression[]{compile(prm[0], line)}; // null when it does not parse: the If reads as false
+            this.items.add(it);
+            this.openIfLine = line;
+        } else if (item.equals("endif")) {
+            if (this.openIfLine < 0) {
+                throw new IllegalStateException("IF in a pair can not be found! (EndIf at line " + line + ")");
+            }
+            this.items.add(new Item(Kind.ENDIF, line));
+            this.openIfLine = -1;
+        } else if (item.equals("drawstring") || item.equals("drawcenteredstring")) {
+            // A lone '"' or an empty format slot crashed the reference's charAt/substring; the port ignores the line.
+            String s = prm.length >= 3 ? prm[2] : "";
+            if (s.length() >= 2 && s.charAt(0) == '"' && s.charAt(s.length() - 1) == '"') {
+                Item it = new Item(Kind.STRING, line);
+                it.text = s.substring(1, s.length() - 1);
+                it.centered = item.equals("drawcenteredstring");
+                it.args = new MCH_HudItemStringArgs[prm.length - 3];
+                for (int i = 0; i < it.args.length; i++) {
+                    it.args[i] = formatArg(prm[3 + i], line);
                 }
-                items.add(it);
+                add(it, lower(prm[0]), lower(prm[1]));
             }
-        } else if (cmd.equalsIgnoreCase("DrawRect") && p.length == 4) {
-            Item it = new Item(Kind.RECT);
-            it.num = compileAll(p, 0, 4);
-            items.add(it);
-        } else if (cmd.equalsIgnoreCase("DrawLine") && p.length >= 4 && p.length % 2 == 0) {
-            Item it = new Item(Kind.LINE);
-            it.num = compileAll(p, 0, p.length);
-            items.add(it);
-        } else if (cmd.equalsIgnoreCase("DrawLineStipple") && p.length >= 4 && p.length % 2 == 0) {
-            // pattern, factor, then (x,y) point pairs (GL_LINES).
-            Item it = new Item(Kind.LINE_STIPPLE);
-            it.num = compileAll(p, 0, p.length);
-            items.add(it);
-        } else if ((cmd.equalsIgnoreCase("DrawGraduationYaw") || cmd.equalsIgnoreCase("DrawGraduationPitch1")
-                || cmd.equalsIgnoreCase("DrawGraduationPitch2") || cmd.equalsIgnoreCase("DrawGraduationPitch3"))
-                && p.length == 4) {
-            Item it = new Item(Kind.GRADUATION);         // args: rot, roll, posX, posY
-            it.aux = cmd.equalsIgnoreCase("DrawGraduationYaw") ? 0
-                : cmd.equalsIgnoreCase("DrawGraduationPitch1") ? 1
-                : cmd.equalsIgnoreCase("DrawGraduationPitch2") ? 2 : 3;
-            it.num = compileAll(p, 0, 4);
-            items.add(it);
-        } else if (cmd.equalsIgnoreCase("DrawTexture") && p.length >= 9 && p.length <= 10) {
-            Item it = new Item(Kind.TEXTURE);
-            it.text = p[0].trim().toLowerCase();
-            it.num = new MchExpr.Node[9];
-            for (int i = 0; i < 8; i++) {
-                it.num[i] = MchExpr.compile(p[1 + i]);
+        } else if (item.equals("exit")) {
+            this.items.add(new Item(Kind.EXIT, line));
+        } else if (item.equals("color")) {
+            if (prm.length == 1) {
+                add(new Item(Kind.COLOR, line), HudExpression.toFormula(prm[0]));
+            } else if (prm.length == 4) {
+                // Reference MCH_HudItemColor.createByParams: ONE formula over the four channels, NOT masked to 0..255.
+                // On the double path the shifts multiply by 2^n and '|' ORs the long-truncated sides.
+                add(new Item(Kind.COLOR, line), "((" + HudExpression.toFormula(prm[0]) + ")<<24)|(("
+                    + HudExpression.toFormula(prm[1]) + ")<<16)|((" + HudExpression.toFormula(prm[2]) + ")<<8 )|(("
+                    + HudExpression.toFormula(prm[3]) + ")<<0 )");
             }
-            it.num[8] = MchExpr.compile(p.length == 10 ? p[9] : "0"); // rotation
-            items.add(it);
-        } else if ((cmd.equalsIgnoreCase("DrawEntityRadar") || cmd.equalsIgnoreCase("DrawEnemyRadar")) && p.length == 5) {
-            Item it = new Item(Kind.RADAR);                 // args: rot, left, top, width, height
-            it.aux = cmd.equalsIgnoreCase("DrawEnemyRadar") ? 1 : 0; // 0 = neutral list, 1 = hostile list
-            it.num = compileAll(p, 0, 5);
-            items.add(it);
-        } else if (cmd.equalsIgnoreCase("DrawCameraRot") && p.length == 2) {
-            Item it = new Item(Kind.CAMERA_ROT);            // args: posX, posY — the gunner-camera direction indicator
-            it.num = compileAll(p, 0, 2);
-            items.add(it);
+        } else if (item.equals("drawtexture")) {
+            if (prm.length >= 9 && prm.length <= 10) {
+                Item it = new Item(Kind.TEXTURE, line);
+                it.text = prm[0].toLowerCase(Locale.ROOT); // 1.21 resource paths are lower-case (the reference used it as written)
+                add(it, formulas(prm, 1, 9, prm.length == 10 ? prm[9] : "0")); // + rotation
+            }
+        } else if (item.equals("drawrect")) {
+            if (prm.length == 4) {
+                add(new Item(Kind.RECT, line), formulas(prm, 0, 4, null));
+            }
+        } else if (item.equals("drawline")) {
+            if (prm.length >= 4 && prm.length % 2 == 0) {
+                String[] f = new String[prm.length];
+                for (int i = 0; i < f.length; i++) {
+                    f[i] = lower(prm[i]);
+                }
+                add(new Item(Kind.LINE, line), f);
+            }
+        } else if (item.equals("drawlinestipple")) {
+            if (prm.length >= 6 && prm.length % 2 == 0) { // pattern, factor, then at least one (x,y) pair of points
+                String[] f = formulas(prm, 0, prm.length, null);
+                f[0] = prm[0];
+                f[1] = prm[1];
+                add(new Item(Kind.LINE_STIPPLE, line), f);
+            }
+        } else if (item.equals("call")) {
+            if (prm.length == 1) {
+                Item it = new Item(Kind.CALL, line);
+                it.text = prm[0].toLowerCase(Locale.ROOT); // reference MCH_HudManager.get lower-cases the name
+                this.items.add(it);
+            }
+        } else if (item.equals("drawentityradar") || item.equals("drawenemyradar")) {
+            if (prm.length == 5) {
+                Item it = new Item(Kind.RADAR, line);  // args: rot, left, top, width, height
+                it.aux = item.equals("drawenemyradar") ? 1 : 0;
+                add(it, formulas(prm, 0, 5, null));
+            }
+        } else if (item.equals("drawgraduationyaw") || item.equals("drawgraduationpitch1")
+            || item.equals("drawgraduationpitch2") || item.equals("drawgraduationpitch3")) {
+            if (prm.length == 4) {
+                Item it = new Item(Kind.GRADUATION, line); // args: rot, roll, posX, posY
+                it.aux = item.equals("drawgraduationyaw") ? 0
+                    : item.equals("drawgraduationpitch1") ? 1
+                    : item.equals("drawgraduationpitch2") ? 2 : 3;
+                add(it, formulas(prm, 0, 4, null));
+            }
+        } else if (item.equals("drawcamerarot") && prm.length == 2) {
+            add(new Item(Kind.CAMERA_ROT, line), formulas(prm, 0, 2, null)); // args: posX, posY
         }
     }
 
-    private static MchExpr.Node[] compileAll(String[] p, int from, int to) {
-        MchExpr.Node[] out = new MchExpr.Node[to - from];
+    /** Compile {@code formulas} into the item and add it; an argument that does not parse drops the whole item. */
+    private void add(Item it, String... formulas) {
+        HudExpression[] num = new HudExpression[formulas.length];
+        for (int i = 0; i < formulas.length; i++) {
+            num[i] = compile(formulas[i], it.line);
+            if (num[i] == null) {
+                return;
+            }
+        }
+        it.num = num;
+        this.items.add(it);
+    }
+
+    /** Parse one expression once; on a syntax error warn and return null. */
+    private HudExpression compile(String formula, int line) {
+        try {
+            return HudExpression.compile(formula);
+        } catch (RuntimeException e) {
+            warn("### HUD file error! %s line=%d: '%s' %s", this.fileName, line, formula, HudExpression.describe(e));
+            return null;
+        }
+    }
+
+    private MCH_HudItemStringArgs formatArg(String argName, int line) {
+        MCH_HudItemStringArgs a = MCH_HudItemStringArgs.toArgs(argName);
+        if (a == MCH_HudItemStringArgs.NONE && !argName.equalsIgnoreCase("NONE")) {
+            warn("### HUD file error! %s line=%d: unknown DrawString argument '%s' (formats as null)",
+                this.fileName, line, argName);
+        }
+        return a;
+    }
+
+    /** {@code toFormula} of {@code prm[from..to)}, optionally followed by {@code extra}. */
+    private static String[] formulas(String[] prm, int from, int to, String extra) {
+        String[] out = new String[to - from + (extra != null ? 1 : 0)];
         for (int i = from; i < to; i++) {
-            out[i - from] = MchExpr.compile(p[i]);
+            out[i - from] = HudExpression.toFormula(prm[i]);
+        }
+        if (extra != null) {
+            out[out.length - 1] = HudExpression.toFormula(extra);
         }
         return out;
+    }
+
+    private static String lower(String s) {
+        return s.toLowerCase(Locale.ROOT);
+    }
+
+    private void warn(String fmt, Object... args) {
+        if (this.log != null) {
+            this.log.warn(fmt, args);
+        }
     }
 
     // ---- drawing ----
 
     /** Draw this HUD. {@code resolver} maps a {@code Call} target name to its parsed HUD (or null). The current colour
-     *  is GLOBAL (the reference {@code colorSetting} is static — it persists across {@code Call}s), but {@code Exit} and
-     *  the {@code If} skip flag are LOCAL to each HUD's item loop. */
+     *  and the variable scope are GLOBAL (static in the reference, shared across {@code Call}s and frames), while
+     *  {@code Exit} and the {@code If} skip flag are LOCAL to each HUD's item loop. The shared scope lets go of
+     *  {@code s} when the draw ends: the state holds the vehicle and the player, and through them the client level,
+     *  which must not stay reachable after the player leaves the world. */
     public void draw(HudRenderer r, HudState s, Function<String, MCH_Hud> resolver) {
-        int[] color = {0xFF000000}; // shared across Calls (reference: opaque-black default, static)
-        drawItems(r, s, resolver, s.screenWidth() / 2.0, s.screenHeight() / 2.0, color);
+        draw(r, s, resolver, null);
     }
 
-    private void drawItems(HudRenderer r, HudState s, Function<String, MCH_Hud> resolver,
-                           double cx, double cy, int[] color) {
+    /** {@link #draw(HudRenderer, HudState, Function)} that also reports each draw-time item failure to {@code errors}
+     *  (may be null). The failing item is still skipped and logged once, exactly as without a listener. */
+    public void draw(HudRenderer r, HudState s, Function<String, MCH_Hud> resolver, DrawErrorListener errors) {
+        VARS.beginFrame(s::get, colorSetting); // reference MCH_HudItem.update -> updateVarMap
+        try {
+            drawItems(r, s, resolver, s.screenWidth() / 2.0, s.screenHeight() / 2.0, errors);
+        } finally {
+            VARS.endFrame(); // assigned names and the colour stay, as in the reference's session-long map
+        }
+    }
+
+    private void drawItems(HudRenderer r, HudState s, Function<String, MCH_Hud> resolver, double cx, double cy,
+                           DrawErrorListener errors) {
         if (this.drawing) {
             return; // already on the draw stack — a Call cycle; render once (reference isDrawing guard)
         }
         this.drawing = true;
         try {
-            // Expressions can read the LIVE current colour via a "color" variable (reference mirrors colorSetting into
-            // the var map on every Color command); everything else delegates to the state.
-            MchExpr.VarLookup vars = n -> "color".equals(n) ? color[0] : s.get(n);
             boolean ifFalse = false; // local to this HUD (reference isIfFalse is a per-hud field)
-            for (Item it : items) {
-                if (ifFalse && it.kind != Kind.ENDIF) {
+            for (Item it : this.items) {
+                // Reference canExecute: inside a false If block everything but If/EndIf is skipped.
+                if (ifFalse && it.kind != Kind.IF && it.kind != Kind.ENDIF) {
                     continue;
                 }
-                switch (it.kind) {
-                    case COLOR1 -> color[0] = (int) (long) it.num[0].eval(vars);
-                    case COLOR4 -> {
-                        int a = (int) it.num[0].eval(vars) & 0xFF;
-                        int rr = (int) it.num[1].eval(vars) & 0xFF;
-                        int g = (int) it.num[2].eval(vars) & 0xFF;
-                        int b = (int) it.num[3].eval(vars) & 0xFF;
-                        color[0] = (a << 24) | (rr << 16) | (g << 8) | b;
-                    }
-                    case STRING -> {
-                        int x = (int) (cx + it.num[0].eval(vars));
-                        int y = (int) (cy + it.num[1].eval(vars));
-                        Object[] fmtArgs = new Object[it.args.length];
-                        for (int i = 0; i < fmtArgs.length; i++) {
-                            fmtArgs[i] = s.formatArg(it.args[i]);
+                try {
+                    switch (it.kind) {
+                        case IF -> ifFalse = it.num[0] == null || it.num[0].eval(VARS) == 0.0;
+                        case ENDIF -> ifFalse = false;
+                        case EXIT -> {
+                            return; // Exit stops THIS HUD's loop only (per-hud, not the caller)
                         }
-                        r.string(safeFormat(it.text, fmtArgs), x, y, color[0], it.centered);
-                    }
-                    case RECT -> {
-                        int x = (int) (cx + it.num[0].eval(vars));
-                        int y = (int) (cy + it.num[1].eval(vars));
-                        r.fill(x, y, x + (int) it.num[2].eval(vars), y + (int) it.num[3].eval(vars), color[0]);
-                    }
-                    case LINE -> {
-                        double[] pts = new double[it.num.length];
-                        for (int i = 0; i < pts.length; i++) {
-                            pts[i] = (i % 2 == 0 ? cx : cy) + it.num[i].eval(vars);
+                        case CALL -> {
+                            MCH_Hud target = resolver.apply(it.text);
+                            if (target != null) {
+                                // shares colour + scope + the error listener; the guard blocks cycles
+                                target.drawItems(r, s, resolver, cx, cy, errors);
+                            }
                         }
-                        r.line(pts, color[0], 3, s.lineWidth());
+                        default -> drawItem(it, r, s, cx, cy);
                     }
-                    case LINE_STIPPLE -> {
-                        double[] pts = new double[it.num.length - 2];
-                        for (int i = 0; i < pts.length; i++) {
-                            pts[i] = (i % 2 == 0 ? cx : cy) + it.num[2 + i].eval(vars);
-                        }
-                        r.lineStipple(pts, color[0], (int) it.num[1].eval(vars), (int) it.num[0].eval(vars),
-                            s.lineWidth());
+                } catch (RuntimeException e) {
+                    if (it.kind == Kind.IF) {
+                        ifFalse = true; // a condition that cannot be evaluated hides its block
                     }
-                    case GRADUATION -> {
-                        int gx = (int) (cx + it.num[2].eval(vars));
-                        int gy = (int) (cy + it.num[3].eval(vars));
-                        double rot = it.num[0].eval(vars);
-                        double roll = it.num[1].eval(vars);
-                        r.pushMatrix(gx, gy, roll); // ladder banks with roll (the reference's glRotate)
-                        try {
-                            drawGraduation(r, s, it.aux, rot, gx, gy, color[0]);
-                        } finally {
-                            r.popMatrix();
-                        }
+                    if (!it.reported) {
+                        it.reported = true;
+                        warn("#### Draw HUD Error!!!: line=%d, file=%s: %s", it.line, this.fileName,
+                            HudExpression.describe(e));
                     }
-                    case TEXTURE -> r.texture(it.text,
-                        cx + it.num[0].eval(vars), cy + it.num[1].eval(vars),
-                        it.num[2].eval(vars), it.num[3].eval(vars),
-                        it.num[4].eval(vars), it.num[5].eval(vars), it.num[6].eval(vars), it.num[7].eval(vars),
-                        it.num[8].eval(vars));
-                    case RADAR -> drawRadar(r, it.aux == 1 ? s.radarEnemies() : s.radarEntities(),
-                        it.num[0].eval(vars), cx + it.num[1].eval(vars), cy + it.num[2].eval(vars),
-                        it.num[3].eval(vars), it.num[4].eval(vars), color[0]);
-                    case CAMERA_ROT -> {
-                        if (s.hasGunnerCamera()) {
-                            drawCameraRot(r, s, cx + it.num[0].eval(vars), cy + it.num[1].eval(vars), color[0]);
-                        }
+                    if (errors != null) {
+                        errors.onDrawError(this.fileName, it.line, e);
                     }
-                    case IF -> ifFalse = it.num[0].eval(vars) == 0.0;
-                    case ENDIF -> ifFalse = false;
-                    case EXIT -> {
-                        return; // Exit stops THIS HUD's loop only (per-hud, not the caller)
-                    }
-                    case CALL -> {
-                        MCH_Hud target = resolver.apply(it.text);
-                        if (target != null) {
-                            target.drawItems(r, s, resolver, cx, cy, color); // shares colour; guard blocks cycles
-                        }
-                    }
-                    default -> { }
                 }
             }
         } finally {
             this.drawing = false;
         }
+    }
+
+    /** Execute one drawing item, evaluating its arguments in the reference item's order. */
+    private static void drawItem(Item it, HudRenderer r, HudState s, double cx, double cy) {
+        HudExpression[] n = it.num;
+        switch (it.kind) {
+            case COLOR -> {
+                colorSetting = (int) (long) n[0].eval(VARS); // reference: (int)(long)calc(...)
+                VARS.setColor(colorSetting);
+            }
+            case STRING -> {
+                int x = (int) (cx + n[0].eval(VARS));
+                int y = (int) (cy + n[1].eval(VARS));
+                Object[] prm = new Object[it.args.length]; // NONE stays null and formats as "null", as in the reference
+                for (int i = 0; i < prm.length; i++) {
+                    if (it.args[i] != MCH_HudItemStringArgs.NONE) {
+                        Object v = s.formatArg(it.args[i].name());
+                        if (v == HudState.SKIP_STRING) {
+                            return; // reference MCH_HudItemString returns without drawing
+                        }
+                        prm[i] = v;
+                    }
+                }
+                r.string(String.format(it.text, prm), x, y, colorSetting, it.centered);
+            }
+            case RECT -> {
+                double x2 = cx + n[0].eval(VARS);
+                double y2 = cy + n[1].eval(VARS);
+                double x1 = x2 + (int) n[2].eval(VARS);
+                double y1 = y2 + (int) n[3].eval(VARS);
+                r.fill((int) x2, (int) y2, (int) x1, (int) y1, colorSetting);
+            }
+            case LINE -> {
+                double[] pts = new double[n.length];
+                for (int i = 0; i < pts.length; i += 2) {
+                    pts[i] = cx + n[i].eval(VARS);
+                    pts[i + 1] = cy + n[i + 1].eval(VARS);
+                }
+                r.line(pts, colorSetting, 3, s.lineWidth());
+            }
+            case LINE_STIPPLE -> {
+                double[] pts = new double[n.length - 2];
+                for (int i = 0; i < pts.length; i += 2) {
+                    pts[i] = cx + n[2 + i].eval(VARS);
+                    pts[i + 1] = cy + n[3 + i].eval(VARS);
+                }
+                int factor = (int) n[1].eval(VARS);
+                int pattern = (int) n[0].eval(VARS);
+                r.lineStipple(pts, colorSetting, factor, pattern, s.lineWidth());
+            }
+            case GRADUATION -> {
+                int gx = (int) (cx + n[2].eval(VARS));
+                int gy = (int) (cy + n[3].eval(VARS));
+                float roll = (float) n[1].eval(VARS);
+                double rot = n[0].eval(VARS);
+                r.pushMatrix(gx, gy, roll); // ladder banks with roll (the reference's glRotate)
+                try {
+                    drawGraduation(r, s, it.aux, rot, gx, gy, colorSetting);
+                } finally {
+                    r.popMatrix();
+                }
+            }
+            case TEXTURE -> r.texture(it.text,
+                cx + n[0].eval(VARS), cy + n[1].eval(VARS),
+                n[2].eval(VARS), n[3].eval(VARS),
+                n[4].eval(VARS), n[5].eval(VARS), n[6].eval(VARS), n[7].eval(VARS),
+                (float) n[8].eval(VARS));
+            case RADAR -> {
+                double[] blips = it.aux == 1 ? s.radarEnemies() : s.radarEntities();
+                if (blips.length >= 2) { // reference evaluates the args only when the list has contacts
+                    drawRadar(r, blips, (float) n[0].eval(VARS), cx + n[1].eval(VARS), cy + n[2].eval(VARS),
+                        n[3].eval(VARS), n[4].eval(VARS), colorSetting);
+                }
+            }
+            case CAMERA_ROT -> {
+                double px = cx + n[0].eval(VARS);
+                double py = cy + n[1].eval(VARS);
+                drawCameraRot(r, s, px, py, colorSetting);
+            }
+            default -> { }
+        }
+    }
+
+    /** Reset the shared colour and variable scope to their start-up state (tests only). */
+    static void resetSharedState() {
+        colorSetting = 0xFF000000;
+        VARS.clear();
+    }
+
+    /** The shared current colour (tests only). */
+    static int currentColor() {
+        return colorSetting;
+    }
+
+    /** The shared variable scope (tests only). */
+    static HudVariables sharedScope() {
+        return VARS;
     }
 
     // ---- graduation ladders (DrawGraduationYaw / Pitch1 / Pitch2 / Pitch3), ported from MCH_HudItemGraduation ----
@@ -422,9 +607,11 @@ public final class MCH_Hud {
     }
 
     /**
-     * The gunner-camera direction indicator (reference {@code MCH_HudItemCameraRot.drawCommonGunnerCamera}): a
-     * {@code 42×22} outline box with a stippled crosshair, plus a small marker box whose offset shows where the
-     * gunner's camera looks relative to the hull. Drawn only while an active gunner camera exists (gated by the caller).
+     * The camera-direction indicator (reference {@code MCH_HudItemCameraRot.drawCommonGunnerCamera}): a {@code 42×22}
+     * outline box with a stippled crosshair, plus a small marker box whose offset shows where the camera looks
+     * relative to the hull. The reference camera's rotation is the riding player's look (the client tick handlers'
+     * {@code updateCameraRotate(player.rotationYaw, player.rotationPitch)}), for the pilot as for a gunner, so the
+     * marker follows the viewer's look ({@link HudState#cameraPitchDeg}, {@link HudState#cameraYawDiffDeg}).
      */
     private static void drawCameraRot(HudRenderer r, HudState s, double px, double py, int color) {
         float w = s.lineWidth();
@@ -456,15 +643,5 @@ public final class MCH_Hud {
             dir += 360;
         }
         return AZIMUTH_8[dir / 45];
-    }
-
-    /** {@code String.format} that degrades to the raw format string on a mismatch, so one bad line never crashes the
-     *  HUD (a deliberate robustness deviation from the reference, which rethrew). */
-    private static String safeFormat(String fmt, Object[] args) {
-        try {
-            return String.format(fmt, args);
-        } catch (Exception e) {
-            return fmt;
-        }
     }
 }

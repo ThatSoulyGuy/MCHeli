@@ -18,25 +18,35 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Parity harness for the world-sampling seams: asserts the ported {@link Buoyancy} 5-slice sampler and the
- * {@link GroundProbe} column/neighbor scans reproduce the reference arithmetic exactly against a scripted
- * in-memory block/water layout — verifying the pure math (slice bounds, float offset, the {@code py+y}
- * downward-scan bounds quirk, collidable-only gating) with zero Minecraft.
+ * {@link GroundProbe} column scans reproduce the reference arithmetic exactly against a scripted in-memory
+ * block/water layout — verifying the pure math (slice bounds, float offset, the 1.21 build-height bounds,
+ * collidable-only gating) with zero Minecraft. The stub's block predicates follow the production
+ * {@code NeoWorldView}: {@code isCollidable} is the reference {@code canCollideCheck(0, true)} (water and plants
+ * count, fire does not) and {@code hasCollision} is the collision shape (solid blocks only).
  */
 class BuoyancyGroundProbeTest {
 
-    /** Minimal WorldView: solid/water cells + a flat water surface for AABB overlap; other surfaces unused. */
+    /** Minimal WorldView: solid/water/plant/fire cells + a flat water surface for AABB overlap; other surfaces unused. */
     static final class StubWorld implements WorldView {
-        final Map<String, Integer> cells = new HashMap<>(); // 1 = solid, 2 = water
+        static final int SOLID = 1, WATER = 2, PLANT = 3, FIRE = 4;
+        final Map<String, Integer> cells = new HashMap<>();
         Double waterSurfaceY; // if set, isAABBInWater(box) = box.minY() < surface (a flat water body)
 
         static String k(int x, int y, int z) { return x + ":" + y + ":" + z; }
-        StubWorld solid(int x, int y, int z) { cells.put(k(x, y, z), 1); return this; }
-        StubWorld water(int x, int y, int z) { cells.put(k(x, y, z), 2); return this; }
+        StubWorld solid(int x, int y, int z) { cells.put(k(x, y, z), SOLID); return this; }
+        StubWorld water(int x, int y, int z) { cells.put(k(x, y, z), WATER); return this; }
+        StubWorld plant(int x, int y, int z) { cells.put(k(x, y, z), PLANT); return this; }
+        StubWorld fire(int x, int y, int z) { cells.put(k(x, y, z), FIRE); return this; }
         StubWorld surface(double y) { this.waterSurfaceY = y; return this; }
 
         @Override public int getBlockId(int x, int y, int z) { return cells.getOrDefault(k(x, y, z), 0); }
-        @Override public boolean isWater(int x, int y, int z) { return cells.getOrDefault(k(x, y, z), 0) == 2; }
-        @Override public boolean isCollidable(int x, int y, int z) { return cells.getOrDefault(k(x, y, z), 0) == 1; }
+        @Override public boolean isWater(int x, int y, int z) { return cells.getOrDefault(k(x, y, z), 0) == WATER; }
+        // Production semantics (NeoWorldView): every non-air block but fire is "collidable"; only solids have a shape.
+        @Override public boolean isCollidable(int x, int y, int z) {
+            int c = cells.getOrDefault(k(x, y, z), 0);
+            return c != 0 && c != FIRE;
+        }
+        @Override public boolean hasCollision(int x, int y, int z) { return cells.getOrDefault(k(x, y, z), 0) == SOLID; }
         @Override public boolean isAABBInWater(AABB box) { return waterSurfaceY != null && box.minY() < waterSurfaceY; }
 
         @Override public boolean isRemote() { return false; }
@@ -85,9 +95,28 @@ class BuoyancyGroundProbeTest {
 
     @Test
     void groundProbeCollidableOnlyGate() {
-        StubWorld w = new StubWorld().water(0, 99, 0);
-        assertEquals(0, GroundProbe.blockIdInColumn(w, 0.4, 100.4, 0.4, 1, -3, true));  // water not collidable -> skipped
-        assertEquals(2, GroundProbe.blockIdInColumn(w, 0.4, 100.4, 0.4, 1, -3, false)); // any non-air -> returned
+        // Only fire fails canCollideCheck: the collidable-only scan skips it, the any-block scan returns it.
+        StubWorld w = new StubWorld().fire(0, 99, 0);
+        assertEquals(0, GroundProbe.blockIdInColumn(w, 0.4, 100.4, 0.4, 1, -3, true));
+        assertEquals(StubWorld.FIRE, GroundProbe.blockIdInColumn(w, 0.4, 100.4, 0.4, 1, -3, false));
+    }
+
+    @Test
+    void groundProbeStopsOnWaterAndPlants() {
+        // The reference probe counts liquids (BlockLiquid.canCollideCheck(0, true)) and every plant/snow layer
+        // (Block.isCollidable() is true for all but fire), so heli ground effect and the on-ground gates fire over them.
+        assertEquals(StubWorld.WATER, GroundProbe.blockIdInColumn(new StubWorld().water(0, 99, 0), 0.4, 100.4, 0.4, 1, -3, true));
+        assertEquals(StubWorld.PLANT, GroundProbe.blockIdInColumn(new StubWorld().plant(0, 99, 0), 0.4, 100.4, 0.4, 1, -3, true));
+    }
+
+    @Test
+    void waterFirstInColumnReportsTheFirstCollidableBlock() {
+        StubWorld sea = new StubWorld().water(0, 98, 0).solid(0, 90, 0);
+        assertTrue(GroundProbe.waterFirstInColumn(sea, 0.4, 100.4, 0.4, 1, -20));
+        StubWorld land = new StubWorld().solid(0, 98, 0).water(0, 97, 0);
+        assertFalse(GroundProbe.waterFirstInColumn(land, 0.4, 100.4, 0.4, 1, -20));
+        assertFalse(GroundProbe.waterFirstInColumn(new StubWorld(), 0.4, 100.4, 0.4, 3, -20)); // nothing below
+        assertFalse(GroundProbe.waterFirstInColumn(sea, 0.4, 100.4, 0.4, 1, -2));               // out of reach
     }
 
     @Test
@@ -144,13 +173,5 @@ class BuoyancyGroundProbeTest {
         // further up, two rows down stay above the world: still airborne
         assertEquals(0, GroundProbe.blockIdInColumn(w, 0.3, 325.0, 0.3, 3, -2, true));
         assertFalse(GroundProbe.solidNonWaterInColumn(w, 0.3, 325.0, 0.3, 3, -2));
-    }
-
-    @Test
-    void isBlockInWaterNeighbors() {
-        StubWorld w = new StubWorld().water(0, 99, 0);
-        assertTrue(GroundProbe.isBlockInWater(w, 0, 100, 0));  // {0,-1,0} neighbor is water
-        assertFalse(GroundProbe.isBlockInWater(w, 5, 100, 5)); // no water nearby
-        assertFalse(GroundProbe.isBlockInWater(w, 0, 0, 0));   // y<=0 short-circuit
     }
 }

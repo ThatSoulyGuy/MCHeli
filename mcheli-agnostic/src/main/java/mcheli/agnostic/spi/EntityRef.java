@@ -6,10 +6,14 @@ import mcheli.agnostic.value.MoveResult;
 import mcheli.agnostic.value.Vec3d;
 
 /**
- * Opaque handle to any entity — identity, kinematics, role, mount, and synced-data access. The
+ * Opaque handle to any entity — identity, kinematics, role, mount, and world access. The
  * dependent layer wraps a Minecraft {@code Entity}; the agnostic layer never sees the concrete type
  * (classification goes through {@link #role()}, not {@code instanceof}). Motion is read as an
  * immutable {@link Vec3d} snapshot and written back via {@link #setMotion}; no shared mutable vectors.
+ *
+ * <p>There is deliberately no synced-data ({@code DataWatcher}) surface: the dependent entities own their
+ * {@code EntityDataAccessor}s natively and hand the agnostic sims plain typed inputs (control state, info
+ * definitions), so no agnostic code ever needs to read or write a synced slot by id.
  */
 public interface EntityRef {
     int id();
@@ -52,7 +56,6 @@ public interface EntityRef {
     EntityRef vehicle();          // the entity this one is riding, or null
     List<EntityRef> passengers();
 
-    // sub-surfaces
-    SyncedData synced();
+    // sub-surface
     WorldView world();
 }

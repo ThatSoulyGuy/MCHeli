@@ -9,6 +9,7 @@ import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.value.AABB;
 import mcheli.agnostic.value.RayHit;
 import mcheli.agnostic.value.Vec3d;
+import mcheli.dependent.registry.MchSounds;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.core.particles.ParticleType;
@@ -21,6 +22,8 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.BaseFireBlock;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
@@ -35,7 +38,8 @@ import net.minecraft.world.phys.shapes.CollisionContext;
  *
  * <p>The physics-critical surface ({@link #isAABBInWater}, {@link #getBlockId}, {@link #isCollidable},
  * {@link #isWater}, {@link #random}) is mapped exactly. The effect surface (particles / sounds) is
- * best-effort: names are resolved through the built-in registries and no-op when unresolved or off-thread.
+ * best-effort: particle ids resolve through the built-in registry, bare sound names through {@link MchSounds}
+ * (namespaced ones through the registry), and an unresolved name is a no-op.
  */
 public final class NeoWorldView implements WorldView {
     private final Level level;
@@ -66,16 +70,23 @@ public final class NeoWorldView implements WorldView {
     }
 
     @Override public boolean isCollidable(int x, int y, int z) {
-        BlockPos pos = new BlockPos(x, y, z);
-        BlockState state = level.getBlockState(pos);
-        // Reference MCH_Lib.getBlockY gates on block.canCollideCheck(0, true): with includeLiquid=true (and meta
-        // hardcoded to 0), vanilla BlockLiquid returns TRUE — so WATER counts as "collidable" and the ground probe
-        // STOPS on it (heli ground-effect / plane+tank on-ground gates fire over water). Reproduce that: a block
-        // with a collision shape OR any water fluid is collidable.
-        if (!state.getCollisionShape(level, pos).isEmpty()) {
-            return true;
+        BlockState state = level.getBlockState(new BlockPos(x, y, z));
+        // Reference MCH_Lib.getBlockY gates on block.canCollideCheck(0, true). In 1.7.10 that is Block.isCollidable(),
+        // true for every block but fire (tall grass, flowers, torches, snow layers all count); BlockLiquid answers
+        // includeLiquid && meta == 0, and meta is hardcoded to 0, so every liquid counts; air is skipped before the
+        // test. So the probe stops on anything that is not air or fire — heli ground effect and the plane/tank
+        // on-ground gates fire over grass and water exactly as they did. Light and structure-void blocks (1.21 air
+        // stand-ins with no 1.7.10 counterpart) are treated as air.
+        if (state.isAir() || state.is(Blocks.LIGHT) || state.is(Blocks.STRUCTURE_VOID)) {
+            return false;
         }
-        return level.getFluidState(pos).is(FluidTags.WATER);
+        return !(state.getBlock() instanceof BaseFireBlock);
+    }
+
+    @Override public boolean hasCollision(int x, int y, int z) {
+        // What a moving entity (the reference MCH_EntityWheel) actually rests on: a non-empty collision shape.
+        BlockPos pos = new BlockPos(x, y, z);
+        return !level.getBlockState(pos).getCollisionShape(level, pos).isEmpty();
     }
 
     @Override public boolean isAABBInWater(AABB box) {
@@ -194,8 +205,20 @@ public final class NeoWorldView implements WorldView {
 
     private static Vec3 toNet(Vec3d v) { return new Vec3(v.x(), v.y(), v.z()); }
 
+    /**
+     * A bare name ({@code gun_h3_snd}) is first an MCHeli sound, as in the reference's
+     * {@code W_WorldFunc.MOD_playSoundEffect} (which prefixed {@code "mcheli:"}): it resolves through
+     * {@link MchSounds#byName}, so content-pack sounds work too. A bare name MCHeli has no sound for falls back to the
+     * vanilla namespace ({@code entity.generic.explode}), as the reference's {@code DEF_playSoundEffect} passed vanilla
+     * names without one. A namespaced id goes straight to the sound registry. Unknown names return null (no sound).
+     */
     private static SoundEvent resolveSound(String name) {
-        ResourceLocation id = ResourceLocation.tryParse(name);
+        if (name == null || name.isEmpty()) return null;
+        if (name.indexOf(':') < 0) {
+            SoundEvent mcheli = MchSounds.byName(name);
+            if (mcheli != null) return mcheli;
+        }
+        ResourceLocation id = ResourceLocation.tryParse(name); // a bare name parses into minecraft:
         return id == null ? null : BuiltInRegistries.SOUND_EVENT.get(id);
     }
 }

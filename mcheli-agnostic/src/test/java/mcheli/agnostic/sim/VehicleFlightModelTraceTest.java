@@ -7,7 +7,6 @@ import java.util.ArrayList;
 import java.util.List;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.value.AABB;
 import mcheli.agnostic.value.MoveResult;
@@ -24,7 +23,14 @@ import org.junit.jupiter.api.Test;
  */
 class VehicleFlightModelTraceTest {
 
-    static final AircraftState ALIVE = () -> false; // not destroyed
+    /** Intact; the pilot gate mirrors production (seat 0 occupied) through the entity's own rider list here, since the
+     *  traces only ever seat one rider. */
+    static AircraftState alive(FakeEntity e) {
+        return new AircraftState() {
+            @Override public boolean isDestroyed() { return false; }
+            @Override public boolean hasPilot() { return !e.passengers().isEmpty(); }
+        };
+    }
     static final VehicleFlightModel MODEL = new VehicleFlightModel();
 
     /** Mutable EntityRef with no collision: move() applies the full delta and reports no blocking. */
@@ -70,7 +76,6 @@ class VehicleFlightModelTraceTest {
         @Override public int ageTicks() { return 0; }
         @Override public void addMotion(Vec3d d) { mx += d.x(); my += d.y(); mz += d.z(); }
         @Override public EntityRef vehicle() { return null; }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
         @Override public WorldView world() { throw new UnsupportedOperationException(); }
     }
 
@@ -85,7 +90,7 @@ class VehicleFlightModelTraceTest {
     }
 
     static void tick(FakeEntity e, MCH_VehicleInfo vi, AircraftSimState st, ControlInput in) {
-        AircraftFlightController.tickServer(e, vi, st, in, ALIVE, MODEL);
+        AircraftFlightController.tickServer(e, vi, st, in, alive(e), MODEL);
     }
 
     @Test
@@ -142,6 +147,29 @@ class VehicleFlightModelTraceTest {
             tick(e, vi, st, left);
         }
         assertEquals(-2.0f, e.yaw, 1e-4); // -0.5 deg/tick * 4
+    }
+
+    @Test
+    void aGunnerAloneDoesNotDrive() {
+        // A rider aboard but no seat-0 pilot (reference riddenByEntity == null): no steering, the throttle decays.
+        FakeEntity e = new FakeEntity().at(0, 100, 0).withRider();
+        AircraftSimState st = new AircraftSimState(0.07);
+        st.currentThrottle = 0.5;
+        AircraftState noPilot = new AircraftState() {
+            @Override public boolean isDestroyed() { return false; }
+            @Override public boolean hasPilot() { return false; }
+        };
+        AircraftFlightController.tickServer(e, info(), st, ControlInput.ground(false, false, true, false), noPilot, MODEL);
+        assertEquals(0.0f, e.yaw, 0.0f);
+        assertEquals(0.49875, st.currentThrottle, 1e-12);
+    }
+
+    @Test
+    void serverSteeringStaysWrapped() {
+        FakeEntity e = new FakeEntity().at(0, 100, 0).withRider();
+        e.yaw = 359.8F;
+        tick(e, info(), new AircraftSimState(0.07), ControlInput.ground(false, false, false, true));
+        assertEquals(0.3f, e.yaw, 1e-3f); // 359.8 + 0.5, then the end-of-tick % 360
     }
 
     @Test

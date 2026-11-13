@@ -79,12 +79,15 @@ public final class HeliFlightModel implements FlightModel {
         if (st.getCurrentThrottle() < 0.0) {
             st.setCurrentThrottle(0.0);
         }
+        // The reference also advances rotationRotor here (MCH_EntityHeli:543-546). It only animates the blades, which the
+        // client does itself (AbstractMchVehicle.advanceRotorSpin, and MchHelicopter's fold animator), so it is not kept.
+    }
 
-        // Rotor spin (cosmetic sim output; rendering stays host-side).
-        st.prevRotationRotor = st.rotationRotor;
-        float rp = (float) (1.0 - st.getCurrentThrottle());
-        st.rotationRotor = st.rotationRotor + (1.0F - rp * rp * rp) * info.rotorSpeed;
-        st.rotationRotor %= 360.0;
+    /** {@code onUpdateAircraft} between control and server: hover/gunner pitch levelling + the wreck throttle bleed. */
+    @Override
+    public void afterControl(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, AircraftState mod) {
+        AircraftFlightController.levelHoverPitch(self, mod);
+        AircraftFlightController.decayWreckThrottle(self, st, mod);
     }
 
     private void controlNotHovering(EntityRef self, MCH_AircraftInfo info, AircraftSimState st, ControlInput in) {

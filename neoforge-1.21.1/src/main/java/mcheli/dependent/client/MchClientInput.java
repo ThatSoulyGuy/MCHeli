@@ -1,6 +1,7 @@
 package mcheli.dependent.client;
 
 import mcheli.MCHeli;
+import mcheli.dependent.config.MchConfig;
 import mcheli.dependent.control.MchControllable;
 import mcheli.dependent.control.ServerboundControlPayload;
 import mcheli.dependent.control.ServerboundWeaponSwitchPayload;
@@ -22,9 +23,15 @@ import net.neoforged.neoforge.network.PacketDistributor;
  * change plus a periodic keepalive so a dropped edge self-heals.
  *
  * <p>It reuses the vanilla movement keybinds (WASD) rather than registering new ones: while riding a vehicle that
- * does NOT claim the controlling passenger (all our demo entities), vanilla makes no use of WASD, so reading them
- * for our control is conflict-free and intuitive. It deliberately avoids jump/sneak — those are the vanilla
- * dismount keys. Mouse look and a dedicated brake key arrive with the rotation increment.
+ * does NOT claim the controlling passenger (no MCHeli vehicle does), vanilla makes no use of WASD, so reading them
+ * for our control is conflict-free and intuitive. Sneak stays the vanilla dismount key; jump does nothing while
+ * seated, so it carries the reference's SPACE binding (the tank brake here, the heli hover toggle in
+ * {@link MchKeybinds}). Mouse rotation travels separately ({@link MchClientRotation}).
+ *
+ * <p>Weapon switching: the vanilla swap-offhand key (default F) cycles to the next weapon while seated (the port's stand-in
+ * for the reference {@code KeySwitchWeapon1/2}), and, with the client option {@code switchWeaponWithMouseWheel}, the
+ * mouse wheel cycles back and forth (reference {@code MCH_ClientTickHandlerBase.updateMouseWheel}). While seated the
+ * swap-offhand presses are drained before vanilla sees them, so a weapon switch never also swaps the player's hands.
  *
  * <p>The bus is auto-detected per event ({@code ClientTickEvent.Post} is a game-bus event).
  */
@@ -33,12 +40,53 @@ public final class MchClientInput {
     private MchClientInput() {}
 
     private static int lastBits = -1;
+    private static int lastSettingBits;  // the client-setting bits of the last send, kept in the release packet
     private static int lastVehicleId = -1;
     private static int lastLockTargetId = -1;
     private static int notifyLockTick;   // paces the RWR "you are being locked" packet (~every 15 ticks while locking)
     private static int keepalive;
     // Weapon-switch is edge-triggered: remember the switch key's last state so we send ONE cycle per press.
     private static boolean switchKeyWasDown;
+
+    /**
+     * Swallow the vanilla swap-offhand presses while seated in an MCHeli vehicle, before {@code Minecraft.handleKeybinds}
+     * (which runs between the Pre and Post client tick) turns each one into a {@code SWAP_ITEM_WITH_OFFHAND} packet. The
+     * key stays held, so {@link #onClientTick} still sees its rising edge for the weapon switch.
+     */
+    @SubscribeEvent
+    public static void onClientTickPre(ClientTickEvent.Pre event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null && mc.screen == null
+            && mc.player.getVehicle() instanceof mcheli.dependent.entity.AbstractMchVehicle) {
+            while (mc.options.keySwapOffhand.consumeClick()) {
+                // drained: the press is the weapon-switch key here
+            }
+        }
+    }
+
+    /**
+     * Mouse-wheel weapon switching (reference {@code MCH_ClientTickHandlerBase.updateMouseWheel}, gated by the client
+     * option {@code SwitchWeaponWithMouseWheel}): wheel up selects the previous weapon, wheel down the next, and the turn
+     * is taken from the hotbar only when it would actually change the seat's weapon.
+     */
+    @SubscribeEvent
+    public static void onMouseScroll(InputEvent.MouseScrollingEvent event) {
+        Minecraft mc = Minecraft.getInstance();
+        double wheel = event.getScrollDeltaY();
+        if (wheel == 0.0 || mc.player == null || mc.screen != null
+            || !mcheli.dependent.config.MchConfig.CLIENT.switchWeaponWithMouseWheel()
+            || !(mc.player.getVehicle() instanceof mcheli.dependent.entity.AbstractMchVehicle v)) {
+            return;
+        }
+        int step = wheel > 0.0 ? -1 : 1;
+        int seat = v.seatIndexOf(mc.player);
+        if (seat >= 0 && v.wouldSwitchWeapon(seat, step)) {
+            event.setCanceled(true);
+            if (!v.isPilotReloading() && !v.isDestroyed()) {
+                PacketDistributor.sendToServer(new ServerboundWeaponSwitchPayload(v.getId(), step));
+            }
+        }
+    }
 
     @SubscribeEvent
     public static void onClientTick(ClientTickEvent.Post event) {
@@ -55,8 +103,9 @@ public final class MchClientInput {
         boolean armed = controlling && !(vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle v
             && v.isPilotReloading());
 
-        // Weapon cycle (edge-triggered): the vanilla swap-offhand key (default F) is unused while piloting, so reuse
-        // it for "next weapon". Only fires on the rising edge and only while actively controlling.
+        // Weapon cycle (edge-triggered): the vanilla swap-offhand key (default F) is "next weapon" while seated; its
+        // vanilla presses are drained in onClientTickPre. Only fires on the rising edge and only while actively
+        // controlling.
         boolean switchDown = armed && mc.options.keySwapOffhand.isDown();
         if (switchDown && !switchKeyWasDown && vehicle != null) {
             PacketDistributor.sendToServer(new ServerboundWeaponSwitchPayload(vehicle.getId(), 1));
@@ -73,7 +122,8 @@ public final class MchClientInput {
             // that same check — harmless; there the entity's clearMomentary() is the authoritative reset.)
             if (lastVehicleId != -1) {
                 if (mc.player != null) {
-                    PacketDistributor.sendToServer(new ServerboundControlPayload(lastVehicleId, 0, -1));
+                    // Keys released, client settings kept (the reference held its cs_* settings on the aircraft).
+                    PacketDistributor.sendToServer(new ServerboundControlPayload(lastVehicleId, lastSettingBits, -1));
                 }
                 lastVehicleId = -1;
                 lastBits = -1;
@@ -92,6 +142,15 @@ public final class MchClientInput {
         if (o.keyDown.isDown())   bits |= ServerboundControlPayload.THROTTLE_DOWN;
         if (o.keyLeft.isDown())   bits |= ServerboundControlPayload.MOVE_LEFT;
         if (o.keyRight.isDown())  bits |= ServerboundControlPayload.MOVE_RIGHT;
+        // The tank brake (reference KeyBrake = KeySwitchHovering = SPACE, held): the vanilla jump key, like WASD above.
+        if (vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle bv && bv.hasBrake() && o.keyJump.isDown()) {
+            bits |= ServerboundControlPayload.BRAKE;
+        }
+        // Client settings the reference pushed with MCH_PacketNotifyClientSetting (re-sent on change): the auto-throttle-
+        // down preference for this vehicle kind and DismountAll. Sent in every packet, so a config edit applies at once.
+        int settings = settingBits(vehicle);
+        bits |= settings;
+        lastSettingBits = settings;
         // Free-look parity: the airframe already holds heading client-authoritatively (MchClientRotation), so this is
         // not load-bearing — it just keeps the server sim's MchControlState.freeLook consistent (e.g. plane ground-yaw).
         if (MchFreeLook.active()) bits |= ServerboundControlPayload.FREE_LOOK;
@@ -105,21 +164,19 @@ public final class MchClientInput {
 
         // Missile lock-on: drive the client lock state machine for the local operator's selected weapon (it only ramps
         // while fire is held + a lock-on weapon is selected), then ship the COMPLETED-lock target id so the server can
-        // fire a guided round at it. The lock resolves client-side (reference + client-authoritative rotation).
-        // KNOWN LIMITATION: selectedClientWeaponInfo()/getSelectedWeaponIndex() read the seat-0 (pilot) synced weapon —
-        // the port does not sync per-seat weapon selection to clients (the cockpit HUD sight_type shares this gap). So
-        // a GUNNER-operated guided launcher can't build its own lock until per-seat selection is synced; pilot-fired
-        // guided missiles (the common case) work correctly.
+        // fire a guided round at it. The lock resolves client-side (reference + client-authoritative rotation). The
+        // weapon is the one THIS seat has selected (synced per seat), so a gunner's guided launcher locks too.
         int lockTargetId = -1;
         if (vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle amv && mc.player != null) {
             int seat = amv.seatIndexOf(mc.player);
-            int wIdx = amv.getSelectedWeaponIndex();
-            mcheli.agnostic.weapon.MCH_WeaponInfo wi = amv.selectedClientWeaponInfo();
+            int wIdx = amv.selectedWeaponIndex(seat);
+            mcheli.agnostic.weapon.MCH_WeaponInfo wi = amv.selectedClientWeaponInfo(seat);
             MchLockTracker.tick(amv, seat, wIdx, wi, fireHeld);
             lockTargetId = fireHeld ? MchLockTracker.completeTargetId() : -1;
 
             // RWR: while a lock is building/held, tell the server every ~15 ticks so it can warn the target's crew
             // (reference MCH_PacketNotifyLock cadence). Reset the pacer when there's no lock so the next lock warns fast.
+            // The first notice of a lock also starts the server's lock audit, which a guided shot must pass.
             int warnId = MchLockTracker.warningTargetId();
             if (warnId >= 0) {
                 if (notifyLockTick++ % 15 == 0) {
@@ -139,6 +196,20 @@ public final class MchClientInput {
             lastVehicleId = vid;
             lastLockTargetId = lockTargetId;
         }
+    }
+
+    /** The client-setting bits for {@code vehicle}: {@code AutoThrottleDown<Kind>} for its config kind and DismountAll
+     *  (reference {@code MCH_EntityAircraft.updateClientSettings}:4405-4410). */
+    private static int settingBits(Entity vehicle) {
+        int bits = 0;
+        if (vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle v && v.hostInfo() != null
+            && MchConfig.CLIENT.autoThrottleDown(v.hostInfo().getKindName())) {
+            bits |= ServerboundControlPayload.AUTO_THROTTLE_DOWN;
+        }
+        if (MchConfig.CLIENT.dismountAll()) {
+            bits |= ServerboundControlPayload.DISMOUNT_ALL;
+        }
+        return bits;
     }
 
     // ---- Suppress vanilla left-click while seated in a vehicle ---------------------------------------------------

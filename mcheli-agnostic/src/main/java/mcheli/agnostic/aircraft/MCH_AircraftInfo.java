@@ -4,31 +4,37 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import mcheli.agnostic.info.MCH_BaseInfo;
 import mcheli.agnostic.info.MCH_MobDropOption;
 import mcheli.agnostic.math.MchMath;
 import mcheli.agnostic.physics.MCH_BoundingBox;
-import mcheli.agnostic.spi.ItemHandle;
-import mcheli.agnostic.spi.ModelHandle;
 import mcheli.agnostic.value.Vec3d;
+import mcheli.agnostic.weapon.MCH_WeaponInfoManager;
 
 /**
  * Agnostic port of {@code mcheli.aircraft.MCH_AircraftInfo}: the parsed definition of one vehicle
  * (helicopter / plane / tank / ...). Pure Java — the reference's platform surfaces are coerced:
  * <ul>
  *   <li>{@code net.minecraft.util.Vec3} -&gt; {@link Vec3d}</li>
- *   <li>{@code net.minecraftforge.client.model.IModelCustom} -&gt; {@link ModelHandle} (carried, never dereferenced here)</li>
- *   <li>{@code net.minecraft.item.Item} -&gt; {@link ItemHandle}; the reference's {@code getItemStack()} (a
- *       {@code net.minecraft.item.ItemStack}) is dropped — dependent callers build stacks from {@link #getItem()}</li>
- *   <li>{@code net.minecraft.item.crafting.IRecipe} list dropped — recipes compile dependent-side; {@link #recipeString} stays</li>
+ *   <li>the {@code IModelCustom model} fields (the body here, each part in {@link DrawnPart}) are dropped: the
+ *       reference filled them in {@code MCH_ClientProxy.registerModels*} (and again after a hot reload, via
+ *       {@code postReload}); the port's renderers load {@code models/<dir>/<name>} by name through the cached
+ *       {@code ResourceSource.loadModel} and pick parts out of it by {@code $<modelName>}</li>
+ *   <li>{@code net.minecraft.item.Item item} / {@code getItem()} / {@code getItemStack()} are dropped: the spawn item
+ *       is a dependent-layer registration keyed by config name ({@code MchRegistries.spawnItemFor})</li>
+ *   <li>{@code net.minecraft.item.crafting.IRecipe} list dropped — recipes compile dependent-side; {@link #recipeString}
+ *       stays, with the per-line shaped flag {@link #isShapedRecipe(int)}</li>
  *   <li>{@code mcheli.hud.MCH_Hud} -&gt; HUD <em>name</em> Strings ({@link #hudList}, {@link #hudTvMissile}); the
  *       dependent layer resolves names to huds (mapping unknown names to the NoDisp sentinel)</li>
  *   <li>{@code MathHelper.wrapAngleTo180_float} -&gt; {@link MchMath#wrapAngleTo180}</li>
- *   <li>{@code MCH_WeaponInfoManager.contains(type)} -&gt; overridable {@link #isWeaponTypeAvailable(String)} seam</li>
  *   <li>the client-only ({@code MCH_MOD.proxy.isRemote()}) gate on the {@code HUD} directive is dropped — parsing is
  *       side-agnostic; the dependent layer decides whether to consume the parsed HUD names</li>
  * </ul>
+ * Names that key a lookup (weapon types, part/rack/texture names) are lower-cased with {@link Locale#ROOT}, so they
+ * match the {@link mcheli.agnostic.info.MCH_InfoManagerBase#definitionName} keys under any default locale.
  */
 public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
    public final String name;
@@ -36,7 +42,10 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
    public HashMap<String, String> displayNameLang;
    public int itemID;
    public List<String> recipeString;
+   /** Kind of the LAST recipe directive, as the reference kept it. Use {@link #isShapedRecipe(int)} per line. */
    public boolean isShapedRecipe;
+   /** Per-line kind, parallel to {@link #recipeString}: true for {@code AddRecipe}, false for {@code AddShapelessRecipe}. */
+   private final List<Boolean> recipeShaped = new ArrayList<>();
    public String category;
    public boolean isEnableGunnerMode;
    public int cameraZoom;
@@ -136,7 +145,6 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
    public float soundRange;
    public float soundVolume;
    public float soundPitch;
-   public ModelHandle model;
    public List<MCH_AircraftInfo.Hatch> hatchList;
    public List<MCH_AircraftInfo.Camera> cameraList;
    public List<MCH_AircraftInfo.PartWeapon> partWeapon;
@@ -154,19 +162,24 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
    private int lastWeaponIndex = -1;
    private MCH_AircraftInfo.PartWeapon lastWeaponPart;
 
-   public abstract ItemHandle getItem();
-
    public abstract String getDirectoryName();
 
    public abstract String getKindName();
 
    /**
-    * Coercion seam for the reference's {@code MCH_WeaponInfoManager.contains(type)} gate. The agnostic layer has
-    * no weapon registry yet, so it accepts every weapon type during parse; the dependent layer overrides this to
-    * consult the real registry (and later passes prune weapons that never resolve).
+    * The reference's {@code AddWeapon} gate ({@code MCH_WeaponInfoManager.contains(type)}, reference
+    * MCH_AircraftInfo:790): a mount whose weapon type has no definition is dropped, so it never takes a
+    * {@code weaponSetList} slot. Weapons load before vehicles for this (reference MCH_MOD:138-142, port
+    * {@code MCHeli.commonSetup}); before weapons have loaded at all (a definition parsed in isolation) every type is
+    * kept, since nothing can be judged unknown yet.
     */
-   protected boolean isWeaponTypeAvailable(String type) {
-      return true;
+   private static boolean isWeaponTypeAvailable(String type) {
+      return !MCH_WeaponInfoManager.isLoaded() || MCH_WeaponInfoManager.contains(type);
+   }
+
+   /** Was recipe line {@code index} of {@link #recipeString} an {@code AddRecipe} (shaped) line? */
+   public boolean isShapedRecipe(int index) {
+      return index >= 0 && index < this.recipeShaped.size() ? this.recipeShaped.get(index) : this.isShapedRecipe;
    }
 
    public MCH_AircraftInfo(String s) {
@@ -256,6 +269,9 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       this.mobilityYawOnGround = 1.0F;
       this.minRotationPitch = this.getMinRotationPitch();
       this.maxRotationPitch = this.getMaxRotationPitch();
+      // Seeded from the PITCH getters exactly as the reference does (MCH_AircraftInfo:243-244). It looks like a slip,
+      // but every bundled config that sets only a pitch limit (which turns limitRotation on) flies with the roll
+      // clamp this produces, so it is kept for parity.
       this.minRotationRoll = this.getMinRotationPitch();
       this.maxRotationRoll = this.getMaxRotationPitch();
       this.limitRotation = false;
@@ -275,7 +291,6 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       this.soundPitch = 1.0F;
       this.soundVolume = 1.0F;
       this.soundRange = this.getDefaultSoundRange();
-      this.model = null;
       this.hatchList = new ArrayList<>();
       this.cameraList = new ArrayList<>();
       this.partWeapon = new ArrayList<>();
@@ -353,7 +368,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       this.mobSeatNum = this.seatList.size();
       this.entityRackNum = this.entityRackList.size();
       if (this.getNumSeat() < 1) {
-         throw new Exception();
+         throw new Exception("no seat (needs an AddSeat line)"); // the reference threw a bare Exception
       }
 
       if (this.getNumHud() < this.getNumSeat()) {
@@ -376,32 +391,27 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       }
 
       if (this.textureNameList.size() < 1) {
-         throw new Exception();
+         throw new Exception("no texture");
       }
 
-      if (this.itemID <= 0) {
-      }
+      // Bind each weapon bay to the weapon sets it opens for, dropping bays that name none. The reference removed
+      // inside an index loop (remove(i) then i++), so the bay that slid into slot i was never examined: it kept its
+      // empty weaponIds and stayed, never opening. Iterate with remove() so every bay is checked.
+      for (Iterator<MCH_AircraftInfo.WeaponBay> it = this.partWeaponBay.iterator(); it.hasNext(); ) {
+         MCH_AircraftInfo.WeaponBay wb = it.next();
+         List<Integer> list = new ArrayList<>();
 
-      for (int i = 0; i < this.partWeaponBay.size(); i++) {
-         MCH_AircraftInfo.WeaponBay wb = this.partWeaponBay.get(i);
-         String[] weaponNames = wb.weaponName.split("\\s*/\\s*");
-         if (weaponNames.length <= 0) {
-            this.partWeaponBay.remove(i);
+         for (String s : wb.weaponName.split("\\s*/\\s*")) {
+            int id = this.getWeaponIdByName(s);
+            if (id >= 0) {
+               list.add(id);
+            }
+         }
+
+         if (list.isEmpty()) {
+            it.remove();
          } else {
-            List<Integer> list = new ArrayList<>();
-
-            for (String s : weaponNames) {
-               int id = this.getWeaponIdByName(s);
-               if (id >= 0) {
-                  list.add(id);
-               }
-            }
-
-            if (list.size() <= 0) {
-               this.partWeaponBay.remove(i);
-            } else {
-               this.partWeaponBay.get(i).weaponIds = list.toArray(new Integer[0]);
-            }
+            wb.weaponIds = list.toArray(new Integer[0]);
          }
       }
 
@@ -507,7 +517,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
             this.displayNameLang.put(s[0].trim(), s[1].trim());
          }
       } else if (item.equalsIgnoreCase("Category")) {
-         this.category = data.toUpperCase().replaceAll("[,;:]", ".").replaceAll("[ \t]", "");
+         this.category = data.toUpperCase(Locale.ROOT).replaceAll("[,;:]", ".").replaceAll("[ \t]", "");
       } else if (item.equalsIgnoreCase("CanRide")) {
          this.canRide = this.toBool(data, true);
       } else if (item.equalsIgnoreCase("MaxFuel")) {
@@ -529,7 +539,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       } else if (item.compareTo("itemid") == 0) {
          this.itemID = this.toInt(data, 0, 65535);
       } else if (item.compareTo("addtexture") == 0) {
-         this.textureNameList.add(data.toLowerCase());
+         this.textureNameList.add(data.toLowerCase(Locale.ROOT));
       } else if (item.compareTo("particlesscale") == 0) {
          this.particlesScale = this.toFloat(data, 0.0F, 50.0F);
       } else if (item.equalsIgnoreCase("EnableSeaSurfaceParticle")) {
@@ -587,7 +597,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
             this.repellingHooks.add(new MCH_AircraftInfo.RepellingHook(this.toVec3(s[0], s[1], s[2]), inv));
          }
       } else if (item.equalsIgnoreCase("AddRack")) {
-         String[] s = data.toLowerCase().split("\\s*,\\s*");
+         String[] s = data.toLowerCase(Locale.ROOT).split("\\s*,\\s*");
          if (s != null && s.length >= 7) {
             String[] names = s[0].split("\\s*/\\s*");
             float range = s.length >= 8 ? this.toFloat(s[7]) : 6.0F;
@@ -614,7 +624,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       } else if (item.equalsIgnoreCase("RideRack")) {
          String[] s = this.splitParam(data);
          if (s.length >= 2) {
-            MCH_AircraftInfo.RideRack r = new MCH_AircraftInfo.RideRack(s[0].trim().toLowerCase(), this.toInt(s[1], 1, 10000));
+            MCH_AircraftInfo.RideRack r = new MCH_AircraftInfo.RideRack(s[0].trim().toLowerCase(Locale.ROOT), this.toInt(s[1], 1, 10000));
             this.rideRacks.add(r);
          }
       } else if (item.equalsIgnoreCase("AddSeat") || item.equalsIgnoreCase("AddGunnerSeat") || item.equalsIgnoreCase("AddFixRotSeat")) {
@@ -797,8 +807,8 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
          this.canRotOnGround = this.toBool(data);
       } else if (item.equalsIgnoreCase("AddWeapon") || item.equalsIgnoreCase("AddTurretWeapon")) {
          String[] s = data.split("\\s*,\\s*");
-         String type = s[0].toLowerCase();
-         if (s.length >= 4 && this.isWeaponTypeAvailable(type)) {
+         String type = s[0].toLowerCase(Locale.ROOT);
+         if (s.length >= 4 && isWeaponTypeAvailable(type)) {
             float y = s.length >= 5 ? this.toFloat(s[4]) : 0.0F;
             float p = s.length >= 6 ? this.toFloat(s[5]) : 0.0F;
             boolean canUsePilot = s.length >= 7 ? this.toBool(s[6]) : true;
@@ -859,7 +869,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
             }
 
             MCH_AircraftInfo.PartWeapon w = new MCH_AircraftInfo.PartWeapon(
-               this.splitParamSlash(s[0].toLowerCase().trim()),
+               this.splitParamSlash(s[0].toLowerCase(Locale.ROOT).trim()),
                isRot,
                isMissile,
                this.toBool(s[1]),
@@ -898,8 +908,11 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
             this.lastWeaponPart.child.add(w);
          }
       } else if (item.compareTo("addrecipe") == 0 || item.compareTo("addshapelessrecipe") == 0) {
+         // The reference kept ONE flag, so the last recipe directive decided the kind of every line (a config mixing
+         // AddRecipe and AddShapelessRecipe built them all one way). Record the kind per line as well.
          this.isShapedRecipe = item.compareTo("addrecipe") == 0;
-         this.recipeString.add(data.toUpperCase(java.util.Locale.ROOT));
+         this.recipeString.add(data.toUpperCase(Locale.ROOT));
+         this.recipeShaped.add(this.isShapedRecipe);
       } else if (item.compareTo("maxhp") == 0) {
          this.maxHp = this.toInt(data, 1, 100000);
       } else if (item.compareTo("inventorysize") == 0) {
@@ -927,7 +940,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
             this.flare.pos = this.toVec3(s[0], s[1], s[2]);
          }
       } else if (item.equalsIgnoreCase("Sound")) {
-         this.soundMove = data.toLowerCase();
+         this.soundMove = data.toLowerCase(Locale.ROOT);
       } else if (item.equalsIgnoreCase("SoundRange")) {
          this.soundRange = this.toFloat(data, 1.0F, 1000.0F);
       } else if (item.equalsIgnoreCase("SoundVolume")) {
@@ -961,7 +974,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
          if (slide) {
             if (s.length >= 4) {
                n = new MCH_AircraftInfo.WeaponBay(
-                  s[0].trim().toLowerCase(),
+                  s[0].trim().toLowerCase(Locale.ROOT),
                   this.toFloat(s[1]),
                   this.toFloat(s[2]),
                   this.toFloat(s[3]),
@@ -977,7 +990,7 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
          } else if (s.length >= 7) {
             float mx = s.length >= 8 ? this.toFloat(s[7], -180.0F, 180.0F) : 90.0F;
             n = new MCH_AircraftInfo.WeaponBay(
-               s[0].trim().toLowerCase(),
+               s[0].trim().toLowerCase(Locale.ROOT),
                this.toFloat(s[1]),
                this.toFloat(s[2]),
                this.toFloat(s[3]),
@@ -1139,6 +1152,8 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
                this.toFloat(s[5]),
                this.toFloat(s[6]),
                always,
+               // Kept as the reference numbers them (by partThrottle.size(), not partRotPart.size()): models built for
+               // 1.7.10 content packs name their rotation groups to match, so renumbering would hide those parts.
                "rotpart" + this.partThrottle.size()
             );
             this.partRotPart.add(c);
@@ -1194,7 +1209,12 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
                .add(new MCH_AircraftInfo.TrackRoller(this.toFloat(s[0]), this.toFloat(s[1]), this.toFloat(s[2]), "track_roller" + this.partTrackRoller.size()));
          }
       } else if (item.equalsIgnoreCase("AddCrawlerTrack")) {
-         this.partCrawlerTrack.add(this.createCrawlerTrack(data, "crawler_track" + this.partCrawlerTrack.size()));
+         // The reference added the result unchecked, so a track with too few points put a null in the list (which the
+         // track renderer then dereferenced). Ignore an unusable line instead, as every other directive does.
+         MCH_AircraftInfo.CrawlerTrack track = this.createCrawlerTrack(data, "crawler_track" + this.partCrawlerTrack.size());
+         if (track != null) {
+            this.partCrawlerTrack.add(track);
+         }
       } else if (item.equalsIgnoreCase("PivotTurnThrottle")) {
          this.pivotTurnThrottle = this.toFloat(data, 0.0F, 1.0F);
       } else if (item.equalsIgnoreCase("TrackRollerRot")) {
@@ -1220,7 +1240,11 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
             this.markerWidth = (float)Math.max(this.markerWidth, Math.abs(c.boundingBox.maxZ()) / 2.0);
             this.markerWidth = (float)Math.max(this.markerWidth, Math.abs(c.boundingBox.minZ()) / 2.0);
             this.bbZmin = (float)Math.min(this.bbZmin, c.boundingBox.minZ());
-            this.bbZmax = (float)Math.min(this.bbZmax, c.boundingBox.maxZ());
+            // The reference used Math.min here too, which pinned bbZmax at its 1.0 seed. bbZ (isValidData; read only by
+            // the unported rack unloading, MCH_EntityAircraft:3987) is the midpoint of the fore/aft extents INCLUDING
+            // the reference's -1/+1 seeds, not the hull's true midpoint: a hull that does not span z = 0 is still
+            // skewed towards it (boxes over z 4..6 give bbZmin -1, bbZmax 6, bbZ 2.5). The seeds are kept as written.
+            this.bbZmax = (float)Math.max(this.bbZmax, c.boundingBox.maxZ());
          }
       } else if (item.equalsIgnoreCase("RotorSpeed")) {
          this.rotorSpeed = this.toFloat(data, -10000.0F, 10000.0F);
@@ -1238,22 +1262,32 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       }
    }
 
+   /**
+    * {@code AddCrawlerTrack = reverse, linkLength, z, x/y, x/y, x/y, x/y[, ...]}: the track outline (at least four
+    * {@code x/y} points) sampled into links. Returns {@code null} for an unusable line: fewer than four points, or a
+    * point that is not {@code x/y}. The reference read {@code s[1]}/{@code s[2]} before its point-count check and
+    * {@code xy[1]} unchecked, so a short line threw and the WHOLE vehicle file failed to load.
+    */
    public MCH_AircraftInfo.CrawlerTrack createCrawlerTrack(String data, String name) {
       String[] s = this.splitParam(data);
       int PC = s.length - 3;
-      boolean REV = this.toBool(s[0]);
-      float LEN = this.toFloat(s[1], 0.001F, 1000.0F) * 0.9F;
-      float Z = this.toFloat(s[2]);
       if (PC < 4) {
          return null;
       }
 
+      boolean REV = this.toBool(s[0]);
+      float LEN = this.toFloat(s[1], 0.001F, 1000.0F) * 0.9F;
+      float Z = this.toFloat(s[2]);
       double[] cx = new double[PC];
       double[] cy = new double[PC];
 
       for (int i = 0; i < PC; i++) {
          int idx = !REV ? i : PC - i - 1;
          String[] xy = this.splitParamSlash(s[3 + idx]);
+         if (xy.length < 2) {
+            return null;
+         }
+
          cx[i] = this.toFloat(xy[0]);
          cy[i] = this.toFloat(xy[1]);
       }
@@ -1457,17 +1491,17 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       }
    }
 
+   /** A separately animated model part. Renderers find it by name as the body model's {@code $<modelName>} group; the
+    *  reference's cached {@code model} field (filled by {@code MCH_ClientProxy.loadPartModel}) is dropped. */
    public static class DrawnPart {
       public final Vec3d pos;
       public final Vec3d rot;
       public final String modelName;
-      public ModelHandle model;
 
       public DrawnPart(float px, float py, float pz, float rx, float ry, float rz, String name) {
          this.pos = new Vec3d(px, py, pz);
          this.rot = new Vec3d(rx, ry, rz);
          this.modelName = name;
-         this.model = null;
       }
    }
 
@@ -1600,6 +1634,8 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       }
    }
 
+   /** An {@code AddRepellingHook} line. Parsed but unused: rope repelling is not ported (DEFERRED.md), so the fields
+    *  stay package-private; widen them when a dependent consumer is written. */
    public static class RepellingHook {
       final Vec3d pos;
       final int interval;

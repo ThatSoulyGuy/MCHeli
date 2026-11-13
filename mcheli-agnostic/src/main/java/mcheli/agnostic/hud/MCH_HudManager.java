@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.Reader;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import mcheli.agnostic.spi.Logger;
 import mcheli.agnostic.spi.ResourceSource;
@@ -27,19 +28,25 @@ public final class MCH_HudManager {
 
     /** The parsed HUD for {@code name} (e.g. "heli", "common_pilot"), or null if not loaded. */
     public static MCH_Hud get(String name) {
-        return name == null ? null : INSTANCE.map.get(name.toLowerCase());
+        return name == null ? null : INSTANCE.map.get(name.toLowerCase(Locale.ROOT));
     }
 
-    /** Load every {@code hud/*.txt} through the resource source. */
+    /** Load every {@code hud/*.txt} through the resource source. A malformed expression costs only its own item (see
+     *  {@link MCH_Hud}); an If/EndIf pairing error rejects that one file with a warning. The reference threw a
+     *  RuntimeException at that point, which stopped the game. */
     public void load(ResourceSource res, Logger log) {
         this.map.clear();
         List<String> files = res.list("hud");
         for (String file : files) {
-            if (!file.toLowerCase().endsWith(".txt")) {
+            String lower = file.toLowerCase(Locale.ROOT);
+            if (lower.length() < 5 || !lower.endsWith(".txt")) {
                 continue;
             }
-            String name = file.substring(0, file.length() - 4).toLowerCase();
-            MCH_Hud hud = new MCH_Hud(name);
+            String name = lower.substring(0, lower.length() - 4);
+            if (this.map.containsKey(name)) {
+                continue; // reference: the first file of a name wins
+            }
+            MCH_Hud hud = new MCH_Hud(name, "hud/" + file, log);
             try (Reader raw = res.openUtf8("hud/" + file)) {
                 if (raw == null) {
                     continue;
@@ -49,9 +56,10 @@ public final class MCH_HudManager {
                 while ((line = in.readLine()) != null) {
                     hud.parseLine(line);
                 }
+                hud.checkData();
                 this.map.put(name, hud);
             } catch (Exception e) {
-                log.warn("MCHeli: failed to parse hud/{} : {}", file, e.toString());
+                log.warn("### HUD file error! hud/%s : %s", file, e.getMessage() != null ? e.getMessage() : e.toString());
             }
         }
         log.info("Read %d huds", this.map.size()); // printf-style like the other managers (the SPI logger is %-format)

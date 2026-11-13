@@ -1,11 +1,15 @@
 package mcheli.dependent.client;
 
 import mcheli.MCHeli;
+import mcheli.dependent.config.MchConfig;
 import mcheli.dependent.entity.AbstractMchVehicle;
+import net.minecraft.client.Minecraft;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RenderLivingEvent;
+import net.neoforged.neoforge.client.event.RenderNameTagEvent;
+import net.neoforged.neoforge.common.util.TriState;
 
 /**
  * Client-only GAME-bus subscriber that hides the seated rider of a vehicle whose config says {@code HideEntity=true}
@@ -15,7 +19,11 @@ import net.neoforged.neoforge.client.event.RenderLivingEvent;
  * living-render pass removes the rider only in views that would draw it (third-person / other clients); the local
  * first-person player is not drawn as a living entity, so this is a no-op there.
  *
- * <p>The bus is auto-detected per event ({@code RenderLivingEvent.Pre} is a game-bus event).
+ * <p>It also hides the name tags of everyone riding the local player's vehicle while the client option
+ * {@code disableRenderLivingSpecials} is on (reference {@code renderLivingEventSpecialsPre}, MCH_ClientEventHook:35-42),
+ * so a crew member's name does not float in the middle of the cockpit view.
+ *
+ * <p>The bus is auto-detected per event (both are game-bus events).
  */
 @EventBusSubscriber(modid = MCHeli.MODID, value = Dist.CLIENT)
 public final class MchRiderRenderHider {
@@ -25,6 +33,15 @@ public final class MchRiderRenderHider {
     public static void onRenderLivingPre(RenderLivingEvent.Pre<?, ?> event) {
         if (event.getEntity().getVehicle() instanceof AbstractMchVehicle vehicle && vehicle.hidesRider()) {
             event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onRenderNameTag(RenderNameTagEvent event) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.player != null && mc.player.getVehicle() instanceof AbstractMchVehicle own
+            && event.getEntity().getVehicle() == own && MchConfig.CLIENT.disableRenderLivingSpecials()) {
+            event.setCanRender(TriState.FALSE); // reference ac.isMountedEntity(entity) -> setCanceled(true)
         }
     }
 }

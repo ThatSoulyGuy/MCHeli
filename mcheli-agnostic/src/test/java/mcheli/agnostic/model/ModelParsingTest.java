@@ -1,12 +1,21 @@
 package mcheli.agnostic.model;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -69,6 +78,7 @@ class ModelParsingTest {
         assertEquals(1, model.groups().size());
         assertEquals("Default", model.groups().get(0).name);
         assertEquals(8, model.getVertexNum());
+        assertEquals(6, model.getFaceNum()); // the real face count (the reference's vertices/3 would say 2)
 
         ModelGroup g = model.groups().get(0);
         assertEquals(6, g.faces.size());
@@ -128,5 +138,168 @@ class ModelParsingTest {
         assertEquals(1, model.groups().get(1).faces.size());
         assertEquals(3, model.groups().get(0).faces.get(0).vertices.length);
         assertTrue(model.containsPart("$partA") && model.containsPart("$partB"));
+        assertEquals(2, model.getFaceNum());
+    }
+
+    /**
+     * A {@code .obj} with no faces (vertices only, or a non-{@code $} group line) used to leave a single {@code null}
+     * group behind (the reference added the trailing group unconditionally), so {@code containsPart} and the
+     * renderer's group walk threw. It now parses to an empty part list.
+     */
+    @Test
+    void obj_withoutFaces_hasNoNullGroup() {
+        String src = "v 0.000000 0.000000 0.000000\n"
+            + "v 1.000000 0.000000 0.000000\n"
+            + "g plain\n";
+        ObjModel model = new ObjModel("faceless.obj", new ByteArrayInputStream(src.getBytes(StandardCharsets.UTF_8)));
+
+        assertTrue(model.groups().isEmpty());
+        assertFalse(model.containsPart("Default"));
+        assertEquals(0, model.getFaceNum());
+        assertEquals(2, model.getVertexNum());
+    }
+
+    /** An empty {@code $} group followed by faces in the next one keeps both, and none of them is null. */
+    @Test
+    void obj_emptyDollarGroup_isKeptButNeverNull() {
+        String src = "v 0.000000 0.000000 0.000000\n"
+            + "v 1.000000 0.000000 0.000000\n"
+            + "v 0.000000 1.000000 0.000000\n"
+            + "g $empty\n"
+            + "g $full\n"
+            + "f 1 2 3\n";
+        ObjModel model = new ObjModel("empty-group.obj", new ByteArrayInputStream(src.getBytes(StandardCharsets.UTF_8)));
+
+        assertEquals(2, model.groups().size());
+        assertFalse(model.groups().contains(null));
+        assertEquals(0, model.groups().get(0).faces.size());
+        assertEquals(1, model.groups().get(1).faces.size());
+    }
+
+    // ---- character decoding ----
+    //
+    // Both parsers pin UTF-8 instead of the reference's platform default. The in-process tests below are round-trip
+    // regression guards only: on JDK 18+ the default charset is already UTF-8 (JEP 400) and this build sets no
+    // file.encoding, so a parser still using the default would pass them too. The forked test is the proof.
+
+    /** A UTF-8 object name, whose bytes read as ISO-8859-1 would be different text, survives the MQO parser. */
+    @Test
+    void mqo_utf8ObjectName_roundTrips() {
+        assertNotEquals(Utf8Probe.MQO_NAME, Utf8Probe.asIso88591(Utf8Probe.MQO_NAME), "the name must be charset-sensitive");
+        MqoModel model = Utf8Probe.parseMqo();
+
+        assertEquals(1, model.groups().size());
+        assertEquals(Utf8Probe.MQO_NAME, model.groups().get(0).name);
+        assertEquals(1, model.getFaceNum());
+        assertEquals(3, model.getVertexNum());
+    }
+
+    /**
+     * The OBJ group grammar ({@code [-$\w\d]+}, ASCII {@code \w}) accepts only ASCII names, so the decoding cannot
+     * change what a valid OBJ parses to. It shows in the error for a non-ASCII group line, which quotes the line as
+     * decoded: here as the UTF-8 text.
+     */
+    @Test
+    void obj_nonAsciiGroupLine_isRejectedAndQuotedAsUtf8() {
+        assertNotEquals(Utf8Probe.OBJ_GROUP, Utf8Probe.asIso88591(Utf8Probe.OBJ_GROUP));
+        assertEquals("g " + Utf8Probe.OBJ_GROUP, Utf8Probe.objErrorLine());
+    }
+
+    /**
+     * Both parsers decode UTF-8 even when the JVM's default charset is not UTF-8. The checks run in a child JVM started
+     * with {@code -Dfile.encoding=ISO-8859-1}, where a parser using the platform default would read the MQO object
+     * name and the quoted OBJ line as Latin-1 text and fail. Skipped if that JVM ignores the property.
+     */
+    @Test
+    void bothParsers_decodeUtf8_whenTheDefaultCharsetIsNotUtf8() throws Exception {
+        Path javaHome = Path.of(System.getProperty("java.home"), "bin");
+        Path java = Files.exists(javaHome.resolve("java.exe")) ? javaHome.resolve("java.exe") : javaHome.resolve("java");
+        String cp = classpathEntry(MqoModel.class) + File.pathSeparator + classpathEntry(Utf8Probe.class);
+        Process p = new ProcessBuilder(java.toString(), "-Dfile.encoding=ISO-8859-1", "-cp", cp, Utf8Probe.class.getName())
+            .redirectErrorStream(true).start();
+        byte[] out = p.getInputStream().readAllBytes();
+        assertTrue(p.waitFor(60, TimeUnit.SECONDS), "probe JVM did not exit");
+        List<String> lines = new String(out, StandardCharsets.US_ASCII).lines().toList();
+        assertEquals(0, p.exitValue(), "probe JVM failed: " + lines);
+        assumeTrue(lines.get(0).equals("ISO-8859-1"), "the probe JVM ignored -Dfile.encoding: " + lines.get(0));
+
+        assertEquals(Utf8Probe.escape(Utf8Probe.MQO_NAME), lines.get(1), "MQO object name");
+        assertEquals(Utf8Probe.escape("g " + Utf8Probe.OBJ_GROUP), lines.get(2), "OBJ error line");
+    }
+
+    private static String classpathEntry(Class<?> c) throws Exception {
+        return Path.of(c.getProtectionDomain().getCodeSource().getLocation().toURI()).toString();
+    }
+
+    /**
+     * The parse half of the decoding tests, runnable as a child JVM's main class. It references only the model
+     * parsers and the JDK, so the child needs no test framework on its classpath. {@link #main} prints the default
+     * charset, then the MQO object name and the OBJ error line with every non-ASCII char as {@code \}{@code uXXXX}.
+     */
+    static final class Utf8Probe {
+        /** "airframe" in Japanese: UTF-8 E6 A9 9F E4 BD 93, which ISO-8859-1 reads as six other characters. */
+        static final String MQO_NAME = "機体";
+        /** A {@code $} group with a non-ASCII name ("wing" in Japanese, and an umlaut). */
+        static final String OBJ_GROUP = "$翼_flügel";
+
+        public static void main(String[] args) {
+            System.out.println(Charset.defaultCharset().name());
+            System.out.println(escape(parseMqo().groups().get(0).name));
+            System.out.println(escape(objErrorLine()));
+        }
+
+        static MqoModel parseMqo() {
+            String src = "Metasequoia Document\n"
+                + "Format Text Ver 1.0\n"
+                + "Object \"" + MQO_NAME + "\" {\n"
+                + "\tvertex 3 {\n"
+                + "\t\t0 0 0\n"
+                + "\t\t100 0 0\n"
+                + "\t\t0 100 0\n"
+                + "\t}\n"
+                + "\tface 1 {\n"
+                + "\t\t3 V(0 1 2)\n"
+                + "\t}\n"
+                + "}\n"
+                + "Eof\n";
+            return new MqoModel("utf8.mqo", new ByteArrayInputStream(src.getBytes(StandardCharsets.UTF_8)));
+        }
+
+        /** The line the OBJ parser quotes when it rejects the non-ASCII group line, as it decoded it. */
+        static String objErrorLine() {
+            String src = "v 0.000000 0.000000 0.000000\n"
+                + "v 1.000000 0.000000 0.000000\n"
+                + "v 0.000000 1.000000 0.000000\n"
+                + "g " + OBJ_GROUP + "\n"
+                + "f 1 2 3\n";
+            try {
+                new ObjModel("utf8.obj", new ByteArrayInputStream(src.getBytes(StandardCharsets.UTF_8)));
+            } catch (ModelFormatException e) {
+                String m = e.getMessage();
+                int from = m.indexOf("('");
+                int to = m.indexOf("', line");
+                if (from >= 0 && to > from) {
+                    return m.substring(from + 2, to);
+                }
+                return "unexpected message: " + m;
+            }
+            return "no error";
+        }
+
+        static String asIso88591(String s) {
+            return new String(s.getBytes(StandardCharsets.UTF_8), StandardCharsets.ISO_8859_1);
+        }
+
+        static String escape(String s) {
+            StringBuilder b = new StringBuilder();
+            for (char c : s.toCharArray()) {
+                if (c >= 0x20 && c < 0x7F) {
+                    b.append(c);
+                } else {
+                    b.append(String.format("\\u%04X", (int) c));
+                }
+            }
+            return b.toString();
+        }
     }
 }

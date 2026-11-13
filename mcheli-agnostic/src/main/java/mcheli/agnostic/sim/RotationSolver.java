@@ -12,8 +12,9 @@ import mcheli.agnostic.util.MCH_LowPassFilterFloat;
  * per-vehicle {@link ControlMapping}) is clamped to {@code 40*mobility*}, scaled by {@code factor*0.06*partialTicks}
  * (pitch NEGATED), then composed with the current orientation in the body frame via the already-agnostic
  * {@link MCH_Math} matrices ({@code MatTurnZ/X/Y} add-rotation × current, then {@code MatrixToEuler}); finally the
- * {@code limitRotation} min/max clamps and roll normalization to [-180,180] are applied, the vehicle's
- * {@link ControlMapping#onUpdateAngles auto-level} runs, and the limits are re-applied.
+ * pitch/roll limits ({@code limitRotation} min/max by default, ±90 for the tank — {@link ControlMapping#limitComposedPitch})
+ * and roll normalization to [-180,180] are applied, the vehicle's {@link ControlMapping#onUpdateAngles auto-level}
+ * runs, and the limits are re-applied.
  *
  * <p>Runs on the CLIENT render frame with {@code partialTicks} (low-passed over a ~10-sample window), separately
  * from the server force integration. The per-vehicle mouse→raw mapping, factors, {@code canUpdate*} gates and
@@ -37,6 +38,36 @@ public final class RotationSolver {
         /** Per-model auto-level applied after the compose (heli bank damping, plane taxi/flightSim, ...). Reads the
          *  rider's control bits ({@code in}); the mapping holds its own entity/info/state context. */
         void onUpdateAngles(ControlInput in, float partialTicks);
+
+        /** setAngles' clamp of the freshly composed pitch ({@code v.x}). Base: the config {@code limitRotation}
+         *  bounds (MCH_EntityAircraft:1220-1223). The tank overrides it (MCH_EntityTank:1034-1035). */
+        default float limitComposedPitch(MCH_AircraftInfo info, float pitch) {
+            return info.limitRotation ? MchMath.clamp(pitch, info.minRotationPitch, info.maxRotationPitch) : pitch;
+        }
+
+        /** setAngles' clamp of the freshly composed roll ({@code v.z}), before the [-180,180] wrap. */
+        default float limitComposedRoll(MCH_AircraftInfo info, float roll) {
+            return info.limitRotation ? MchMath.clamp(roll, info.minRotationRoll, info.maxRotationRoll) : roll;
+        }
+
+        /** setAngles' re-clamp of the pitch after {@link #onUpdateAngles} (MCH_EntityAircraft:1237-1242). */
+        default float limitFinalPitch(MCH_AircraftInfo info, float pitch) {
+            return limitComposedPitch(info, pitch);
+        }
+
+        /** setAngles' re-clamp of the roll after {@link #onUpdateAngles}. */
+        default float limitFinalRoll(MCH_AircraftInfo info, float roll) {
+            return limitComposedRoll(info, roll);
+        }
+
+        /** Reference {@code isOverridePlayerYaw()} (base {@code !isFreeLookMode()}; free look is handled by the
+         *  client): whether the rider's view yaw is welded to the hull. False lets the client keep the vanilla mouse
+         *  look on that axis — the plane's gunner mode, where the pilot aims freely while the airframe holds course. */
+        default boolean overridesRiderYaw() { return true; }
+
+        /** Reference {@code isOverridePlayerPitch()}: whether the rider's view pitch is welded to the hull. A hovering
+         *  heli or plane (gunner/hover mode) leaves it free, so the pilot can look up and down to aim. */
+        default boolean overridesRiderPitch() { return true; }
     }
 
     public static void applyControl(EntityRef self, MCH_AircraftInfo info, ControlInput in,
@@ -106,10 +137,8 @@ public final class RotationSolver {
         MCH_Math.MatTurnY(m, (float) (self.yaw() / 180.0F * Math.PI));
         MCH_Math.FVector3D v = MCH_Math.MatrixToEuler(m);
 
-        if (info.limitRotation) {
-            v.x = MchMath.clamp(v.x, info.minRotationPitch, info.maxRotationPitch);
-            v.z = MchMath.clamp(v.z, info.minRotationRoll, info.maxRotationRoll);
-        }
+        v.x = map.limitComposedPitch(info, v.x);
+        v.z = map.limitComposedRoll(info, v.z);
 
         if (v.z > 180.0F) {
             v.z -= 360.0F;
@@ -123,10 +152,12 @@ public final class RotationSolver {
 
         map.onUpdateAngles(in, partialTicks);
 
-        if (info.limitRotation) {
-            float px = MchMath.clamp(self.pitch(), info.minRotationPitch, info.maxRotationPitch);
-            float rz = MchMath.clamp(self.roll(), info.minRotationRoll, info.maxRotationRoll);
+        float px = map.limitFinalPitch(info, self.pitch());
+        float rz = map.limitFinalRoll(info, self.roll());
+        if (px != self.pitch()) {
             self.setRotation(self.yaw(), px);
+        }
+        if (rz != self.roll()) {
             self.setRoll(rz);
         }
 

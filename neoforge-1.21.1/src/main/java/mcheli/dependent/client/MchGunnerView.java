@@ -11,6 +11,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.client.event.RenderFrameEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 
 /**
@@ -24,7 +25,8 @@ import net.neoforged.neoforge.client.event.ViewportEvent;
  *       (reference resets on every {@code switchGunnerMode}).</li>
  *   <li><b>Pitch clamp</b> — while in gunner mode the operator's view pitch is clamped to the seat's
  *       {@code minPitch/maxPitch} ({@code setRotLimitPitch}, default −30..70), so the crosshair cannot leave the gun's
- *       elevation envelope.</li>
+ *       elevation envelope. It runs every render frame, where the mouse turns the view (the reference clamps in
+ *       {@code setAngles} on the render tick), and clamps the interpolation baseline too.</li>
  * </ul>
  */
 @EventBusSubscriber(modid = MCHeli.MODID, value = Dist.CLIENT)
@@ -61,7 +63,8 @@ public final class MchGunnerView {
         zoom = z <= max + 0.01F ? z : 1.0F;
     }
 
-    /** The seat the local player must be in for gunner-view effects (or -1). */
+    /** The vehicle whose seat has the local player in gunner mode right now (the pilot's toggle, a dedicated gunner
+     *  seat, or a switchable gunner seat toggled on), else null. */
     private static AbstractMchVehicle gunnerVehicle(LocalPlayer player) {
         return player != null && player.getVehicle() instanceof AbstractMchVehicle v
             && v.isSeatGunnerMode(v.seatIndexOf(player)) ? v : null;
@@ -86,10 +89,20 @@ public final class MchGunnerView {
             zoom = 1.0F;
         }
         wasGunnerMode = gunner;
-        if (!gunner) {
+    }
+
+    /** Clamp the operator's view pitch to the seat's elevation envelope (reference setRotLimitPitch) on every frame,
+     *  after vanilla applied this frame's mouse turn and before the world renders — a per-tick clamp let the view
+     *  overshoot the limit between ticks and snap back. {@code xRotO} is clamped too, so the frame does not lerp from
+     *  an out-of-range angle. */
+    @SubscribeEvent
+    public static void onRenderFrame(RenderFrameEvent.Pre event) {
+        Minecraft mc = Minecraft.getInstance();
+        LocalPlayer player = mc.player;
+        AbstractMchVehicle v = mc.screen == null ? gunnerVehicle(player) : null;
+        if (v == null) {
             return;
         }
-        // Clamp the operator's view pitch to the seat's elevation envelope (reference setRotLimitPitch).
         MCH_AircraftInfo info = v.hostInfo();
         int seat = v.seatIndexOf(player);
         MCH_SeatInfo si = info != null && seat >= 0 && seat < info.seatList.size() ? info.seatList.get(seat) : null;
@@ -98,6 +111,7 @@ public final class MchGunnerView {
             if (clamped != player.getXRot()) {
                 player.setXRot(clamped);
             }
+            player.xRotO = Mth.clamp(player.xRotO, si.minPitch, si.maxPitch);
         }
     }
 }

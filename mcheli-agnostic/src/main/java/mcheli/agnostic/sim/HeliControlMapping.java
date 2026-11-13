@@ -52,13 +52,12 @@ public final class HeliControlMapping implements RotationSolver.ControlMapping {
 
     // Base canUpdate: countOnUpdate >= 30 AND off the ground (getBlockIdY(3,-2)==0, i.e. no collidable block within 2
     // below). countOnUpdate ≈ ticks-since-spawn -> use ageTicks() (available client-side, unlike the server's
-    // physics countOnUpdate). The base's getRidingEntity()!=null -> false term is always false here (the demo vehicle
-    // never rides another entity), so it is omitted.
-    // ON THE GROUND = the reference 2-block probe OR Minecraft's own ground contact. The probe alone misses ground it
-    // cannot "see": it only counts blocks with a collision shape in the 3x3 column (a 1-layer snow cover, tall grass
-    // or flowers don't), and it scans just two rows below the rounded position — so on snowy/grassy terrain or a hull
-    // resting on a terrace edge the craft counted as AIRBORNE while parked, and the mouse could pitch/roll it into
-    // the ground. The vanilla onGround flag (synced to the client) closes that gap.
+    // physics countOnUpdate). The base's getRidingEntity()!=null -> false term is always false here (the port has no
+    // entity racks or minecart mounting, so a vehicle never rides another entity), so it is omitted.
+    // ON THE GROUND = the reference 2-block probe OR Minecraft's own ground contact. The probe scans just two rows below
+    // the rounded position of a 3x3 column, so a hull resting on a terrace edge (or whose rounded centre sits past the
+    // block it rests on) counted as AIRBORNE while parked, and the mouse could pitch/roll it into the ground. The
+    // vanilla onGround flag (synced to the client) closes that gap.
     private boolean baseCanUpdate() {
         return self.ageTicks() >= 30 && !self.onGround() && GroundProbe.blockIdInColumn(self, 3, -2) == 0;
     }
@@ -89,11 +88,23 @@ public final class HeliControlMapping implements RotationSolver.ControlMapping {
             if (Math.abs(self.pitch()) < 40.0F) {
                 applyOnGroundPitch(0.97F);
             }
-            // TODO(fold-blade): reference adds ±0.5F/tick hull yaw here when the heli has fold-blades deployed
-            // (isEnableFoldBlade && rotors.length>0 && foldBladeStat==0). Needs rotor/foldBladeStat seams; the demo
-            // heli has no fold blades, so this branch is inert.
+            // A heli parked with its blades folded turns on the spot with A/D, 0.5 deg per tick (MCH_EntityHeli:449-457:
+            // isEnableFoldBlade && rotors.length > 0 && getFoldBladeStat() == 0 && !isDestroyed). canUpdateYaw is false
+            // on the ground, so this is its only yaw; the fold-blade taxi nudge (HeliFlightModel) moves it fore/aft.
+            if (mod.isBladeFolded()) {
+                if (in.moveLeft() && !in.moveRight()) {
+                    self.setRotation(self.yaw() - 0.5F * partialTicks, self.pitch());
+                }
+                if (in.moveRight() && !in.moveLeft()) {
+                    self.setRotation(self.yaw() + 0.5F * partialTicks, self.pitch());
+                }
+            }
         }
     }
+
+    // isOverridePlayerPitch = base && !isHovering (MCH_EntityHeli:388-390): a hovering heli frees the pilot's view pitch
+    // (the mouse no longer pitches the hull), while the yaw stays welded to it.
+    @Override public boolean overridesRiderPitch() { return !mod.isHovering(); }
 
     /** Reference base {@code applyOnGroundPitch(factor)}: damp pitch toward {@code onGroundPitch}, and roll by factor. */
     private void applyOnGroundPitch(float factor) {

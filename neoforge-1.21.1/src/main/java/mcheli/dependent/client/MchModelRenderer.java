@@ -3,13 +3,14 @@ package mcheli.dependent.client;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import java.util.List;
-import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import mcheli.agnostic.model.MchModel;
 import mcheli.agnostic.model.ModelFace;
 import mcheli.agnostic.model.ModelGroup;
+import mcheli.agnostic.model.ModelPartIndex;
 import mcheli.agnostic.model.ModelVertex;
-import mcheli.agnostic.model.MqoModel;
 
 /**
  * Emits a parsed {@link MchModel} to a {@link VertexConsumer} — the 1.21.1 rewrite of the reference's
@@ -17,24 +18,40 @@ import mcheli.agnostic.model.MqoModel;
  *
  * <p>Faithful to the default render path where {@code textureOffset == 0}: the average-UV + per-vertex UV-offset
  * texel-bleed trick collapses to a no-op at offset 0, so it is omitted. Per-vertex smooth normals are used when the
- * parser produced them (always for {@code .mqo}; for {@code .obj} only the {@code V//VN}/{@code V/VT/VN} forms),
- * otherwise the flat face normal. Every face is emitted as a QUAD because entity {@link
- * net.minecraft.client.renderer.RenderType}s use {@code QUADS} mode — a triangle becomes a degenerate quad by
- * repeating its last vertex ({@code v0,v1,v2,v2}).
+ * parser produced them (always for {@code .mqo}; for {@code .obj} only the {@code V//VN}/{@code V/VT/VN} forms) and
+ * the shade model is smooth (see {@link #shadeModel}); otherwise the flat face normal. Every face is emitted as a
+ * QUAD because entity {@link net.minecraft.client.renderer.RenderType}s use {@code QUADS} mode — a triangle becomes a
+ * degenerate quad by repeating its last vertex ({@code v0,v1,v2,v2}).
+ *
+ * <p>Part lookups go through a per-model {@link ModelPartIndex}, built on first use: a part name is a map lookup, not
+ * a scan of every group (render thread only; the weak keys let a reloaded model's index go with it).
  */
 public final class MchModelRenderer {
     private MchModelRenderer() {}
+
+    private static final Map<MchModel, ModelPartIndex> INDEX = new WeakHashMap<>();
+    /** The current shade model (the reference's {@code glShadeModel} state): smooth uses the parsed vertex normals. */
+    private static boolean smooth = true;
+
+    /** Set the shade model for the following draws and return the previous one, so a caller restores it — the port of
+     *  {@code W_Render.setCommonRenderParam} / {@code restoreCommonRenderParam} switching {@code GL_SMOOTH}/{@code GL_FLAT}.
+     *  Render thread only. Smooth is the default, so renderers that never call this are unchanged. */
+    public static boolean shadeModel(boolean smoothShading) {
+        boolean prev = smooth;
+        smooth = smoothShading;
+        return prev;
+    }
+
+    /** The cached group-name index of {@code model}. */
+    public static ModelPartIndex index(MchModel model) {
+        return INDEX.computeIfAbsent(model, ModelPartIndex::of);
+    }
 
     public static void render(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
                               int r, int g, int b, int a) {
         PoseStack.Pose last = pose.last();
         for (ModelGroup group : model.groups()) {
-            if (group == null) {
-                continue; // .obj can append a null trailing group for an empty file (faithful upstream edge)
-            }
-            for (ModelFace face : group.faces) {
-                emitFace(last, consumer, face, packedLight, overlay, r, g, b, a);
-            }
+            emitGroup(last, consumer, group, packedLight, overlay, r, g, b, a);
         }
     }
 
@@ -43,12 +60,11 @@ public final class MchModelRenderer {
     public static void renderExcept(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
                                     int r, int g, int b, int a, Set<String> excludeLower) {
         PoseStack.Pose last = pose.last();
-        for (ModelGroup group : model.groups()) {
-            if (group == null || excludeLower.contains(group.name.toLowerCase(Locale.ROOT))) {
-                continue;
-            }
-            for (ModelFace face : group.faces) {
-                emitFace(last, consumer, face, packedLight, overlay, r, g, b, a);
+        ModelPartIndex idx = index(model);
+        List<ModelGroup> groups = model.groups();
+        for (int i = 0; i < groups.size(); i++) {
+            if (!excludeLower.contains(idx.lowerName(i))) {
+                emitGroup(last, consumer, groups.get(i), packedLight, overlay, r, g, b, a);
             }
         }
     }
@@ -57,75 +73,49 @@ public final class MchModelRenderer {
      *  transform (translate to hub, rotate about the axis) before calling. */
     public static void renderGroup(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
                                    int r, int g, int b, int a, String groupName) {
-        PoseStack.Pose last = pose.last();
-        for (ModelGroup group : model.groups()) {
-            if (group != null && group.name.equalsIgnoreCase(groupName)) {
-                for (ModelFace face : group.faces) {
-                    emitFace(last, consumer, face, packedLight, overlay, r, g, b, a);
-                }
-            }
-        }
+        emitAll(model, index(model).exact(groupName), pose.last(), consumer, packedLight, overlay, r, g, b, a, Set.of());
     }
 
     /** True when the model contains a group with this (case-insensitive) name. */
     public static boolean hasGroup(MchModel model, String groupName) {
-        for (ModelGroup group : model.groups()) {
-            if (group != null && group.name.equalsIgnoreCase(groupName)) {
-                return true;
-            }
-        }
-        return false;
+        return index(model).contains(groupName);
     }
 
     /**
      * Render a named part's full SPAN — the faithful port of the reference part primitive, which is what
-     * "{@code renderPart($name)}" actually meant in 1.7.10:
-     * <ul>
-     *   <li><b>MQO</b> ({@code W_MetasequoiaObject.renderPart}): the matched {@code $name} group PLUS every FOLLOWING
-     *       group whose name does NOT start with {@code $}, stopping at the next {@code $}-group. An MQO "part" is the
-     *       {@code $name} header + its trailing non-{@code $} sub-meshes (a tank turret is {@code $weapon0} + dozens of
-     *       plain-named armour meshes after it).</li>
-     *   <li><b>OBJ</b> ({@code W_WavefrontObject.renderPart}): the exact-named group only — no trailing span.</li>
-     * </ul>
-     * First match wins (as in the reference). {@code skipLower} groups are never drawn (the port's glass/canopy
-     * view fix); pass an empty set when no skip applies.
+     * "{@code renderPart($name)}" actually meant in 1.7.10 ({@link ModelPartIndex#span}): on an MQO, the matched
+     * {@code $name} group plus its trailing non-{@code $} sub-meshes up to the next {@code $}-group, for EVERY match
+     * (a tank turret is {@code $weapon0} + dozens of plain-named armour meshes after it); on an OBJ, the exact-named
+     * groups only. The terminating {@code $}-group is not re-tested, exactly as the reference's loop skips it.
      */
     public static void renderPartSpan(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
+                                      int r, int g, int b, int a, String groupName) {
+        emitAll(model, index(model).span(groupName), pose.last(), consumer, packedLight, overlay, r, g, b, a, Set.of());
+    }
+
+    /** {@link #renderPartSpan} that also leaves out the groups whose lower-cased name is in {@code skipLower}. No
+     *  vehicle renderer skips a group any more (cockpit glass draws in the blended pass), so callers pass an empty set. */
+    public static void renderPartSpan(MchModel model, PoseStack pose, VertexConsumer consumer, int packedLight, int overlay,
                                       int r, int g, int b, int a, String groupName, Set<String> skipLower) {
-        PoseStack.Pose last = pose.last();
+        emitAll(model, index(model).span(groupName), pose.last(), consumer, packedLight, overlay, r, g, b, a, skipLower);
+    }
+
+    private static void emitAll(MchModel model, int[] ids, PoseStack.Pose last, VertexConsumer consumer, int light,
+                                int overlay, int r, int g, int b, int a, Set<String> skipLower) {
+        if (ids.length == 0) {
+            return;
+        }
         List<ModelGroup> groups = model.groups();
-        // Span semantics apply on an MQO part whose name is $-prefixed (W_MetasequoiaObject.renderPart gates on
-        // charAt(0)=='$'); an OBJ, or a non-$ name, is exact-name only. EVERY match renders (the reference's outer
-        // loop keeps scanning after a span ends, so duplicate part names each draw their own span).
-        boolean span = model instanceof MqoModel && groupName.startsWith("$");
-        for (int i = 0; i < groups.size(); i++) {
-            ModelGroup group = groups.get(i);
-            if (group == null || !group.name.equalsIgnoreCase(groupName)) {
-                continue;
-            }
-            emitGroup(last, consumer, group, packedLight, overlay, r, g, b, a, skipLower);
-            if (span) {
-                int j = i + 1;
-                for (; j < groups.size(); j++) {
-                    ModelGroup next = groups.get(j);
-                    if (next == null) {
-                        continue;
-                    }
-                    if (next.name.startsWith("$")) {
-                        break; // the next $-part begins -> this part's span ends
-                    }
-                    emitGroup(last, consumer, next, packedLight, overlay, r, g, b, a, skipLower);
-                }
-                i = j - 1; // resume the scan AT the terminating $-group (it may itself match again)
+        ModelPartIndex idx = skipLower.isEmpty() ? null : index(model);
+        for (int id : ids) {
+            if (idx == null || !skipLower.contains(idx.lowerName(id))) {
+                emitGroup(last, consumer, groups.get(id), light, overlay, r, g, b, a);
             }
         }
     }
 
     private static void emitGroup(PoseStack.Pose last, VertexConsumer consumer, ModelGroup group, int light, int overlay,
-                                  int r, int g, int b, int a, Set<String> skipLower) {
-        if (!skipLower.isEmpty() && skipLower.contains(group.name.toLowerCase(Locale.ROOT))) {
-            return;
-        }
+                                  int r, int g, int b, int a) {
         for (ModelFace face : group.faces) {
             emitFace(last, consumer, face, light, overlay, r, g, b, a);
         }
@@ -146,7 +136,8 @@ public final class MchModelRenderer {
     private static void emitVertex(PoseStack.Pose last, VertexConsumer c, ModelFace f, int idx, int light, int overlay,
                                    int r, int g, int b, int a) {
         ModelVertex v = f.vertices[idx];
-        ModelVertex nrm = (f.vertexNormals != null && idx < f.vertexNormals.length && f.vertexNormals[idx] != null)
+        // Flat shading (GL_FLAT in the reference) gives the whole face one normal; smooth uses the parsed vertex normal.
+        ModelVertex nrm = (smooth && f.vertexNormals != null && idx < f.vertexNormals.length && f.vertexNormals[idx] != null)
             ? f.vertexNormals[idx]
             : f.faceNormal;
         float u = 0.0F;

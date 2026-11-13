@@ -3,8 +3,8 @@ package mcheli.agnostic.sim;
 /**
  * Mutable per-vehicle simulation state that the 1.7.10 code kept as private {@code Entity} fields — the
  * authoritative sim's own memory, independent of Minecraft. Throttle state, the {@code currentSpeed} spool
- * envelope (idle 0.07), the plane {@code throttleBack} reverse accumulator, cosmetic rotor spin, and the
- * per-tick prev-throttle snapshot. Roll is NOT here (it goes through {@code EntityRef.roll()}/{@code setRoll()}
+ * envelope (idle 0.07), the plane/tank {@code throttleBack} reverse accumulator, the keyboard-yaw and roll-factor
+ * accumulators of the rotation mappings, and the per-tick prev-throttle snapshot. Roll is NOT here (it goes through {@code EntityRef.roll()}/{@code setRoll()}
  * so the host can render/sync it); the synced throttle mirror is the host adapter's job.
  */
 public final class AircraftSimState {
@@ -17,11 +17,8 @@ public final class AircraftSimState {
     public float addkeyRotValue;
     // FLOAT in the reference (MCH_EntityHeli.prevRollFactor, default 0) — the heli's roll-factor 2-sample average.
     public float prevRollFactor;
-    // rotationRotor/prevRotationRotor are DOUBLE in the reference (MCH_EntityHeli) — a float accumulator would
-    // round the rotor angle every tick and diverge over time (cosmetic, but a real bit-fidelity divergence).
-    public double rotationRotor;
-    public double prevRotationRotor;
-    public int countOnUpdate;
+    // Not kept: the reference rotationRotor (blade animation only — the client spins the blades itself, see
+    // AbstractMchVehicle.advanceRotorSpin and MchHelicopter's fold animator) and countOnUpdate (EntityRef.ageTicks()).
 
     public AircraftSimState() {
         this(0.0);

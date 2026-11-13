@@ -1,13 +1,22 @@
 // MCHeli monorepo — base project.
 //
-// Subprojects (each owns its own Minecraft toolchain; nothing is shared beyond metadata,
-// because the two eras use incompatible modding toolchains):
+// Subprojects (each owns its own toolchain; nothing is shared beyond metadata, because the two Minecraft eras use
+// incompatible modding toolchains):
+//   :mcheli-agnostic — the platform-neutral half of the 1.21.1 port: pure Java 21 with NO Minecraft/NeoForge on its
+//                      classpath (the layering is compiler-enforced), plus its JUnit 5 tests
+//   :neoforge-1.21.1 — the 1.21.1 port itself (NeoForge 21.1.235 / ModDevGradle, Java 21): entities, rendering,
+//                      networking, registration; it embeds :mcheli-agnostic in its jar (jarJar)
 //   :mcheli-1.7.10   — the decompiled, compiling & runnable 1.7.10 reference
-//                      (RetroFuturaGradle 1.4.9, Java 8, Forge 10.13.4.1614)
-//   :neoforge-1.21.1 — the 1.21.1 port (NeoForge / ModDevGradle, Java 21)   [scaffolding]
+//                      (RetroFuturaGradle 1.4.9, Java 8, Forge 10.13.4.1614). Currently NOT included: its include is
+//                      commented out in settings.gradle; see mcheli-1.7.10/README.md to build it.
 //
 // The raw CFR decompile baseline (not a Gradle project) lives in reference/decompiled-srg/.
-// The original distributed mod jar is not committed; see mcheli-1.7.10/build.gradle (mcheliJar).
+// The original distributed mod jar (MC1.7.10_mcheli_1.0.3.zip, 75 MB) is not in the working tree. It was committed in
+// ad27026 and removed in 0be2e5a, so it is still in git history; the 1.7.10 build reads it from the repo root
+// (mcheliJar in mcheli-1.7.10/build.gradle).
+//
+// Guides: ARCHITECTURE.md (how the port is built) and DEFERRED.md (what is not ported yet).
 
+// Metadata only: each subproject sets its own version (agnostic 1.0.0, neoforge 1.1.0 = the mod version, 1.7.10 1.0.3).
 group = 'mcheli'
 version = '1.0.4'

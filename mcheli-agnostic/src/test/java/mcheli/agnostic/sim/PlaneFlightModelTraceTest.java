@@ -9,7 +9,6 @@ import mcheli.agnostic.plane.MCP_PlaneInfo;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.RandomSource;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.value.AABB;
 import mcheli.agnostic.value.MoveResult;
@@ -47,8 +46,13 @@ class PlaneFlightModelTraceTest {
 
     /** Flyable plane mod-state: no VTOL, no sweep. */
     static final class Plane implements PlaneState {
-        boolean gunner, drone, destroyed;
+        boolean gunner, drone, destroyed, exploded, gearFoldRequested;
+        /** The seat-0 pilot, set explicitly: passengers().get(0) may be a gunner (see pilotGateIgnoresGunner). */
+        boolean pilot = true;
+        public boolean hasPilot() { return pilot; }
         public boolean isDestroyed() { return destroyed; }
+        public boolean isExploded() { return exploded; }
+        public void tryFoldLandingGear() { gearFoldRequested = true; }
         public boolean isGunnerMode() { return gunner; }
         public boolean isHovering() { return gunner; }
         public boolean isTargetDrone() { return drone; }
@@ -103,7 +107,6 @@ class PlaneFlightModelTraceTest {
         @Override public int ageTicks() { return 0; }
         @Override public void addMotion(Vec3d d) { mx += d.x(); my += d.y(); mz += d.z(); }
         @Override public EntityRef vehicle() { return null; }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
     }
 
     static MCP_PlaneInfo info() {
@@ -160,5 +163,43 @@ class PlaneFlightModelTraceTest {
 
         tick(e, pi, st, ControlInput.NONE, new Plane());
         assertEquals(0.4F, st.throttleBack, 1e-6); // throttleBack *= 0.8 each tick, no input to change it
+    }
+
+    @Test
+    void pilotGateIgnoresAGunnerLeftAboard() {
+        // passengers().get(0) exists (a gunner), but seat 0 is empty: the reference getRiddenByEntity() is null, so the
+        // throttle spools down by -0.0025*throttleUpDown instead of holding (or answering stale keys).
+        FakeEntity e = new FakeEntity().at(0, 100, 0).withRider();
+        AircraftSimState st = new AircraftSimState(0.07);
+        st.currentThrottle = 0.5;
+        Plane mod = new Plane();
+        mod.pilot = false;
+        tick(e, info(), st, ControlInput.ground(true, false, false, false), mod);
+        assertEquals(0.4975, st.currentThrottle, 1e-12);
+    }
+
+    @Test
+    void targetDroneLevelOffRetractsTheGear() {
+        // MCP_EntityPlane:719-726: an unmanned drone with open air 40 blocks below levels off and folds its gear.
+        FakeEntity e = new FakeEntity().at(0, 100, 0);
+        AircraftSimState st = new AircraftSimState(0.07);
+        Plane mod = new Plane();
+        mod.pilot = false;
+        mod.drone = true;
+        tick(e, info(), st, ControlInput.NONE, mod);
+        assertTrue(mod.gearFoldRequested, "level-off asks the plane to fold its gear");
+        assertEquals(0.01, st.currentThrottle, 1e-12); // the drone's forced throttle-up
+    }
+
+    @Test
+    void wreckLosesItsThrustFasterAfterTheCrash() {
+        FakeEntity e = new FakeEntity().at(0, 100, 0);
+        AircraftSimState st = new AircraftSimState(0.07);
+        st.currentThrottle = 0.5;
+        Plane mod = new Plane();
+        mod.destroyed = true;
+        mod.exploded = true;
+        tick(e, info(), st, ControlInput.NONE, mod);
+        assertEquals((0.5 - 0.0025) * 0.98, st.currentThrottle, 1e-12); // decay, then the exploded x0.98 (no ground)
     }
 }

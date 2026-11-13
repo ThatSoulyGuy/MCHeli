@@ -12,10 +12,12 @@ import mcheli.agnostic.spi.Role;
  * Agnostic port of {@code mcheli.weapon.MCH_WeaponInfo}: the parsed definition of one weapon. Pure Java —
  * platform surfaces coerced:
  * <ul>
- *   <li>{@code net.minecraft.item.Item dispenseItem} -&gt; {@link ItemHandle}, resolved via the {@link #itemByName}
- *       seam (was {@code W_Item.getItemByName}); agnostic default returns null, dependent layer resolves.</li>
- *   <li>{@code RoundItem}'s {@code net.minecraft.item.ItemStack itemStack} -&gt; an {@link ItemHandle} {@code item}
- *       (set dependent-side from {@code itemName}); count/damage are the separate {@code num}/{@code damage} fields.</li>
+ *   <li>{@code net.minecraft.item.Item dispenseItem} -&gt; {@link ItemHandle}, and {@code RoundItem}'s
+ *       {@code net.minecraft.item.ItemStack itemStack} -&gt; an {@link ItemHandle} {@code item}. Parsing keeps the raw
+ *       names ({@link #dispenseItemName}/{@code RoundItem.itemName} + their damage values); {@link #resolveItems} then
+ *       turns them into handles once, after the item registry exists (the reference did the same split:
+ *       {@code W_Item.getItemByName} for the dispense item, {@code MCH_WeaponInfoManager.setRoundItems} in postInit
+ *       for the stacks). Until resolved both stay null.</li>
  *   <li>The {@code DamageFactor} target block's entity {@code Class} literals (EntityPlayer/MCH_EntityHeli/...) -&gt;
  *       {@link Role} values; {@link #getDamageFactor(EntityRef)} replaces {@code getDamageFactor(Entity)}.
  *       See {@link MCH_DamageFactor} for the PLAYER behavior note.</li>
@@ -23,7 +25,7 @@ import mcheli.agnostic.spi.Role;
  * All parse logic (including the reference's {@code soundpattern != 0} branch quirk, which makes the
  * {@code SoundPattern} directive a no-op) is preserved exactly.
  */
-public class MCH_WeaponInfo extends MCH_BaseInfo {
+public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
    public final String name;
    public String displayName;
    public String type;
@@ -80,8 +82,9 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
    public float smokeSize;
    public int smokeNum;
    public int smokeMaxAge;
+   /** The resolved {@code DispenseItem}; null until {@link #resolveItems} runs, or if the name is unknown. */
    public ItemHandle dispenseItem;
-   public String dispenseItemName; // the raw config item registry name (dependent layer resolves it to a real Item)
+   public String dispenseItemName; // the raw (lower-cased) config item name that resolveItems() resolves
    public int dispenseDamege;
    public int dispenseRange;
    public int recoilBufCount;
@@ -188,26 +191,55 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
    }
 
    /**
-    * Coercion seam for {@code W_Item.getItemByName}: resolve a registry name to an item handle. Agnostic default
-    * returns null (no registry); the dependent layer overrides this against the real item registry.
+    * Resolve the parsed item names to platform handles: {@link #dispenseItem} from {@link #dispenseItemName} +
+    * {@link #dispenseDamege}, and every {@code RoundItem.item} from its {@code itemName} + {@code damage}. A name the
+    * resolver does not know leaves that handle null (the dispenser then dispenses nothing and the round cost can never
+    * be paid, as with an unknown item in the reference). Called by {@link MCH_WeaponInfoManager#resolveItems}.
     */
-   protected ItemHandle itemByName(String name) {
-      return null;
+   public void resolveItems(ItemHandle.Resolver resolver) {
+      this.dispenseItem = this.dispenseItemName == null || this.dispenseItemName.isEmpty()
+         ? null
+         : resolver.resolve(this.dispenseItemName, this.dispenseDamege);
+      for (MCH_WeaponInfo.RoundItem r : this.roundItems) {
+         r.item = resolver.resolve(r.itemName, r.damage);
+      }
    }
 
    /**
-    * Load-time fix-up. The reference {@code MCH_WeaponInfoManager} runs {@link #checkData()} after parsing each file;
-    * the port's generic loader only calls {@code isValidData()}, so the explosion-block default was never applied:
-    * every weapon without an explicit {@code ExplosionBlock} kept -1 and its explosions broke NO blocks at all.
-    * Apply the reference default here ({@code explosionBlock = explosion}). (The other checkData coercions are left
-    * out on purpose — the port's ammo economy was built and tested against the uncoerced magazine values.)
+    * Load-time fix-up. The reference {@code MCH_WeaponInfoManager} runs {@link #checkData()} after parsing each file
+    * (MCH_WeaponInfoManager.java:74); the port's generic loader only calls {@code isValidData()}, so it runs the whole
+    * of {@code checkData} from here. Every coercion is load-bearing for bundled content: {@code explosionBlock}
+    * defaults to {@code explosion} (without it no explosion broke a block), {@code bombletSTime < 1 -> 1} (without it
+    * the MW-1 dispenser, {@code BombletSTime = 0}, never released its bomblets), {@code round} is clamped into
+    * {@code 1..maxAmmo} (lau-68 ships {@code Round = 19} over {@code MaxAmmo = 8}; a weapon with no reserve becomes an
+    * endless magazine, as in the reference), {@code destruct -> delay = 1000000} (the plastic bomb fires once), FAE
+    * never takes the in-water branch, and a weapon without a delay fuse never ricochets.
     */
    @Override
    public boolean isValidData() throws Exception {
-      if (this.explosionBlock < 0) {
-         this.explosionBlock = this.explosion;
-      }
+      this.checkData();
       return super.isValidData();
+   }
+
+   /**
+    * A shallow copy of this definition with the two values a weapon MODE changes per shot (reference
+    * {@code MCH_WeaponMachineGun2.shot} negates {@code explosionPower} in the non-HE mode, {@code MCH_WeaponRocket.shot}
+    * zeroes {@code piercing} in mode 0, and the AT top-attack dive adds one to {@code explosionPower}). The reference
+    * carries those on the bullet entity; the port's projectile reads them from its info, so it gets a variant. Lists,
+    * models and the damage-factor table are shared with this instance.
+    */
+   public MCH_WeaponInfo shotVariant(int explosion, int piercing) {
+      if (explosion == this.explosion && piercing == this.piercing) {
+         return this;
+      }
+      try {
+         MCH_WeaponInfo c = (MCH_WeaponInfo) super.clone();
+         c.explosion = explosion;
+         c.piercing = piercing;
+         return c;
+      } catch (CloneNotSupportedException e) {
+         throw new IllegalStateException(e);
+      }
    }
 
    public void checkData() {
@@ -332,7 +364,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
             int n = this.toInt(s[0], 1, 64);
             if (n > 0) {
                int damage = s.length >= 3 ? this.toInt(s[2], 0, 100000000) : 0;
-               this.roundItems.add(new MCH_WeaponInfo.RoundItem(n, s[1].toLowerCase().trim(), damage));
+               this.roundItems.add(new MCH_WeaponInfo.RoundItem(n, s[1].toLowerCase(java.util.Locale.ROOT).trim(), damage));
             }
          }
       } else if (item.compareTo("sounddelay") == 0) {
@@ -484,8 +516,9 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
                this.dispenseDamege = this.toInt(s[1], 0, 100000000);
             }
 
-            this.dispenseItemName = s[0].toLowerCase().trim(); // keep the raw registry name; the dependent layer resolves it
-            this.dispenseItem = this.itemByName(s[0]);
+            // Keep the raw name; resolveItems() turns it (with dispenseDamege, its 1.7.10 metadata) into the handle.
+            this.dispenseItemName = s[0].toLowerCase(java.util.Locale.ROOT).trim();
+            this.dispenseItem = null;
          } else if (item.equalsIgnoreCase("DispenseRange")) {
             this.dispenseRange = this.toInt(data, 1, 100);
          } else if (item.equalsIgnoreCase("Length")) {
@@ -606,7 +639,8 @@ public class MCH_WeaponInfo extends MCH_BaseInfo {
       public final int num;
       public final String itemName;
       public final int damage;
-      /** Coerced from the reference's {@code net.minecraft.item.ItemStack itemStack}; resolved dependent-side from {@link #itemName}. */
+      /** Coerced from the reference's {@code net.minecraft.item.ItemStack itemStack}: {@link #itemName} + {@link #damage}
+       *  resolved by {@link MCH_WeaponInfo#resolveItems}; null until then, or if the name is unknown. */
       public ItemHandle item;
 
       public RoundItem(int n, String name, int damage) {

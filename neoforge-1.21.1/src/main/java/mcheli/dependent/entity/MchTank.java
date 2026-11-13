@@ -27,8 +27,12 @@ public class MchTank extends AbstractMchVehicle {
     private static final FlightModel MODEL = new TankFlightModel();
     private static final MCH_TankInfo FALLBACK = buildFallback();
 
-    private final TankState tankState = new DemoTankState(this);
+    private final TankState tankState = new TankStateAdapter(this);
     private final AircraftSimState simState = new AircraftSimState(0.07);
+    // CLIENT: the driver's own throttle/throttleBack, advanced every client tick from the local keys (clientControlTick)
+    // exactly as the reference rider's client ran onUpdate_ControlSub itself (MCH_EntityTank:424-425). The rotation
+    // mapping's pivot-turn gate and reverse-steer flag read it; the server's simState never reaches the client.
+    private final AircraftSimState clientSimState = new AircraftSimState(0.07);
     private RotationSolver.ControlMapping mapping; // lazy — needs the resolved concrete MCH_TankInfo
 
     public MchTank(EntityType<? extends MchTank> type, Level level) {
@@ -56,7 +60,30 @@ public class MchTank extends AbstractMchVehicle {
 
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
-    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
+    @Override protected double serverSimThrottle() { return this.simState.getCurrentThrottle(); }
+    @Override protected void setSimThrottle(double throttle) { this.simState.setCurrentThrottle(throttle); }
+
+    /** Reference {@code MCH_EntityTank.hasBrake}:1185 — the tank driver brakes (the reference KeySwitchHovering key). */
+    @Override public boolean hasBrake() { return true; }
+
+    /** The driver's client gates its own (client-authoritative) steering with its client throttle copy, as the
+     *  reference client did; the server uses the real throttle. */
+    @Override public boolean brakeLocksSteering() {
+        if (!this.level().isClientSide) {
+            return super.brakeLocksSteering();
+        }
+        double dx = getX() - this.xo;
+        double dz = getZ() - this.zo;
+        return this.clientSimState.getCurrentThrottle() <= 0.03 && dx * dx + dz * dz < 0.01;
+    }
+
+    /** CLIENT (the local driver): advance the client throttle copy from the local keys, as the reference rider's client
+     *  ran {@code onUpdate_Control} (MCH_EntityTank:410-425). It never syncs back, like the reference, which only re-
+     *  converged it every 200 ticks; the same keys drive both copies, and it only feeds the client steering gates. */
+    @Override public void clientControlTick(ControlInput in) {
+        this.clientSimState.snapshotPreTick();
+        MODEL.updateThrottle(this.ref, weaponHostInfo(), this.clientSimState, in, this.tankState);
+    }
 
     // Reference MCH_EntityTank.getSoundVolume/getSoundPitch: volume = SoundVolume × T × 0.7; pitch = 0.5 + T×0.5, where
     // T = max(forward throttle, maneuver term) — see soundThrottle() below. Default "prop" is the reference's
@@ -88,7 +115,7 @@ public class MchTank extends AbstractMchVehicle {
 
     @Override protected RotationSolver.ControlMapping controlMapping() {
         if (this.mapping == null) {
-            this.mapping = new TankControlMapping(this.ref, (MCH_TankInfo) weaponHostInfo(), this.simState, this.tankState);
+            this.mapping = new TankControlMapping(this.ref, (MCH_TankInfo) weaponHostInfo(), this.clientSimState, this.tankState);
         }
         return this.mapping;
     }

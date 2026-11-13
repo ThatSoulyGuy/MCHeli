@@ -64,6 +64,18 @@ class MissileGuidanceAndLockTest {
         assertEquals(60, MCH_LockGeometry.effectiveCountMax(30, 1.0F));
     }
 
+    @Test
+    void bundledStealthScalesAsTheReferenceDoes() {
+        // f22a (Stealth 0.3) against an AIM-92 seeker (LockTime 15): reference lock() range lockRange * 0.7, cone
+        // lockAngle * (0.7 / 2 + 0.5) = 0.85 lockAngle, and getLockCountMax (int) (15 + 15 * 0.3) = 19, truncated.
+        assertEquals(140.0, MCH_LockGeometry.effectiveRange(200.0, 0.3F), 1.0e-4);
+        assertEquals(8.5F, MCH_LockGeometry.effectiveAngle(10.0F, 0.3F), 1.0e-5F);
+        assertEquals(19, MCH_LockGeometry.effectiveCountMax(15, 0.3F));
+        // fl282 (0.5): 15 * 1.5 = 22.5 truncates to 22; oh-1 (0.1): 16.5 to 16.
+        assertEquals(22, MCH_LockGeometry.effectiveCountMax(15, 0.5F));
+        assertEquals(16, MCH_LockGeometry.effectiveCountMax(15, 0.1F));
+    }
+
     // ---- MCH_MissileGuidance.guide: pure-pursuit 6:1 blend ----
 
     @Test
@@ -96,6 +108,7 @@ class MissileGuidanceAndLockTest {
             mx = m.x; my = m.y; mz = m.z;
             px += mx; py += my; pz += mz;
             double d = dist(px, py, pz, tx, ty, tz);
+            assertTrue(d < prev, "tick " + i + ": the missile must close on the target (" + d + " >= " + prev + ")");
             if (d < 3.0) { everClose = true; break; }
             prev = d;
         }

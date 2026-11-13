@@ -55,11 +55,17 @@ import mcheli.agnostic.eval.eval.rule.Col1AfterRule;
 import mcheli.agnostic.eval.eval.rule.Col2RightJoinRule;
 import mcheli.agnostic.eval.eval.rule.Col2Rule;
 import mcheli.agnostic.eval.eval.rule.IfRule;
-import mcheli.agnostic.eval.eval.rule.JavaRuleFactory;
 import mcheli.agnostic.eval.eval.rule.PrimaryRule;
 import mcheli.agnostic.eval.eval.rule.ShareRuleValue;
 import mcheli.agnostic.eval.eval.rule.SignRule;
 
+/**
+ * The reference engine's default grammar ({@code mcheli.eval.eval.ExpRuleFactory}). The HUD parses every expression
+ * with {@link #getDefaultRule()}, as {@code MCH_HudItem.calc} did. Precedence runs from comma (loosest) through
+ * assignment, ternary, {@code || && | ^ &}, equality, relational, shift, additive, multiplicative and unary to
+ * {@code **}, then postfix and primary. The library's alternate Java rule set ({@code JavaRuleFactory}, with no comma
+ * or {@code **}) was never used by MCHeli and is not ported.
+ */
 public class ExpRuleFactory {
    private static ExpRuleFactory me;
    protected Rule rule;
@@ -76,10 +82,6 @@ public class ExpRuleFactory {
 
    public static Rule getDefaultRule() {
       return getInstance().getRule();
-   }
-
-   public static Rule getJavaRule() {
-      return JavaRuleFactory.getInstance().getRule();
    }
 
    public ExpRuleFactory() {

@@ -24,8 +24,15 @@ public class MchGroundVehicle extends AbstractMchVehicle {
     private static final FlightModel MODEL = new VehicleFlightModel();
     private static final MCH_VehicleInfo FALLBACK = buildFallback();
 
-    // Live destroyed-state seam: a wrecked vehicle stops driving (its flight model gates on !isDestroyed()).
-    private final AircraftState state = this::isDestroyed;
+    // Live mod-state seam: a wrecked vehicle stops driving (its flight model gates on !isDestroyed()), and only the
+    // living SEAT-0 pilot drives (reference riddenByEntity != null && !isDead) — not whoever boarded first.
+    private final AircraftState state = new AircraftState() {
+        @Override public boolean isDestroyed() { return MchGroundVehicle.this.isDestroyed(); }
+        @Override public boolean hasPilot() {
+            Entity p = pilot();
+            return p != null && p.isAlive();
+        }
+    };
     private final AircraftSimState simState = new AircraftSimState(0.07);
 
     public MchGroundVehicle(EntityType<? extends MchGroundVehicle> type, Level level) {
@@ -42,7 +49,7 @@ public class MchGroundVehicle extends AbstractMchVehicle {
 
     /** Fuel burns with the FLIGHT-SIM throttle (reference getThrottle), not the display enginePower —
      *  which idles at 0.5 while merely ridden and would drain the tank at rest. */
-    @Override protected double simThrottle() { return this.simState.getCurrentThrottle(); }
+    @Override protected double serverSimThrottle() { return this.simState.getCurrentThrottle(); }
     /** Free the rider's look so an emplacement (Phalanx / VADS / 46cm / SAM) can be AIMED with the mouse: the gun renders
      *  toward the rider's look and {@link #fireBodyYaw}/{@link #fireBodyPitch} launch along that same free look — the
      *  reference {@code MCH_EntityVehicle} rider aims a static mount exactly as the tank rider aims the turret. */

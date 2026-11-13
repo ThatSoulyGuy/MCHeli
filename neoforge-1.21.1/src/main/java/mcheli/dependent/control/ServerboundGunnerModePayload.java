@@ -12,9 +12,11 @@ import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
- * Serverbound one-shot "toggle gunner mode" — the reference {@code KeySwitchMode} → {@code switchGunnerMode}. Only the
- * pilot may toggle; the server enforces the {@code canSwitchGunnerMode} gate ({@link AbstractMchVehicle#toggleGunnerMode}).
- * Edge-triggered like the weapon/seat switch (one per key press).
+ * Serverbound one-shot "toggle gunner mode" — the reference {@code KeySwitchMode}: the pilot's {@code switchGunnerMode},
+ * or, from a switchable gunner seat, {@code switchGunnerModeOtherSeat}. The server re-checks the sender's seat and the
+ * matching gate ({@code canSwitchGunnerMode} / {@code canSwitchGunnerModeOtherSeat}) in
+ * {@link AbstractMchVehicle#toggleGunnerMode}; any other seat is ignored. Edge-triggered like the weapon/seat switch (one
+ * per key press).
  */
 public record ServerboundGunnerModePayload(int vehicleId) implements CustomPacketPayload {
 
@@ -36,7 +38,7 @@ public record ServerboundGunnerModePayload(int vehicleId) implements CustomPacke
             Player player = ctx.player();
             Entity e = player.level().getEntity(p.vehicleId());
             if (e instanceof AbstractMchVehicle v && v.hasPassenger(player)) {
-                v.toggleGunnerMode(player); // server re-checks pilot seat + canSwitchGunnerMode
+                v.toggleGunnerMode(player); // server re-checks the seat + its gunner-mode gate
             }
         });
     }

@@ -71,20 +71,22 @@ public final class MchRegistries {
     public static final DeferredRegister<net.minecraft.world.item.crafting.RecipeSerializer<?>> RECIPE_SERIALIZERS =
         DeferredRegister.create(Registries.RECIPE_SERIALIZER, MCHeli.MODID);
 
-    // ---- one EntityType per category (faithful uniform 2.0x0.7 collision core; real hits use the per-part armor
-    //      boxes, and getBoundingBoxForCulling() inflates so the big models don't cull). ----
+    // ---- one EntityType per category (faithful uniform 2.0x0.7 collision core, resized per entity from the config
+    //      Width/Height by AbstractMchVehicle.getDimensions; real hits use the per-part armor boxes, and
+    //      getBoundingBoxForCulling() inflates so the big models don't cull). Tracking range 13 chunks = the
+    //      reference's 200 blocks (MCH_MOD:211-222 registerModEntity(..., 200, 10, true)), rounded up. ----
     public static final Supplier<EntityType<MchHelicopter>> HELI =
         ENTITY_TYPES.register("helicopter", () -> EntityType.Builder.<MchHelicopter>of(MchHelicopter::new, MobCategory.MISC)
-            .sized(2.0F, 0.7F).clientTrackingRange(10).build("helicopter"));
+            .sized(2.0F, 0.7F).clientTrackingRange(13).build("helicopter"));
     public static final Supplier<EntityType<MchPlane>> PLANE =
         ENTITY_TYPES.register("plane", () -> EntityType.Builder.<MchPlane>of(MchPlane::new, MobCategory.MISC)
-            .sized(2.0F, 0.7F).clientTrackingRange(10).build("plane"));
+            .sized(2.0F, 0.7F).clientTrackingRange(13).build("plane"));
     public static final Supplier<EntityType<MchTank>> TANK =
         ENTITY_TYPES.register("tank", () -> EntityType.Builder.<MchTank>of(MchTank::new, MobCategory.MISC)
-            .sized(2.0F, 0.7F).clientTrackingRange(10).build("tank"));
+            .sized(2.0F, 0.7F).clientTrackingRange(13).build("tank"));
     public static final Supplier<EntityType<MchGroundVehicle>> VEHICLE =
         ENTITY_TYPES.register("vehicle", () -> EntityType.Builder.<MchGroundVehicle>of(MchGroundVehicle::new, MobCategory.MISC)
-            .sized(2.0F, 0.7F).clientTrackingRange(10).build("vehicle"));
+            .sized(2.0F, 0.7F).clientTrackingRange(13).build("vehicle"));
 
     /** The entity type that serves a category. */
     public static EntityType<? extends AbstractMchVehicle> entityTypeFor(Category cat) {
@@ -106,12 +108,15 @@ public final class MchRegistries {
         };
     }
 
-    // ---- the 112 per-vehicle spawn items, scanned from the bundled configs at construction ----
+    // ---- one spawn item per vehicle config (112 bundled, plus content packs), scanned at construction ----
     private static final Map<Category, List<DeferredItem<VehicleSpawnItem>>> ITEMS_BY_CATEGORY = new EnumMap<>(Category.class);
     private static final Map<String, DeferredItem<VehicleSpawnItem>> ITEM_BY_NAME = new HashMap<>();
 
     /** Register one spawn item per bundled config, keyed by the config base-name (e.g. {@code ah-64}). Call from the
-     *  MCHeli constructor BEFORE {@link #register}, so the DeferredRegister entries exist when the RegisterEvent fires. */
+     *  MCHeli constructor BEFORE {@link #register}, so the DeferredRegister entries exist when the RegisterEvent fires.
+     *  Content-pack vehicles get items here too, which puts them in the synced item registry: a client without a
+     *  server's packs is refused on join by NeoForge's registry sync (it names the missing {@code mcheli:} ids), so
+     *  packs must be installed on both sides (see {@link mcheli.dependent.port.MchContentPacks}). */
     public static void registerVehicles() {
         // The shared bundled+content-pack resource set (MchContentPacks.discover() runs first in the constructor), so
         // pack config filenames mint spawn items here, in the same construction window as the bundled ones.
@@ -127,12 +132,13 @@ public final class MchRegistries {
         for (Category cat : Category.values()) {
             List<String> names = new ArrayList<>();
             for (String file : res.list(cat.dir)) {
-                if (!file.endsWith(".txt")) {
+                // The manager's OWN rule (any-case .txt suffix, Locale.ROOT lower-case), so the item id, the synced
+                // config name and infoFor() all agree: a pack's "X.TXT" gets its spawn item, and a Turkish default
+                // locale cannot turn an uppercase I into a different key on one side only.
+                String name = mcheli.agnostic.info.MCH_InfoManagerBase.definitionName(file);
+                if (name == null) {
                     continue;
                 }
-                // Lowercase to match the manager (MCH_InfoManagerBase lowercases the config name), so the item id, the
-                // synced config name, and infoFor() all agree — and an uppercase pack filename becomes a legal id.
-                String name = file.substring(0, file.length() - 4).toLowerCase(java.util.Locale.ROOT);
                 if (ResourceLocation.tryBuild(MCHeli.MODID, name) == null) {
                     LOG.warn("MCHeli: skipping content-pack config '{}' in {} — illegal id (only [a-z0-9/._-] allowed)",
                         file, cat.dir);
@@ -162,7 +168,7 @@ public final class MchRegistries {
         }
     }
 
-    /** The registered spawn item for a config name (for creative salvage drops), or null if none. */
+    /** The registered spawn item for a config name (the item a salvaged vehicle drops), or null if none. */
     public static Item spawnItemFor(String configName) {
         DeferredItem<VehicleSpawnItem> d = ITEM_BY_NAME.get(configName);
         return d != null ? d.get() : null;
@@ -181,11 +187,22 @@ public final class MchRegistries {
         return out;
     }
 
-    // Projectile + cartridge + particle (NOT per-vehicle; unchanged).
-    public static final Supplier<EntityType<MchBullet>> DEMO_BULLET =
-        ENTITY_TYPES.register("demo_bullet", () ->
+    // Projectile + cartridge + particle (NOT per-vehicle; unchanged). A round is never saved or summoned: its weapon,
+    // shooter and fuses are live state (the reference's readEntityFromNBT drops a reloaded round).
+    // Every round tracks out to the reference's 530 blocks (MCH_MOD registerModEntity(..., 530, 5, true); vanilla caps
+    // it at the server's view distance), so a bomb released from altitude or a long-range missile stays visible. A
+    // round the client dead-reckons by itself (MchBullet.lerpTo ignores the server position) gets the reference's
+    // 5-tick updates; one whose path the server steers (guided missiles, torpedoes, ricocheting delay-fuse rounds)
+    // has its own type so it keeps per-tick updates and still curves smoothly on the client.
+    public static final Supplier<EntityType<MchBullet>> BULLET =
+        ENTITY_TYPES.register("bullet", () ->
             EntityType.Builder.<MchBullet>of(MchBullet::new, MobCategory.MISC)
-                .sized(0.2F, 0.2F).clientTrackingRange(6).updateInterval(1).build("demo_bullet"));
+                .sized(0.2F, 0.2F).clientTrackingRange(33).updateInterval(5).noSave().noSummon().build("bullet"));
+    public static final Supplier<EntityType<MchBullet>> STEERED_BULLET =
+        ENTITY_TYPES.register("steered_bullet", () ->
+            EntityType.Builder.<MchBullet>of(MchBullet::new, MobCategory.MISC)
+                .sized(0.2F, 0.2F).clientTrackingRange(33).updateInterval(1).noSave().noSummon()
+                .build("steered_bullet"));
 
     public static final Supplier<EntityType<MchCartridge>> CARTRIDGE =
         ENTITY_TYPES.register("cartridge", () ->
@@ -236,10 +253,6 @@ public final class MchRegistries {
             }
         });
 
-    // Flat "original" 2D icons for the TAB BUTTONS only — a plain item per category with an item/generated model
-    // pointing at a representative vehicle's original sprite (textures/items/<name>.png). The vehicle SPAWN items keep
-    // their 3D-model icons; these tab icons render flat. Never added to a tab's displayItems, so they never appear as
-    // spawnable items (an item in no tab is also absent from the creative search).
     /** The fuel canister — put it in a vehicle's fuel slot (the riding GUI) and the vehicle siphons it into its tank. */
     public static final DeferredItem<mcheli.dependent.item.MchFuelItem> FUEL =
         ITEMS.registerItem("fuel", mcheli.dependent.item.MchFuelItem::new, new Item.Properties());
@@ -262,6 +275,10 @@ public final class MchRegistries {
         MENUS.register("vehicle", () -> net.neoforged.neoforge.common.extensions.IMenuTypeExtension.create(
             mcheli.dependent.menu.MchVehicleMenu::new));
 
+    // Flat "original" 2D icons for the TAB BUTTONS only — a plain item per category with an item/generated model
+    // pointing at a representative vehicle's original sprite (textures/items/<name>.png). The vehicle SPAWN items keep
+    // their 3D-model icons; these tab icons render flat. Never added to a tab's displayItems, so they never appear as
+    // spawnable items (an item in no tab is also absent from the creative search).
     public static final DeferredItem<Item> ICON_HELI = ITEMS.registerItem("tab_helicopter", Item::new, new Item.Properties());
     public static final DeferredItem<Item> ICON_PLANE = ITEMS.registerItem("tab_plane", Item::new, new Item.Properties());
     public static final DeferredItem<Item> ICON_TANK = ITEMS.registerItem("tab_tank", Item::new, new Item.Properties());
@@ -294,6 +311,10 @@ public final class MchRegistries {
     }
 
     public static void register(IEventBus modBus) {
+        // The projectile was registered as "demo_bullet" before it got its final id; the alias resolves that id in
+        // existing worlds and commands (aliases apply only while the old name itself is unregistered).
+        ENTITY_TYPES.addAlias(ResourceLocation.fromNamespaceAndPath(MCHeli.MODID, "demo_bullet"),
+            ResourceLocation.fromNamespaceAndPath(MCHeli.MODID, "bullet"));
         ENTITY_TYPES.register(modBus);
         ITEMS.register(modBus);
         CREATIVE_TABS.register(modBus);

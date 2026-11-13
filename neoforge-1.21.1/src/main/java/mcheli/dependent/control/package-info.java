@@ -1,28 +1,29 @@
 /**
- * Server-side control-input sourcing for piloted MCHeli vehicles.
+ * Rider input and the MCHeli network payloads.
  *
  * <p>This package owns the seam between a rider's raw key/mouse input and the platform-agnostic flight sim
- * ({@link mcheli.agnostic.sim}). The single class here, {@link mcheli.dependent.control.MchControlState}, is a
- * mutable per-vehicle holder of the raw control bits, mouse deltas and latched mode flags; its
- * {@link mcheli.dependent.control.MchControlState#snapshot(float)} method mints the immutable
- * {@link mcheli.agnostic.sim.ControlInput} that
+ * ({@link mcheli.agnostic.sim}). {@link mcheli.dependent.control.MchControlState} is the mutable per-seat holder of the
+ * raw control bits, latched modes and client settings; its {@link mcheli.dependent.control.MchControlState#snapshot(float)}
+ * mints the immutable {@link mcheli.agnostic.sim.ControlInput} that
  * {@link mcheli.agnostic.sim.AircraftFlightController#tickServer} consumes each server tick.
  *
- * <p><strong>Deferred: the client capture -&gt; packet -&gt; server plumbing.</strong> In the original mod the flow is
- * <em>client keybinds/mouse helper</em> &rarr; encode the held flags into a bitset
- * (see {@code mcheli.aircraft.MCH_PacketPlayerControlBase} in the 1.7.10 reference) &rarr; send a serverbound packet
- * &rarr; the server decodes and stamps the bits onto the piloted entity for that tick. That whole chain is a
- * <em>networking</em> concern and is intentionally NOT built yet:
+ * <p>The client side lives in {@code mcheli.dependent.client}: {@code MchClientInput} (held keys, fire trigger, lock id,
+ * weapon switching, client settings), {@code MchClientRotation} (the client-authoritative mouse rotation) and
+ * {@code MchKeybinds} (one-shot actions). They send the payloads here, registered by
+ * {@link mcheli.dependent.control.MchControlNetwork}:
  * <ul>
- *   <li>the client-side capture (keybind registration, {@code MouseHandler} delta averaging, flight-sim roll-stick
- *       accumulation, invert/sensitivity config) is TODO;</li>
- *   <li>the {@code ServerboundControlPacket} record, its {@code StreamCodec}, and the NeoForge
- *       {@code PayloadRegistrar} handler that writes into {@code MchControlState} are TODO;</li>
- *   <li>the derivation of the latched mode flags (freeLook / gunner / flight-sim / auto-throttle) from the packet's
- *       toggle bits, seat config and vehicle config is TODO.</li>
+ *   <li>held state: {@link mcheli.dependent.control.ServerboundControlPayload} (the port of the reference
+ *       {@code MCH_PacketPlayerControlBase} bitset and {@code MCH_PacketNotifyClientSetting}, on change plus a
+ *       keepalive) and {@link mcheli.dependent.control.ServerboundRotationPayload} (client-authoritative rotation);</li>
+ *   <li>one-shot actions: weapon switch and weapon mode, seat switch, gunner mode, blade fold, VTOL, hover mode,
+ *       landing gear, flares, the vehicle GUI, and the lock notice
+ *       ({@link mcheli.dependent.control.ServerboundNotifyLockPayload});</li>
+ *   <li>clientbound notices: the RWR tone ({@link mcheli.dependent.control.ClientboundRwrPayload}), the weapon hit
+ *       marker ({@link mcheli.dependent.control.ClientboundHitMarkPayload}) and a rider's own seat-weapon numbers for
+ *       his HUD ({@link mcheli.dependent.control.ClientboundSeatWeaponPayload}).</li>
  * </ul>
- * Until those land, {@code MchControlState} can be populated directly (tests, AI/drone drivers, orchestrator wiring)
- * and snapshotted into a {@code ControlInput}. Keeping this holder free of any Minecraft networking type is
- * deliberate: when the packet handler is added it will simply mutate these fields, and nothing downstream changes.
+ * Every serverbound handler re-checks on the server that the sender rides the addressed vehicle and occupies a seat
+ * that may do the action, plus the vehicle's own gates. The control holder stays free of Minecraft networking types,
+ * so self-tests and drone drivers can populate it directly.
  */
 package mcheli.dependent.control;

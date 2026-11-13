@@ -17,8 +17,6 @@ import mcheli.dependent.entity.MchGroundVehicle;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.util.Mth;
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.LivingEntity;
 
 /**
  * Renders every ground vehicle ({@code vehicles/*}: the Phalanx CIWS, VADS, 46cm cannon, SAM launchers, …) from its real
@@ -94,11 +92,10 @@ public class MchGroundVehicleRenderer extends MchModelEntityRenderer<MchGroundVe
         Minecraft mc = Minecraft.getInstance();
         boolean hideFirstPerson = mc.options.getCameraType().isFirstPerson() && entity.pilot() == mc.player;
         // Gatling barrel spin (type==1 parts, e.g. the Phalanx cannon): accumulates while the gun is firing.
-        float barrelDeg = calcRot(entity.barrelSpin(), entity.prevBarrelSpin(), partialTick);
+        float barrelDeg = calcRot(entity.animation().barrelSpin(), entity.animation().prevBarrelSpin(), partialTick);
         int c = wreckColor(entity);
-        Set<String> hidden = hiddenGroups(entity, model); // glass sub-meshes stay hidden inside part spans too
         for (MCH_VehicleInfo.VPart p : m.topParts()) {
-            drawPart(p, model, pose, consumer, packedLight, overlay, turretYaw, pitch, barrelDeg, hideFirstPerson, c, hidden);
+            drawPart(p, model, pose, consumer, packedLight, overlay, turretYaw, pitch, barrelDeg, hideFirstPerson, c);
         }
     }
 
@@ -108,7 +105,7 @@ public class MchGroundVehicleRenderer extends MchModelEntityRenderer<MchGroundVe
      *  the gun's yaw+pitch. A hidden parent still transforms and still draws its (independently-flagged) children. */
     private void drawPart(MCH_VehicleInfo.VPart p, MchModel model, PoseStack pose, VertexConsumer consumer,
                           int packedLight, int overlay, float turretYaw, float pitch, float barrelDeg, boolean hideFirstPerson,
-                          int c, Set<String> hidden) {
+                          int c) {
         pose.pushPose();
         if (p.rotYaw || p.rotPitch || p.type == 1) {
             pose.translate(p.pos.x(), p.pos.y(), p.pos.z());
@@ -125,11 +122,11 @@ public class MchGroundVehicleRenderer extends MchModelEntityRenderer<MchGroundVe
         }
         if (p.drawFP || !hideFirstPerson) {
             MchModelRenderer.renderPartSpan(model, pose, consumer, packedLight, overlay, c, c, c, 255,
-                "$" + p.modelName, hidden);
+                "$" + p.modelName);
         }
         if (p.child != null) {
             for (MCH_VehicleInfo.VPart child : p.child) {
-                drawPart(child, model, pose, consumer, packedLight, overlay, turretYaw, pitch, barrelDeg, hideFirstPerson, c, hidden);
+                drawPart(child, model, pose, consumer, packedLight, overlay, turretYaw, pitch, barrelDeg, hideFirstPerson, c);
             }
         }
         pose.popPose();

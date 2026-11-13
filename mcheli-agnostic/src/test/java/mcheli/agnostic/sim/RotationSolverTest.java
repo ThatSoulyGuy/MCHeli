@@ -6,7 +6,6 @@ import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.util.MCH_LowPassFilterFloat;
 import mcheli.agnostic.value.AABB;
@@ -55,7 +54,6 @@ class RotationSolverTest {
         @Override public MoveResult move(Vec3d d) { throw new UnsupportedOperationException(); }
         @Override public EntityRef vehicle() { return null; }
         @Override public List<EntityRef> passengers() { return List.of(); }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
         @Override public WorldView world() { throw new UnsupportedOperationException(); }
     }
 
@@ -102,7 +100,7 @@ class RotationSolverTest {
     }
 
     static ControlInput input(float partialTicks, boolean freeLook, double stickX, double stickY) {
-        return new ControlInput(stickX, stickY, 0, 0, false, false, false, false, false, freeLook, false, false, false, partialTicks);
+        return new ControlInput(stickX, stickY, false, false, false, false, false, freeLook, false, false, partialTicks);
     }
 
     @Test

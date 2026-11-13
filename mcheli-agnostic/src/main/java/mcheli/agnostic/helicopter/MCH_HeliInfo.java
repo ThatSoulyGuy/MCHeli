@@ -3,10 +3,9 @@ package mcheli.agnostic.helicopter;
 import java.util.ArrayList;
 import java.util.List;
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
-import mcheli.agnostic.spi.ItemHandle;
+import mcheli.agnostic.config.MchSettings;
 
 public class MCH_HeliInfo extends MCH_AircraftInfo {
-   public ItemHandle item = null;
    public boolean isEnableFoldBlade;
    public List<MCH_HeliInfo.Rotor> rotorList;
 
@@ -21,12 +20,9 @@ public class MCH_HeliInfo extends MCH_AircraftInfo {
 
    @Override
    public boolean isValidData() throws Exception {
-      this.speed = (float)(this.speed * this.getSpeedMultiplier());
+      // Reference MCH_HeliInfo:26: the server-wide AllHeliSpeed multiplier, baked in at load.
+      this.speed = (float)(this.speed * MchSettings.current().allHeliSpeed());
       return super.isValidData();
-   }
-
-   protected double getSpeedMultiplier() {
-      return 1.0;
    }
 
    @Override
@@ -42,11 +38,6 @@ public class MCH_HeliInfo extends MCH_AircraftInfo {
    @Override
    public int getDefaultMaxZoom() {
       return 8;
-   }
-
-   @Override
-   public ItemHandle getItem() {
-      return this.item;
    }
 
    @Override
@@ -99,14 +90,6 @@ public class MCH_HeliInfo extends MCH_AircraftInfo {
    public void preReload() {
       super.preReload();
       this.rotorList.clear();
-   }
-
-   @Override
-   public void postReload() {
-      this.registerModels();
-   }
-
-   protected void registerModels() {
    }
 
    public static class Rotor extends MCH_AircraftInfo.DrawnPart {

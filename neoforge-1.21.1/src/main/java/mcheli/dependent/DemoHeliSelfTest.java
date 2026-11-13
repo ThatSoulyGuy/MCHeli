@@ -1,25 +1,19 @@
 package mcheli.dependent;
 
-import com.mojang.logging.LogUtils;
 import mcheli.dependent.entity.MchHelicopter;
 import mcheli.dependent.registry.MchRegistries;
 import net.minecraft.core.BlockPos;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
-import net.neoforged.neoforge.event.tick.ServerTickEvent;
-import org.slf4j.Logger;
 
 /**
  * Headless, log-verifiable proof that the ported {@code HeliFlightModel} produces LIFT <em>because the rider-gated
- * control path runs</em> — the flight-physics counterpart to {@link DemoVehicleSelfTest} (which only proves the
- * ground path). It is a DIFFERENTIAL test: it spawns two identical demo helis in open air, force-mounts a pig
- * "pilot" on one and leaves the other pilotless, holds collective on both, ticks the server, and asserts the
- * PILOTED heli ends up far above the pilotless one.
+ * control path runs</em> — the flight-physics counterpart to {@link DemoForwardVehicleSelfTest} (the plane) and
+ * {@link DemoTankSelfTest} (the ground path). It is a DIFFERENTIAL test: it spawns two identical AH-64s in open
+ * air, force-mounts a pig "pilot" on one and leaves the other pilotless, holds collective on both, ticks the server,
+ * and asserts the PILOTED heli ends up far above the pilotless one.
  *
  * <p>The differential is the whole point, and it is what makes the test honest. Throttle starts at 0 on both
  * (faithful to the reference: a pilotless heli develops no lift). The rider/blade/canopy/fuel gate in
@@ -30,8 +24,7 @@ import org.slf4j.Logger;
  * pilotless one and the differential collapses toward 0, FAILING the test — which a naive single-heli "did it
  * climb?" check (with a primed throttle) could not detect.
  */
-public final class DemoHeliSelfTest {
-    private static final Logger LOG = LogUtils.getLogger();
+public final class DemoHeliSelfTest extends MchSelfTest {
 
     /** Ticks to run before measuring — long enough for the piloted rotor to spool up and the pilotless one to fall. */
     private static final int CHECK_AFTER_TICKS = 100;
@@ -44,20 +37,14 @@ public final class DemoHeliSelfTest {
 
     private MchHelicopter piloted;
     private MchHelicopter pilotless;
-    private Entity pilot;
     private Vec3 startPiloted;
     private Vec3 startPilotless;
-    private int ticks = -1;
 
-    @SubscribeEvent
-    public void onServerStarted(ServerStartedEvent event) {
-        ServerLevel level = event.getServer().overworld();
-        BlockPos spawn = level.getSharedSpawnPos();
+    @Override
+    protected void start() {
+        BlockPos spawn = this.origin;
         // Spawn both high in OPEN AIR (+80 so the pilotless heli's ~65-block fall never reaches the ground within
-        // the window). Keep BOTH within ~16 blocks of world spawn on opposite sides: on a playerless dedicated
-        // server only the core spawn chunks are entity-ticking, so an entity 2+ chunks out (e.g. x+32) never ticks
-        // and would spuriously read dy=0. x+16 and x-16 both sit inside the ticking core (and clear of the vehicle
-        // self-test at x+0 and of each other).
+        // the window), on opposite sides of the area origin (both inside its force-loaded, entity-ticking chunks).
         double y = spawn.getY() + 80.0;
         double xPiloted = spawn.getX() + 16.5;
         double xPilotless = spawn.getX() - 15.5;
@@ -66,7 +53,7 @@ public final class DemoHeliSelfTest {
         piloted = MchRegistries.HELI.get().create(level);
         pilotless = MchRegistries.HELI.get().create(level);
         if (piloted == null || pilotless == null) {
-            LOG.error("[HELI-SELFTEST] FAIL: EntityType.create returned null for the heli type");
+            fail("EntityType.create returned null for the heli type");
             return;
         }
         piloted.setConfigName("ah-64");
@@ -82,7 +69,7 @@ public final class DemoHeliSelfTest {
         // real player would board a spawn-item heli that arrives fueled; here we prime it directly.
         piloted.setFuel(piloted.getMaxFuel());
 
-        pilot = EntityType.PIG.create(level);
+        Entity pilot = EntityType.PIG.create(level);
         boolean mounted = false;
         if (pilot != null) {
             if (pilot instanceof Mob mob) {
@@ -104,19 +91,14 @@ public final class DemoHeliSelfTest {
 
         startPiloted = piloted.position();
         startPilotless = pilotless.position();
-        ticks = 0;
         LOG.info("[HELI-SELFTEST] spawned piloted id={} (mounted={}, passengers={}, pilotSeat={}) + pilotless id={} at y={}",
             piloted.getId(), mounted, piloted.getPassengers().size(),
             pilot != null ? piloted.seatIndexOf(pilot) : -1, pilotless.getId(), fmt(y));
     }
 
-    @SubscribeEvent
-    public void onServerTick(ServerTickEvent.Post event) {
-        if (ticks < 0 || piloted == null || pilotless == null) {
-            return;
-        }
-        ticks++;
-        if (ticks < CHECK_AFTER_TICKS) {
+    @Override
+    protected void tick() {
+        if (ticks() < CHECK_AFTER_TICKS) {
             return;
         }
 
@@ -134,24 +116,12 @@ public final class DemoHeliSelfTest {
 
         LOG.info("[HELI-SELFTEST] after {} ticks: piloted dy={} pilotless dy={} differential={} pilotedHorizontal={} passengers={}",
             CHECK_AFTER_TICKS, fmt(dyPiloted), fmt(dyPilotless), fmt(differential), fmt(horizontal), piloted.getPassengers().size());
-        LOG.info("[HELI-SELFTEST] RESULT: {} - real HeliFlightModel {} via AircraftFlightController+NeoEntityRef (differential={} need>{}, pilotlessDy={} need<{}, horizontal={} need<{})",
-            pass ? "PASS" : "FAIL",
+        finish(pass, "real HeliFlightModel {} via AircraftFlightController+NeoEntityRef (differential={} need>{}, pilotlessDy={} need<{}, horizontal={} need<{})",
             pass ? "RIDER-gated collective lift held the piloted heli ~" + fmt(differential) + " blocks above the pilotless one"
                  : (!gravityReal ? "pilotless heli did NOT fall (gravity/physics not running)"
                     : (!lifted ? "piloted heli did NOT out-climb the pilotless one (rider/control path not driving lift)"
                        : "piloted heli DRIFTED sideways")),
             fmt(differential), fmt(LIFT_DIFFERENTIAL_MIN), fmt(dyPilotless), fmt(PILOTLESS_FELL_BELOW), fmt(horizontal), fmt(LATERAL_MAX));
-
-        if (pilot != null) {
-            pilot.stopRiding();
-            pilot.discard();
-        }
-        piloted.discard();
-        pilotless.discard();
-        piloted = null;
-        pilotless = null;
-        pilot = null;
-        ticks = -1;
     }
 
     private static String fmt(double v) {

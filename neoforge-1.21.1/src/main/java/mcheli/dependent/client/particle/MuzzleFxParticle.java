@@ -12,14 +12,13 @@ import net.neoforged.api.distmarker.OnlyIn;
 
 /**
  * The MCHeli weapon "fx" particle: a soft, fullbright, camera-facing puff whose colour, size and lifetime are all taken
- * from the config-carrying {@link MuzzleFxOptions} — so the M230's specific orange muzzle flash ({@code 254,159,84})
- * shows, and a rocket's white smoke trail reads as smoke. Standard alpha blend (the reference flash/smoke are NOT
- * additive); the puff fades out over its life. A single particle type serves muzzle flash, muzzle smoke, and the
- * projectile trail — the caller just varies the config-derived colour/size/lifetime/velocity.
+ * from the config-carrying {@link MuzzleFxOptions} — so a muzzle's config smoke colour shows, and a rocket's white
+ * smoke trail reads as smoke. Standard alpha blend (the reference smoke is NOT additive); the puff fades out over its
+ * life. One particle type serves muzzle smoke and the projectile trail — the caller just varies the config-derived
+ * colour/size/lifetime/velocity. (The muzzle FLASH is {@link MchExplodeParticle}, the reference's explosion sheet.)
  *
- * <p>Fidelity note: the reference used the 16-frame explosion sheet for the flash and the 8-frame smoke sheet for
- * smoke; here both use vanilla's soft {@code generic} sprites, so the exact sheet animation is approximated while the
- * config-driven colour/size/lifetime are exact.
+ * <p>Fidelity note: the reference used the 8-frame smoke sheet for smoke; here it uses vanilla's soft {@code generic}
+ * sprites, so the exact sheet animation is approximated while the config-driven colour/size/lifetime are exact.
  */
 @OnlyIn(Dist.CLIENT)
 public class MuzzleFxParticle extends TextureSheetParticle {

@@ -1,39 +1,32 @@
 package mcheli.dependent;
 
 import java.util.function.Supplier;
-import com.mojang.logging.LogUtils;
 import mcheli.dependent.control.MchControllable;
+import mcheli.dependent.entity.AbstractMchVehicle;
 import net.minecraft.core.BlockPos;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.bus.api.SubscribeEvent;
-import net.neoforged.neoforge.event.server.ServerStartedEvent;
-import net.neoforged.neoforge.event.tick.ServerTickEvent;
-import org.slf4j.Logger;
 
 /**
  * Reusable headless, log-verifiable DIFFERENTIAL proof that a forward-thrust {@link net.minecraft.world.entity.Entity}
- * flight model (plane / tank) generates rider-gated thrust in a live server. Shared by the plane and tank demos —
- * both share the {@code rot2Vec3(yaw, pitch−10°)} forward model, differing only in lift strength and speed cap, so
- * one parameterised test covers both.
+ * flight model (plane / tank) generates rider-gated thrust in a live server. The {@code plane} self-test runs it; the
+ * tank shares the {@code rot2Vec3(yaw, pitch−10°)} forward model (differing only in lift strength and speed cap), but
+ * its own ground-path checks live in {@link DemoTankSelfTest}.
  *
- * <p>It spawns two identical demo entities in open air, force-mounts a pig "pilot" on one, leaves the other
- * pilotless, holds throttle on both, and after a fixed window asserts the PILOTED entity flew forward and stayed
- * far above the pilotless one. Throttle starts at 0 on both (faithful: no rider → no thrust), and the rider/canopy/
- * fuel gate in the model decides spool-UP vs. spin-DOWN — so only the piloted entity develops thrust. This makes
- * the test honest: if the mount fails or {@code hasRider} regresses, the piloted entity behaves like the pilotless
- * one, the forward distance and the altitude differential both collapse, and the test FAILS.
+ * <p>It spawns two identical vehicles in open air, force-mounts a pig "pilot" in the PILOT seat of one (the
+ * automatic seat rule gives seat 0 only to players, so the pig asks for it with {@code preferSeat}), fuels it, leaves
+ * the other pilotless, holds throttle on both, and after a fixed window asserts the PILOTED entity flew forward and
+ * stayed far above the pilotless one. Throttle starts at 0 on both (faithful: no rider → no thrust), and the
+ * rider/canopy/fuel gate in the model decides spool-UP vs. spin-DOWN — so only the piloted entity develops thrust. This
+ * makes the test honest: if the mount fails or {@code hasRider} regresses, the piloted entity behaves like the
+ * pilotless one, the forward distance and the altitude differential both collapse, and the test FAILS.
  *
- * <p>Yaw is 0, so "forward" is +Z. The differential is robust to the world-spawn entity-ticking core: even if the
- * piloted entity flies far enough to leave the ticking chunks and freeze mid-flight, it remains forward-of and above
- * the free-falling pilotless control (which never moves horizontally, so it always ticks), so both differentials
- * still hold.
+ * <p>Yaw is 0, so "forward" is +Z, and the test's force-loaded area reaches 12 chunks down +Z so the piloted entity
+ * keeps simulating for the whole window.
  */
-public final class DemoForwardVehicleSelfTest {
-    private static final Logger LOG = LogUtils.getLogger();
+public final class DemoForwardVehicleSelfTest extends MchSelfTest {
 
     private static final int CHECK_AFTER_TICKS = 100;
     /** The pilotless entity must genuinely fall this far — proves gravity/physics is running. */
@@ -54,17 +47,15 @@ public final class DemoForwardVehicleSelfTest {
 
     private Entity piloted;
     private Entity pilotless;
-    private Entity pilot;
     private Vec3 startPiloted;
     private Vec3 startPilotless;
-    private int ticks = -1;
 
     /**
      * @param label               short name for the log lines (e.g. "PLANE")
-     * @param type                the demo entity type supplier
-     * @param xPiloted            X offset from world spawn for the piloted entity (keep within ~14 for ticking)
-     * @param xPilotless          X offset for the pilotless control (distinct from xPiloted; within ~14)
-     * @param yOffset             Y offset above spawn (high enough the pilotless ~76-block fall stays airborne)
+     * @param type                the vehicle entity type supplier
+     * @param xPiloted            X offset from the area origin for the piloted entity
+     * @param xPilotless          X offset for the pilotless control (distinct from xPiloted)
+     * @param yOffset             Y offset above the ground (high enough the pilotless ~76-block fall stays airborne)
      * @param forwardMin          minimum piloted forward (+Z) distance proving thrust
      * @param altDifferentialMin  minimum (pilotedDy − pilotlessDy) proving the control path kept it aloft
      */
@@ -81,29 +72,36 @@ public final class DemoForwardVehicleSelfTest {
         this.altDifferentialMin = altDifferentialMin;
     }
 
-    @SubscribeEvent
-    public void onServerStarted(ServerStartedEvent event) {
-        ServerLevel level = event.getServer().overworld();
-        BlockPos spawn = level.getSharedSpawnPos();
+    @Override
+    protected int[] areaChunks() {
+        return new int[] {-2, 2, -2, 12};
+    }
+
+    @Override
+    protected void start() {
+        BlockPos spawn = this.origin;
         double y = spawn.getY() + yOffset;
         double z = spawn.getZ() + 0.5;
 
         piloted = type.get().create(level);
         pilotless = type.get().create(level);
         if (piloted == null || pilotless == null) {
-            LOG.error("[{}-SELFTEST] FAIL: EntityType.create returned null", label);
+            fail("EntityType.create returned null");
             return;
         }
-        if (piloted instanceof mcheli.dependent.entity.AbstractMchVehicle pv) pv.setConfigName(configName);
-        if (pilotless instanceof mcheli.dependent.entity.AbstractMchVehicle lv) lv.setConfigName(configName);
+        if (piloted instanceof AbstractMchVehicle pv) pv.setConfigName(configName);
+        if (pilotless instanceof AbstractMchVehicle lv) lv.setConfigName(configName);
         piloted.setPos(spawn.getX() + xPiloted, y, z);
         piloted.setYRot(0.0F);
         level.addFreshEntity(piloted);
         pilotless.setPos(spawn.getX() + xPilotless, y, z);
         pilotless.setYRot(0.0F);
         level.addFreshEntity(pilotless);
+        // A fresh vehicle spawns DRY and the thrust gate reads canUseFuel (a-10: MaxFuel=1800), so fuel the piloted one
+        // as a spawn item would. The pilotless control stays dry, which changes nothing for it (no rider, no thrust).
+        if (piloted instanceof AbstractMchVehicle pv) pv.setFuel(pv.getMaxFuel());
 
-        pilot = EntityType.PIG.create(level);
+        Entity pilot = EntityType.PIG.create(level);
         boolean mounted = false;
         if (pilot != null) {
             if (pilot instanceof Mob mob) {
@@ -112,29 +110,29 @@ public final class DemoForwardVehicleSelfTest {
             pilot.setPos(spawn.getX() + xPiloted, y, z);
             pilot.setYRot(0.0F);
             level.addFreshEntity(pilot);
+            // Seat 0 is reserved for players by the automatic rule; without this the pig sits in a crew seat, pilot()
+            // is null and the injected throttle is cleared every tick.
+            if (piloted instanceof AbstractMchVehicle pv) pv.preferSeat(pilot, 0);
             mounted = pilot.startRiding(piloted, true); // ONLY the piloted entity gets a rider
         }
 
         // Drive ONLY the piloted entity's control state (throttle up) — the pilotless one gets no input and
-        // free-falls. The demo entities implement MchControllable; bits persist while a passenger is aboard.
+        // free-falls. Every MCHeli vehicle implements MchControllable; bits persist while a pilot is aboard.
         if (piloted instanceof MchControllable c) {
             c.getControlState().throttleUp = true;
         }
 
         startPiloted = piloted.position();
         startPilotless = pilotless.position();
-        ticks = 0;
-        LOG.info("[{}-SELFTEST] spawned piloted id={} (mounted={}, passengers={}) + pilotless id={} at y={}",
-            label, piloted.getId(), mounted, piloted.getPassengers().size(), pilotless.getId(), fmt(y));
+        LOG.info("[{}-SELFTEST] spawned piloted id={} (mounted={}, passengers={}, pilotSeat={}) + pilotless id={} at y={}",
+            label, piloted.getId(), mounted, piloted.getPassengers().size(),
+            pilot != null && piloted instanceof AbstractMchVehicle pv ? pv.seatIndexOf(pilot) : -1,
+            pilotless.getId(), fmt(y));
     }
 
-    @SubscribeEvent
-    public void onServerTick(ServerTickEvent.Post event) {
-        if (ticks < 0 || piloted == null || pilotless == null) {
-            return;
-        }
-        ticks++;
-        if (ticks < CHECK_AFTER_TICKS) {
+    @Override
+    protected void tick() {
+        if (ticks() < CHECK_AFTER_TICKS) {
             return;
         }
 
@@ -157,25 +155,12 @@ public final class DemoForwardVehicleSelfTest {
         LOG.info("[{}-SELFTEST] after {} ticks: piloted forward={} dy={} lateral={} | pilotless forward={} dy={} | altDifferential={}",
             label, CHECK_AFTER_TICKS, fmt(forwardPiloted), fmt(dyPiloted), fmt(lateralPiloted),
             fmt(forwardPilotless), fmt(dyPilotless), fmt(altDifferential));
-        LOG.info("[{}-SELFTEST] RESULT: {} - real flight model {} via AircraftFlightController+NeoEntityRef (forward={} need>{}, altDiff={} need>{}, pilotlessDy={} need<{}, pilotlessFwd={} need<{}, lateral={} need<{})",
-            label,
-            pass ? "PASS" : "FAIL",
+        finish(pass, "real flight model {} via AircraftFlightController+NeoEntityRef (forward={} need>{}, altDiff={} need>{}, pilotlessDy={} need<{}, pilotlessFwd={} need<{}, lateral={} need<{})",
             pass ? "RIDER-gated thrust flew the piloted entity forward and held it ~" + fmt(altDifferential) + " blocks above the pilotless one"
                  : failReason(flew, stayedAloft, gravityReal, pilotlessDidNotFly),
             fmt(forwardPiloted), fmt(forwardMin), fmt(altDifferential), fmt(altDifferentialMin),
             fmt(dyPilotless), fmt(PILOTLESS_FELL_BELOW), fmt(forwardPilotless), fmt(PILOTLESS_FORWARD_MAX),
             fmt(lateralPiloted), fmt(LATERAL_MAX));
-
-        if (pilot != null) {
-            pilot.stopRiding();
-            pilot.discard();
-        }
-        piloted.discard();
-        pilotless.discard();
-        piloted = null;
-        pilotless = null;
-        pilot = null;
-        ticks = -1;
     }
 
     private static String failReason(boolean flew, boolean stayedAloft, boolean gravityReal, boolean pilotlessDidNotFly) {

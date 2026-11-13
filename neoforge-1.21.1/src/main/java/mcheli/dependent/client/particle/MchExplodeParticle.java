@@ -12,12 +12,11 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.api.distmarker.OnlyIn;
 
 /**
- * The MCHeli big explosion fireball — a faithful port of {@code MCH_EntityParticleExplode}: a stationary, camera-facing,
+ * The MCHeli muzzle flash — a faithful port of {@code MCH_EntityParticleExplode}: a stationary, camera-facing,
  * fullbright billboard that plays vanilla's 16-frame {@code explosion.png} sheet (a 4×4 grid) ONCE across its lifetime,
  * at the config-scaled size {@code 2·particleSize} carried by {@link MchExplodeOptions}. The sheet is stitched into the
  * particle atlas as a single 128×128 sprite; this particle sub-samples the current frame's cell by overriding the UV
- * getters (so no image-split tooling is needed). Several of these, spread over the blast, give the 46cm's enormous
- * rolling fireball the tiny vanilla {@code EXPLOSION_EMITTER} could never.
+ * getters (so no image-split tooling is needed).
  */
 @OnlyIn(Dist.CLIENT)
 public class MchExplodeParticle extends TextureSheetParticle {

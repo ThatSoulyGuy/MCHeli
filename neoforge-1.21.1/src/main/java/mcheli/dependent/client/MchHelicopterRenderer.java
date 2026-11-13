@@ -11,7 +11,6 @@ import java.util.Set;
 import mcheli.agnostic.helicopter.MCH_HeliInfo;
 import mcheli.agnostic.helicopter.MCH_HeliInfoManager;
 import mcheli.agnostic.model.MchModel;
-import mcheli.agnostic.model.ModelGroup;
 import mcheli.dependent.entity.MchHelicopter;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import org.joml.Quaternionf;
@@ -61,7 +60,7 @@ public class MchHelicopterRenderer extends MchModelEntityRenderer<MchHelicopter>
         HeliMeta m = meta(entity, model);
         int c = wreckColor(entity);
         // Rotor angle is accumulated on the entity from the synced engine power; interpolate with the short-path.
-        float spin = calcRot(entity.rotorSpin(), entity.prevRotorSpin(), partialTick);
+        float spin = calcRot(entity.animation().rotorSpin(), entity.animation().prevRotorSpin(), partialTick);
         // A fold-capable heli drives each blade individually off the fold animator (reference rotationRotor + MCH_Rotor)
         // so the blades tuck/spread while folding; every other heli keeps the single shared spin, unchanged.
         boolean fold = entity.foldActive();
@@ -85,8 +84,7 @@ public class MchHelicopterRenderer extends MchModelEntityRenderer<MchHelicopter>
                 if (!rotor.oldRenderMethod) {
                     pose.translate(-hx, -hy, -hz);
                 }
-                MchModelRenderer.renderPartSpan(model, pose, consumer, packedLight, overlay, c, c, c, 255,
-                    group, java.util.Collections.emptySet());
+                MchModelRenderer.renderPartSpan(model, pose, consumer, packedLight, overlay, c, c, c, 255, group);
                 pose.popPose();
             }
         }

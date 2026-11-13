@@ -8,7 +8,6 @@ import mcheli.agnostic.helicopter.MCH_HeliInfo;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.RandomSource;
 import mcheli.agnostic.spi.Role;
-import mcheli.agnostic.spi.SyncedData;
 import mcheli.agnostic.spi.WorldView;
 import mcheli.agnostic.util.MCH_LowPassFilterFloat;
 import mcheli.agnostic.value.AABB;
@@ -79,11 +78,11 @@ class HeliControlMappingTest {
         @Override public MoveResult move(Vec3d d) { throw new UnsupportedOperationException(); }
         @Override public EntityRef vehicle() { return null; }
         @Override public List<EntityRef> passengers() { return List.of(); }
-        @Override public SyncedData synced() { throw new UnsupportedOperationException(); }
     }
 
     static final class FakeHeliState implements HeliState {
-        boolean hovering;
+        boolean hovering, folded;
+        @Override public boolean isBladeFolded() { return folded; }
         /** These traces drive the stick, which only happens with someone in the seat. Not read by
          *  {@code HeliControlMapping} (the predicate's sole consumer is {@code HeliFlightModel}), but stated
          *  explicitly because {@link HeliState#hasPilot()} deliberately has no default. */
@@ -109,7 +108,7 @@ class HeliControlMappingTest {
     }
 
     static ControlInput stick(double stickX, double stickY, boolean left, boolean right, float partialTicks) {
-        return new ControlInput(stickX, stickY, 0, 0, false, false, left, right, false, false, false, false, false, partialTicks);
+        return new ControlInput(stickX, stickY, false, false, left, right, false, false, false, false, partialTicks);
     }
 
     @Test
@@ -129,7 +128,7 @@ class HeliControlMappingTest {
 
     @Test
     void parkedHeliIgnoresTheMouseEvenWhenTheProbeSeesNoGround() {
-        // Resting on ground the 2-row probe cannot see (1-layer snow, tall grass, a terrace edge): the probe says
+        // Resting on ground the 2-row probe cannot see (a terrace edge past the rounded centre): the probe says
         // "air" but Minecraft reports ground contact -> no mouse pitch/roll/yaw, and the on-ground auto-level runs.
         FakeHeli e = new FakeHeli();
         e.grounded = true;
@@ -156,6 +155,38 @@ class HeliControlMappingTest {
         RotationSolver.applyControl(e, info, stick(0, 1000, false, false, 0.5F), primed(0.5F), map);
 
         assertEquals(0.0f, e.pitch, 0.05f);
+    }
+
+    @Test
+    void foldedHeliTurnsOnTheSpotWithTheStrafeKeys() {
+        // MCH_EntityHeli:449-457: parked with the blades folded, A/D yaw the hull 0.5 deg per tick (x partialTicks);
+        // canUpdateYaw is false on the ground, so this is the only yaw.
+        FakeHeli e = new FakeHeli();
+        e.grounded = true;
+        MCH_HeliInfo info = new MCH_HeliInfo("test_heli");
+        FakeHeliState mod = new FakeHeliState();
+        mod.folded = true;
+        HeliControlMapping map = new HeliControlMapping(e, info, new AircraftSimState(), mod);
+
+        RotationSolver.applyControl(e, info, stick(0, 0, true, false, 0.5F), primed(0.5F), map);
+        assertEquals(-0.25f, e.yaw, 1e-4f);
+        RotationSolver.applyControl(e, info, stick(0, 0, false, true, 0.5F), primed(0.5F), map);
+        assertEquals(0.0f, e.yaw, 1e-4f);
+
+        mod.folded = false; // unfolded blades on the ground: no key yaw
+        RotationSolver.applyControl(e, info, stick(0, 0, true, false, 0.5F), primed(0.5F), map);
+        assertEquals(0.0f, e.yaw, 1e-4f);
+    }
+
+    @Test
+    void hoveringFreesTheViewPitchOnly() {
+        // isOverridePlayerPitch = !isHovering (MCH_EntityHeli:388-390); the yaw stays welded to the hull.
+        FakeHeliState mod = new FakeHeliState();
+        HeliControlMapping map = new HeliControlMapping(new FakeHeli(), new MCH_HeliInfo("test_heli"), new AircraftSimState(), mod);
+        assertTrue(map.overridesRiderYaw() && map.overridesRiderPitch());
+        mod.hovering = true;
+        assertTrue(map.overridesRiderYaw());
+        assertTrue(!map.overridesRiderPitch());
     }
 
     @Test

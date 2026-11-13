@@ -4,10 +4,11 @@ import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.WorldView;
 
 /**
- * Agnostic port of {@code MCH_Lib.getBlockIdY}/{@code getBlockY} and {@code isBlockInWater}: the column/neighbor
- * block probes MCHeli uses as airborne / on-ground / ceiling / submersion gates. The scan ARITHMETIC (position
- * rounding, layer + radius iteration, scan direction, first-hit order) stays pure here; only the per-cell block
- * test is delegated to {@link WorldView}.
+ * Agnostic port of {@code MCH_Lib.getBlockIdY}/{@code getBlockY}: the column block probes MCHeli uses as airborne /
+ * on-ground / ceiling gates. The scan ARITHMETIC (position rounding, layer + radius iteration, scan direction,
+ * first-hit order) stays pure here; only the per-cell block test is delegated to {@link WorldView}. "Collidable" is the
+ * reference {@code block.canCollideCheck(0, true)} ({@link WorldView#isCollidable}): every non-air block but fire,
+ * liquids included — so tall grass, flowers, snow layers and water all stop the probe, as they did in 1.7.10.
  *
  * <p><b>1.21 height range + negative coordinates (fixed).</b> The reference clamped the scan to {@code y in [0, 255]}
  * (the 1.7.10 world height) and rounded with a plain {@code (int)} cast. Both broke in 1.21: below y=0 (deepslate,
@@ -27,8 +28,8 @@ public final class GroundProbe {
     }
 
     public static int blockIdInColumn(EntityRef self, int size, int lenY, boolean collidableOnly) {
-        return blockIdInColumn(self.world(),
-            self.position().x(), self.position().y(), self.position().z(), size, lenY, collidableOnly);
+        mcheli.agnostic.value.Vec3d p = self.position(); // read once: a port may build a new vector per call
+        return blockIdInColumn(self.world(), p.x(), p.y(), p.z(), size, lenY, collidableOnly);
     }
 
     /**
@@ -109,19 +110,41 @@ public final class GroundProbe {
         return false;
     }
 
-    /** Reference {@code MCH_Lib.isBlockInWater}: whether any of the 7 offset neighbor cells is water. */
-    public static boolean isBlockInWater(WorldView world, int x, int y, int z) {
-        int[][] offset = {{0, -1, 0}, {0, 0, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}, {0, 1, 0}};
-        if (y <= 0) {
+    /**
+     * Reference {@code W_Block.isEqual(getBlockY(..., size, lenY, true), water)}: is the first collidable block of the
+     * column (see {@link #blockIdInColumn}) water? False when the column holds none. The landing-gear rules use it to
+     * keep a floatplane's gear up over the sea.
+     */
+    public static boolean waterFirstInColumn(WorldView world, double posX, double posY, double posZ, int size, int lenY) {
+        if (lenY == 0) {
             return false;
         }
+        int px = (int) Math.floor(posX + 0.5);
+        int py = (int) Math.floor(posY + 0.5);
+        int pz = (int) Math.floor(posZ + 0.5);
+        int cntY = lenY > 0 ? lenY : -lenY;
+        int minY = world.minBuildHeight();
+        int maxY = world.maxBuildHeight();
 
-        for (int[] o : offset) {
-            if (world.isWater(x + o[0], y + o[1], z + o[2])) {
-                return true;
+        for (int y = 0; y < cntY; y++) {
+            int wy = py + (lenY > 0 ? y : -y);
+            if (wy < minY || wy > maxY) {
+                if (lenY > 0 ? wy > maxY : wy < minY) {
+                    return false; // left the world in the scan direction
+                }
+                continue; // not inside the world yet: keep scanning toward it
+            }
+            for (int x = -size / 2; x <= size / 2; x++) {
+                for (int z = -size / 2; z <= size / 2; z++) {
+                    if (world.getBlockId(px + x, wy, pz + z) != 0 && world.isCollidable(px + x, wy, pz + z)) {
+                        return world.isWater(px + x, wy, pz + z);
+                    }
+                }
             }
         }
-
         return false;
     }
+
+    // MCH_Lib.isBlockInWater (the 7-cell submersion test) is not here: its only vehicle use, the submersion damage, is
+    // AbstractMchVehicle.waterAtProbe, and the projectiles test water natively in MchBullet.
 }
