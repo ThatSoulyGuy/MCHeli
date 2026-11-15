@@ -58,12 +58,19 @@ final class MchVehicleCrew {
     /** SERVER, in the entity's tick before the pilot's controls are read: the crew dismounts deferred out of the
      *  passenger hooks (the passenger list is mid-update there). */
     void tickDeferred() {
-        if (this.dismountCrewPending) {
-            this.dismountCrewPending = false;
-            dismountMobCrew(); // the pilot left with DismountAll on (deferred out of removePassenger)
-        }
+        flushDeferredDismount(); // the pilot left with DismountAll on (deferred out of removePassenger)
         if (!this.pendingEjects.isEmpty()) {
             ejectUnseatedRiders(); // a forced mount found no seat (deferred out of addPassenger)
+        }
+    }
+
+    /** SERVER: run the DismountAll unload the pilot's departure deferred, now rather than next tick. The ejection seat
+     *  calls it right after the pilot has left, because the reference unloaded the mob crew inside
+     *  {@code unmountEntity} (EA:3661-3663), before it looked for a seat-1 occupant to eject. */
+    void flushDeferredDismount() {
+        if (this.dismountCrewPending) {
+            this.dismountCrewPending = false;
+            dismountMobCrew();
         }
     }
 
@@ -97,7 +104,8 @@ final class MchVehicleCrew {
         return player.getItemInHand(hand).getItem() instanceof mcheli.dependent.item.MchWrench;
     }
 
-    /** The body of the entity's {@code interact} override: board the first free seat, or the wrench paint. */
+    /** The body of the entity's {@code interact} override: board the first free seat, the wrench paint, or the cargo
+     *  hold. */
     InteractionResult handleInteract(Player player, InteractionHand hand) {
         if (v.isDestroyed()) {
             return InteractionResult.PASS; // a wreck can't be mounted or skinned (reference interactFirst gates on it)
@@ -114,9 +122,11 @@ final class MchVehicleCrew {
             return InteractionResult.PASS;
         }
         if (player.isSecondaryUseActive()) {
-            // A bare sneaking click opens the cargo inventory in the reference (interactFirst:4326-4329), which is not
-            // ported (DEFERRED.md "Cargo inventory"), so it does nothing here. It never boards either way.
-            return InteractionResult.PASS;
+            // Reference interactFirst:4326-4329: any other sneaking click opens the cargo hold (W_EntityContainer
+            // .openInventory, a config with InventorySize) and never boards. It consumes the click when the hold opens,
+            // the vanilla convention for opening a container, so the held item is not used too and the off hand does
+            // not open it again (the reference returned false either way). Without a hold it passes, as before.
+            return v.openCargo(player) ? InteractionResult.sidedSuccess(v.level().isClientSide) : InteractionResult.PASS;
         }
         if (v.level().isClientSide) {
             return InteractionResult.SUCCESS; // let the client predict the mount
@@ -479,6 +489,10 @@ final class MchVehicleCrew {
             return;
         }
         Integer seat = this.seatByUuid.remove(p.getUUID());
+        // Vanilla asks for the dismount point right after this hook (LivingEntity.stopRiding -> dismountVehicle), when
+        // the seat map no longer holds the rider: remember the seat it left for dismountSeatOf.
+        this.leftRider = p.getUUID();
+        this.leftSeat = seat != null ? seat : -1;
         syncSeatTag();
         v.releaseCameraViewer(p); // dismount, death, the vehicle's removal or unload: no camera night vision left behind
         if (seat != null) {
@@ -498,7 +512,25 @@ final class MchVehicleCrew {
         }
     }
 
-    /** SERVER: set when the pilot leaves with DismountAll on; {@link #tickDeferred} then runs {@link #dismountMobCrew}. */
+    /** SERVER: the last rider {@link #handlePassengerRemoved} freed and the seat it held (-1 for none), for the
+     *  dismount point vanilla asks for next. One slot is enough: vanilla asks before the next rider leaves. */
+    private UUID leftRider;
+    private int leftSeat = -1;
+
+    /**
+     * SERVER: the seat whose side {@code rider} dismounts by: the seat it holds (a query while still aboard), else
+     * the seat it has just left, else -1 (a seat-less rider, or a rider this vehicle never seated).
+     */
+    int dismountSeatOf(Entity rider) {
+        Integer s = this.seatByUuid.get(rider.getUUID());
+        if (s != null) {
+            return s;
+        }
+        return rider.getUUID().equals(this.leftRider) ? this.leftSeat : -1;
+    }
+
+    /** SERVER: set when the pilot leaves with DismountAll on; {@link #tickDeferred} (or the ejection seat, through
+     *  {@link #flushDeferredDismount}) then runs {@link #dismountMobCrew}. */
     private boolean dismountCrewPending;
 
     /** SERVER: riders a forced mount put aboard with no seat to give ({@link #handlePassengerAdded});
@@ -534,9 +566,10 @@ final class MchVehicleCrew {
         this.pendingEjects.clear();
     }
 
-    /** Reference {@code unmountCrew(false)} (MCH_EntityAircraft:3751-3785): every non-player passenger gets off (the
-     *  reference skipped rack seats, which the port never boards). Players stay aboard. */
-    private void dismountMobCrew() {
+    /** Reference {@code unmountCrew(false)} (MCH_EntityAircraft:3751-3785): every non-player passenger gets off beside
+     *  its own seat (the reference skipped rack seats, which the port never boards). Players stay aboard. The pilot's
+     *  DismountAll and the pilot's unmount key ({@link MchCrewDrop#unmountCrew}) both run it. */
+    void dismountMobCrew() {
         for (Entity p : java.util.List.copyOf(v.getPassengers())) {
             if (!(p instanceof Player)) {
                 p.stopRiding();

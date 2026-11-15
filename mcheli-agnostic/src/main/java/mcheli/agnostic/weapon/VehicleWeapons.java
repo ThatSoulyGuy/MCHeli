@@ -342,7 +342,7 @@ public final class VehicleWeapons {
         if (type == null) {
             return false;
         }
-        switch (type.toLowerCase()) {
+        switch (type.toLowerCase(java.util.Locale.ROOT)) {
             case "machinegun1":
             case "machinegun2":
             case "rocket":

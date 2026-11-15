@@ -223,6 +223,25 @@ public final class MchRegistries {
                     mcheli.dependent.entity.MchContainer::new, MobCategory.MISC)
                 .sized(2.0F, 1.0F).clientTrackingRange(8).build("container"));
 
+    /** The parachute (reference {@code MCH_EntityParachute}, MCH_MOD:216): saved with its type, summonable. Tracked to
+     *  13 chunks (the reference's 200 blocks, as the vehicles); vanilla's 3-tick updates with velocity, where the
+     *  reference sent every 10 ticks (deliberate divergence, see {@code MchParachute}). */
+    public static final Supplier<EntityType<mcheli.dependent.entity.MchParachute>> PARACHUTE =
+        ENTITY_TYPES.register("parachute", () ->
+            EntityType.Builder.<mcheli.dependent.entity.MchParachute>of(
+                    mcheli.dependent.entity.MchParachute::new, MobCategory.MISC)
+                .sized(1.5F, 0.6F).clientTrackingRange(13).updateInterval(3).build("parachute"));
+
+    /** The rope slider a repelling crew member rides down a rope (reference {@code MCH_EntityHide}, MCH_MOD:221): 1 x 1,
+     *  saved with no fields of its own (so a chunk unload keeps its rider), not summonable. Tracked to 13 chunks (the
+     *  reference's 200 blocks, as the vehicles); vanilla's 3-tick updates, where the reference sent every 10 ticks
+     *  (deliberate divergence, see {@code MchRopeSlider}). */
+    public static final Supplier<EntityType<mcheli.dependent.entity.MchRopeSlider>> ROPE_SLIDER =
+        ENTITY_TYPES.register("rope_slider", () ->
+            EntityType.Builder.<mcheli.dependent.entity.MchRopeSlider>of(
+                    mcheli.dependent.entity.MchRopeSlider::new, MobCategory.MISC)
+                .sized(1.0F, 1.0F).clientTrackingRange(13).updateInterval(3).noSummon().build("rope_slider"));
+
     public static final Supplier<ParticleType<MuzzleFxOptions>> WEAPON_FX =
         PARTICLES.register("weapon_fx", () -> new ParticleType<MuzzleFxOptions>(false) {
             @Override public MapCodec<MuzzleFxOptions> codec() { return MuzzleFxOptions.CODEC; }
@@ -265,6 +284,10 @@ public final class MchRegistries {
     public static final DeferredItem<mcheli.dependent.item.MchContainerItem> CONTAINER_ITEM =
         ITEMS.registerItem("container", mcheli.dependent.item.MchContainerItem::new, new Item.Properties());
 
+    /** The hand-held parachute (reference {@code MCH_ItemParachute}, stack size 1); recipe {@code data/mcheli/recipe/parachute.json}. */
+    public static final DeferredItem<mcheli.dependent.item.MchParachuteItem> PARACHUTE_ITEM =
+        ITEMS.registerItem("parachute", mcheli.dependent.item.MchParachuteItem::new, new Item.Properties().stacksTo(1));
+
     /** Refill a used fuel can by crafting it with coal (reference {@code MCH_RecipeFuel}). */
     public static final Supplier<net.minecraft.world.item.crafting.RecipeSerializer<mcheli.dependent.item.MchFuelRefillRecipe>> FUEL_REFILL =
         RECIPE_SERIALIZERS.register("fuel_refill", () ->
@@ -306,6 +329,7 @@ public final class MchRegistries {
                 output.accept(new ItemStack(FUEL.get()));        // every category burns fuel, so every tab offers the can
                 output.accept(new ItemStack(WRENCH.get()));      // ...and every vehicle can be mended with the wrench
                 output.accept(new ItemStack(CONTAINER_ITEM.get())); // ...and the cargo box rides with any of them
+                output.accept(new ItemStack(PARACHUTE_ITEM.get())); // ...and the parachute (the reference's one mod tab)
             })
             .build());
     }

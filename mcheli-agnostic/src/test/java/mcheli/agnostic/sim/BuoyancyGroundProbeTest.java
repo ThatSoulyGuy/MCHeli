@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import mcheli.agnostic.spi.EntityRef;
 import mcheli.agnostic.spi.RandomSource;
 import mcheli.agnostic.spi.Role;
@@ -31,6 +32,8 @@ class BuoyancyGroundProbeTest {
         static final int SOLID = 1, WATER = 2, PLANT = 3, FIRE = 4;
         final Map<String, Integer> cells = new HashMap<>();
         Double waterSurfaceY; // if set, isAABBInWater(box) = box.minY() < surface (a flat water body)
+        int minY = -64;       // the build range, the WorldView defaults (a 1.21 overworld) unless a test narrows it
+        int maxY = 319;
 
         static String k(int x, int y, int z) { return x + ":" + y + ":" + z; }
         StubWorld solid(int x, int y, int z) { cells.put(k(x, y, z), SOLID); return this; }
@@ -48,6 +51,8 @@ class BuoyancyGroundProbeTest {
         }
         @Override public boolean hasCollision(int x, int y, int z) { return cells.getOrDefault(k(x, y, z), 0) == SOLID; }
         @Override public boolean isAABBInWater(AABB box) { return waterSurfaceY != null && box.minY() < waterSurfaceY; }
+        @Override public int minBuildHeight() { return minY; }
+        @Override public int maxBuildHeight() { return maxY; }
 
         @Override public boolean isRemote() { return false; }
         @Override public long totalTime() { return 0; }
@@ -173,5 +178,78 @@ class BuoyancyGroundProbeTest {
         // further up, two rows down stay above the world: still airborne
         assertEquals(0, GroundProbe.blockIdInColumn(w, 0.3, 325.0, 0.3, 3, -2, true));
         assertFalse(GroundProbe.solidNonWaterInColumn(w, 0.3, 325.0, 0.3, 3, -2));
+    }
+
+    // ---- GroundProbe.airBelow, the rope repelling's getAlt ----
+
+    /** Reference {@code MCH_EntityAircraft.getAlt} (EA:1817-1825), verbatim but for the world. */
+    static int referenceGetAlt(WorldView w, double px, double py, double pz) {
+        int i = 0;
+        while (i < 256 && !(py - i <= 0.0) && (py - i >= 256.0 || 0 == w.getBlockId((int) px, (int) py - i, (int) pz))) {
+            i++;
+        }
+        return i;
+    }
+
+    @Test
+    void airBelowCountsTheAirCellsStraightDown() {
+        StubWorld w = new StubWorld().solid(0, 0, 0);
+        assertEquals(12, GroundProbe.airBelow(w, 0.5, 12.0, 0.5)); // a floor 12 below: cells 12..1
+        assertEquals(12, GroundProbe.airBelow(w, 0.5, 12.9, 0.5)); // the cell is floor-rounded
+        assertEquals(0, GroundProbe.airBelow(new StubWorld().solid(0, 10, 0), 0.5, 10.2, 0.5)); // its own cell counts
+        // Any non-air block stops it: water and plants too (the reference compared the block id with 0).
+        assertEquals(3, GroundProbe.airBelow(new StubWorld().water(0, 7, 0), 0.5, 10.2, 0.5));
+        assertEquals(3, GroundProbe.airBelow(new StubWorld().plant(0, 7, 0), 0.5, 10.2, 0.5));
+        assertEquals(3, GroundProbe.airBelow(new StubWorld().fire(0, 7, 0), 0.5, 10.2, 0.5));
+        // One column only: a block beside it does not count.
+        assertEquals(12, GroundProbe.airBelow(new StubWorld().solid(0, 0, 0).solid(1, 6, 0), 0.5, 12.0, 0.5));
+        // Floor rounding at negative x/z: -0.5 is cell -1, where the reference's cast read cell 0.
+        assertEquals(5, GroundProbe.airBelow(new StubWorld().solid(-1, 0, -1), -0.5, 5.0, -0.5));
+    }
+
+    @Test
+    void airBelowUsesTheWorldsBuildRangeAndTheCap() {
+        // Above the top (319) counts as air: from 330 over a floor at 310, cells 330..311.
+        assertEquals(20, GroundProbe.airBelow(new StubWorld().solid(0, 310, 0), 0.5, 330.0, 0.5));
+        // The superflat self-test ground: at -40 over a floor at -60 it gives 20, where the reference stopped at y <= 0
+        // and gave 0 (deliberate divergence).
+        StubWorld flat = new StubWorld().solid(0, -60, 0);
+        assertEquals(20, GroundProbe.airBelow(flat, 0.5, -40.0, 0.5));
+        assertEquals(0, referenceGetAlt(flat, 0.5, -40.0, 0.5));
+        // Nothing below: it stops at the world's bottom (-64), as the reference stopped at 0.
+        assertEquals(24, GroundProbe.airBelow(new StubWorld(), 0.5, -40.0, 0.5));
+        assertEquals(0, GroundProbe.airBelow(new StubWorld(), 0.5, -64.0, 0.5));
+        // At most 256.
+        assertEquals(256, GroundProbe.airBelow(new StubWorld(), 0.5, 300.0, 0.5));
+        assertEquals(GroundProbe.AIR_BELOW_CAP, GroundProbe.airBelow(new StubWorld(), 0.5, 1000.0, 0.5));
+    }
+
+    @Test
+    void airBelowIsTheReferenceGetAltInThe1710World() {
+        Random rnd = new Random(1817L);
+        int compared = 0;
+        for (int n = 0; n < 5000; n++) {
+            StubWorld w = new StubWorld();
+            w.minY = 0;   // the 1.7.10 world: 0..255
+            w.maxY = 255;
+            int x = rnd.nextInt(4);
+            int z = rnd.nextInt(4);
+            int blocks = rnd.nextInt(6);
+            for (int k = 0; k < blocks; k++) {
+                int y = rnd.nextInt(300);
+                switch (rnd.nextInt(3)) {
+                    case 0 -> w.solid(x, y, z);
+                    case 1 -> w.water(x, y, z);
+                    default -> w.plant(x, y, z);
+                }
+            }
+            double px = x + rnd.nextDouble();
+            double pz = z + rnd.nextDouble();
+            double py = rnd.nextDouble() * 330.0 - 10.0;
+            assertEquals(referenceGetAlt(w, px, py, pz), GroundProbe.airBelow(w, px, py, pz),
+                "getAlt at " + px + ", " + py + ", " + pz);
+            compared++;
+        }
+        assertEquals(5000, compared);
     }
 }

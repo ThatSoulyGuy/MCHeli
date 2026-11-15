@@ -2,6 +2,7 @@ package mcheli.dependent.client;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import mcheli.MCHeli;
+import mcheli.agnostic.vehicle.ExitHold;
 import mcheli.dependent.control.ServerboundFoldBladePayload;
 import mcheli.dependent.control.ServerboundGearPayload;
 import mcheli.dependent.control.ServerboundGunnerModePayload;
@@ -47,8 +48,12 @@ import net.neoforged.neoforge.network.PacketDistributor;
  *   <li>{@link #CAMERA_MODE} (default {@code N}; the reference {@code KeyCameraMode} default C is vanilla's "save
  *       toolbar") — seats 0 and 1: cycle normal / night vision / thermal vision, or switch the search light.</li>
  *   <li>{@link #LANDING_GEAR} (default {@code B}, reference {@code KeyGearUpDown}) — pilot: landing gear up/down.</li>
+ *   <li>{@link #UNMOUNT_MOB} (default {@code Y}, reference {@code KeyUnmountMob}) — pilot: unmount the mob crew (put
+ *       them off, or drop them on parachutes, as the server decides); another rider: open the cargo hold.</li>
  *   <li>The vanilla jump key (reference {@code KeySwitchHovering} = SPACE) — heli pilot: toggle hovering mode; tank
- *       driver: brake while held (sent by {@link MchClientInput}).</li>
+ *       driver: brake while held (sent by {@link MchClientInput}); plane seats 0 and 1: eject, and seats 2 and up of
+ *       an {@code EnableParachuting} vehicle: parachute out, each once the key has been held for
+ *       {@link ExitHold#HOLD_TICKS} ticks from a fresh press (see {@link #holdToExit}).</li>
  * </ul>
  *
  * <p>The seat decision tree reproduces {@code commonPlayerControl:66-93}. All actions are serverbound and re-checked
@@ -74,6 +79,8 @@ public final class MchKeybinds {
     public static final KeyMapping FLARE = key("flare", org.lwjgl.glfw.GLFW.GLFW_KEY_V);
     /** Landing gear up/down (default B — the reference {@code KeyGearUpDown} default, LWJGL key 48; free in 1.21). */
     public static final KeyMapping LANDING_GEAR = key("landing_gear", org.lwjgl.glfw.GLFW.GLFW_KEY_B);
+    /** Unmount the mob crew (default Y — the reference {@code KeyUnmountMob} default, LWJGL key 21; free in 1.21). */
+    public static final KeyMapping UNMOUNT_MOB = key("unmount_mob", org.lwjgl.glfw.GLFW.GLFW_KEY_Y);
 
     /** Client debounce: ticks left before another gunner-mode toggle may be sent (blocks a double-tap double-send). */
     private static int gunnerToggleCooldown;
@@ -81,6 +88,9 @@ public final class MchKeybinds {
     private static int hoverToggleCooldown;
     /** Was the player seated in an MCHeli vehicle last tick (the jump key's click queue is only ours while seated)? */
     private static boolean wasSeated;
+
+    /** The jump-key exits' hold-to-confirm ({@link #holdToExit}), stepped every client tick. */
+    private static final ExitHold EXIT_HOLD = new ExitHold();
 
     private static KeyMapping key(String name, int code) {
         return new KeyMapping("key.mcheli." + name, KeyConflictContext.IN_GAME,
@@ -99,6 +109,7 @@ public final class MchKeybinds {
         event.register(WEAPON_MODE);
         event.register(FLARE);
         event.register(LANDING_GEAR);
+        event.register(UNMOUNT_MOB);
     }
 
     @SubscribeEvent
@@ -115,6 +126,7 @@ public final class MchKeybinds {
         boolean weaponMode = drain(WEAPON_MODE);
         boolean flare = drain(FLARE);
         boolean gear = drain(LANDING_GEAR);
+        boolean unmount = drain(UNMOUNT_MOB);
         // The reference KeySwitchHovering defaults to SPACE (LWJGL 57) — the jump key — and read it raw alongside vanilla,
         // so the port reads the vanilla jump binding itself (jump does nothing while seated in a vehicle), as it does
         // for WASD. Its click queue is ours only while seated: on foot it is left alone for anyone else who reads it.
@@ -130,16 +142,45 @@ public final class MchKeybinds {
             hoverToggleCooldown--;
         }
         if (mc.player == null || mc.screen != null || !(mc.player.getVehicle() instanceof AbstractMchVehicle v)) {
+            // Off the vehicle (an exit that went through) or a screen open: no hold, but the key's edge stays current.
+            holdToExit(mc, seated, null);
             return;
         }
         int seat = v.seatIndexOf(mc.player);
         boolean pilot = seat == 0;
 
+        // The jump-key exits, held to confirm (holdToExit). Ejection seat (reference MCP_ClientPlaneTickHandler:219-222:
+        // KeyEjectSeat = KeySwitchHovering, pilot or seat 1, never on a wreck, :103-105): the same rule the server's
+        // mcheli:eject_seat handler re-checks. The parachute slots are not synced, so a plane with none still runs the
+        // hold and the server then does nothing, as the reference server did.
+        boolean eject = seat >= 0 && seat <= 1 && v instanceof mcheli.dependent.entity.MchPlane && !v.isDestroyed()
+            && v.canEjectSeat(mc.player);
+        // The rope slide and seat parachuting (reference MCH_ClientSeatTickHandler:75-85: KeyParachuting =
+        // KeySwitchHovering, any rider of a seat entity, i.e. seat 1 and up, never on a wreck, :51; canParachuting or
+        // canRepelling sends the one seat packet): the rules the server's mcheli:seat_unmount handler re-checks, in its
+        // order (unmount tries the rope first, EA:1936). canRepelling: a repelling helicopter's ropes out for 2.5 s,
+        // seat 1 and up. canParachuting: seat 2 and up of the an2 and the mv-22, the mv-22's hatch open, nothing
+        // within 13 blocks below; its ground probe runs only while the key is down. No config has both, and neither
+        // meets the eject gate (seats 0-1 of a plane). No decline sound (the key sounds are unported).
+        boolean seatExit = !eject && seat >= 1 && mc.options.keyJump.isDown() && !v.isDestroyed();
+        boolean slide = seatExit && v.canRepelling(mc.player);
+        boolean parachute = seatExit && !slide && v.canParachuting(mc.player);
+        String exit = eject ? "mcheli.message.hold_to_eject" : slide ? "mcheli.message.hold_to_slide"
+            : parachute ? "mcheli.message.hold_to_parachute" : null;
+        if (holdToExit(mc, true, exit)) {
+            if (eject) {
+                PacketDistributor.sendToServer(new mcheli.dependent.control.ServerboundEjectSeatPayload(v.getId()));
+            } else {
+                PacketDistributor.sendToServer(new mcheli.dependent.control.ServerboundSeatUnmountPayload(v.getId()));
+            }
+        }
+
         // Free-look toggle (the port's canSwitchFreeLook analogue): only the pilot of a mouse-flown, view-locked
         // aircraft — inert on tanks/emplacements (locksViewToVehicle() == false, already permanently free-look) and on
         // non-pilots (gunners already free-look). Client-only view state; the airframe rotation is client-authoritative.
+        // A press while repelling (free look forced on) turns the toggle off, as the reference's isFreeLookMode() ? 2 : 1.
         if (freeLookToggle && pilot && v.supportsMouseRotation() && v.locksViewToVehicle()) {
-            MchFreeLook.toggle();
+            MchFreeLook.press(v);
         }
         boolean freeLook = FREE_LOOK.isDown(); // held modifier, not edge-triggered
 
@@ -230,6 +271,17 @@ public final class MchKeybinds {
         if (gear && pilot && (v.canFoldLandingGear() || v.canUnfoldLandingGear())) {
             PacketDistributor.sendToServer(new ServerboundGearPayload(v.getId()));
         }
+        // The unmount key (reference KeyUnmountMob, MCH_AircraftClientTickHandler:117-125, every category; the
+        // reference ran its control keys only for an intact vehicle): the pilot sends mcheli:unmount_crew, which the
+        // server turns into the plain unload or the crew drop; another rider opens the cargo hold (the reference
+        // MCH_PacketIndOpenScreen 3) where the config has one, by the test the server's openCargo applies.
+        if (unmount && !v.isDestroyed()) {
+            if (pilot) {
+                PacketDistributor.sendToServer(new mcheli.dependent.control.ServerboundUnmountCrewPayload(v.getId()));
+            } else if (seat > 0 && v.cargoRows() > 0) {
+                PacketDistributor.sendToServer(ServerboundVehicleGuiPayload.openCargo(v.getId()));
+            }
+        }
 
         // Reference commonPlayerControl:66-93. FreeLook held turns the seat keys into "leave your seat":
         if (freeLook && (gui || prev)) {
@@ -258,6 +310,39 @@ public final class MchKeybinds {
                 PacketDistributor.sendToServer(new mcheli.dependent.control.ServerboundVtolPayload(v.getId()));
             }
         }
+    }
+
+    /**
+     * The hold-to-confirm of the jump-key actions that throw the player OUT of the vehicle (the ejection seat, seat
+     * parachuting and the rope slide here), {@link ExitHold}. Deliberate divergence: the reference fired them on a
+     * single press of {@code KeySwitchHovering}, the same key as a helicopter's hover toggle, so one stray tap of SPACE
+     * could eject a pilot or drop a passenger; here the key must stay down for {@link ExitHold#HOLD_TICKS} client ticks
+     * in a row while the action ({@code messageKey}, null none) is open, and the action-bar shows the progress. The
+     * hold starts only on a press made while seated: the key's own down edge ({@code isDown}), never its click queue,
+     * which the OS key repeat refills while the key is held, so a key already down when boarding, held through a
+     * screen or held while the action was still shut never counts. Releasing it, the action closing, a change of
+     * action (e.g. after a seat switch), getting off or opening a screen resets it. Returns true once, on the tick the
+     * hold completes; the key must be released before another hold can start. Call it exactly once every client tick
+     * (off a vehicle too, with {@code seated} false or a null action): the exits' gates are disjoint by seat and
+     * category, so a caller with several passes the one open and picks the action itself.
+     */
+    private static boolean holdToExit(Minecraft mc, boolean seated, String messageKey) {
+        ExitHold.Step step = EXIT_HOLD.tick(mc.options.keyJump.isDown(), mc.screen != null, seated, messageKey);
+        switch (step) {
+            case CLEARED, FIRED -> mc.gui.setOverlayMessage(net.minecraft.network.chat.Component.empty(), false);
+            case PROGRESS -> {
+                int done = EXIT_HOLD.ticks();
+                net.minecraft.network.chat.MutableComponent bar = net.minecraft.network.chat.Component.literal(
+                    "|".repeat(done)).withStyle(net.minecraft.ChatFormatting.WHITE);
+                bar.append(net.minecraft.network.chat.Component.literal("|".repeat(ExitHold.HOLD_TICKS - done))
+                    .withStyle(net.minecraft.ChatFormatting.DARK_GRAY));
+                mc.gui.setOverlayMessage(net.minecraft.network.chat.Component.translatable(messageKey,
+                    mc.options.keyJump.getTranslatedKeyMessage(), bar), false);
+            }
+            default -> {
+            }
+        }
+        return step == ExitHold.Step.FIRED;
     }
 
     private static boolean drain(KeyMapping k) {

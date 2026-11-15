@@ -21,10 +21,10 @@ import net.minecraft.world.phys.Vec3;
  * <p>Every weapon value comes from the VIEWER's seat (reference {@code ac.getCurrentWeapon(player)}), so a gunner reads
  * his own weapon, reload, heat, lock and mortar distance. Values that need a subsystem the port does not have yet come
  * from the "seam" methods at the bottom of the class. Each one returns the reference's own value for "feature absent",
- * so the HUD configs' {@code If} guards keep those blocks hidden: the UAV station ({@code uav_fs}, {@code UAV_DIST})
- * and the cargo inventory ({@code inventory}). The TV-missile readouts and
+ * so the HUD configs' {@code If} guards keep those blocks hidden: the UAV station ({@code uav_fs}, {@code UAV_DIST}).
+ * The TV-missile readouts and
  * {@code test_mode} likewise report the reference's values for "no TV missile" (the missile camera is not ported) and
- * "TestMode off".
+ * "TestMode off". The cargo hold size ({@code inventory}) is the config's {@code InventorySize}.
  */
 public final class MchHudVarState implements HudState {
 
@@ -188,10 +188,13 @@ public final class MchHudVarState implements HudState {
             // VTOL nozzle mode (reference getVtolStat): 0 = forward, 1 = transition, 2 = full hover — the Harrier/F-35
             // HUD keys its VTOL block off this. Synced via the derived nozzle angle; 0 for non-planes.
             case "vtol_stat" -> this.vehicle instanceof mcheli.dependent.entity.MchPlane p ? p.getVtolMode() : 0.0;
-            // FREE LOOK cue (reference getFreeLook, pilot-only): lit while the pilot is free-looking, or on a
-            // permanently-free-look ground vehicle (locksViewToVehicle()==false, the reference defaultFreelook case).
+            // FREE LOOK cue (reference getFreeLook, pilot-only): lit while the pilot is free-looking (the toggle, or
+            // the heli repelling: reference isFreeLookMode includes isRepelling, EA:5377-5379, MCH_HudItem:419-421), or
+            // on a permanently-free-look ground vehicle (locksViewToVehicle()==false, the reference defaultFreelook
+            // case).
             case "free_look" -> this.seat == 0
-                && (mcheli.dependent.client.MchFreeLook.active() || !this.vehicle.locksViewToVehicle()) ? 1.0 : 0.0;
+                && (mcheli.dependent.client.MchFreeLook.effective(this.vehicle) || !this.vehicle.locksViewToVehicle())
+                ? 1.0 : 0.0;
             // Reference getIsGunnerMode(player): the pilot's toggle, a dedicated gunner seat (always), or a switchable
             // gunner seat's synced toggle (on from boarding, flipped by the gunner-mode key).
             case "gunner_mode" -> this.vehicle.isSeatGunnerMode(this.seat) ? 1.0 : 0.0;
@@ -330,10 +333,10 @@ public final class MchHudVarState implements HudState {
         return 1.0F - (float) Math.min(d, 120.0) / 120.0F;
     }
 
-    /** Cargo inventory size (reference {@code ac.getSizeInventory()} = the config {@code InventorySize}). The port's
-     *  riding menu holds only the fuel slots, so there is no cargo inventory to report. */
-    private static int inventorySize() {
-        return 0;
+    /** Cargo hold size (reference {@code ac.getSizeInventory()} = the config {@code InventorySize}, MCH_HudItem:279 and
+     *  MCH_HudItemString:91): the slot count, not how many are filled. */
+    private int inventorySize() {
+        return this.vehicle.cargoSize();
     }
 
     /** Mortar landing distance of the viewer's weapon (reference {@code ac.getLandInDistance(player)}: a 50-step

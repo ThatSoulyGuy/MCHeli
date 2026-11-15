@@ -182,4 +182,12 @@ class VehicleWreckTest {
         assertBits(y, VehicleWreck.nextYawSeed(y), "held once at or above 15");
         assertEquals(500, VehicleWreck.DESPAWN_TICKS);
     }
+
+    /** Reference {@code destroyAircraft}:602-606: a target drone's wreck lasts 50 ticks, every other wreck 500. */
+    @Test
+    void targetDroneWreckDespawnsAfterFiftyTicks() {
+        assertEquals(50, VehicleWreck.TARGET_DRONE_DESPAWN_TICKS);
+        assertEquals(50, VehicleWreck.despawnTicks(true));
+        assertEquals(500, VehicleWreck.despawnTicks(false));
+    }
 }

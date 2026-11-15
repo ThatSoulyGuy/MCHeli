@@ -138,10 +138,16 @@ public final class MchClientInput {
         // Send the drive keys from ANY seat: the SERVER decides who may drive (it drops a non-pilot's drive bits
         // against its own authoritative seat map). Gating this client-side on a synced seat map made driving depend on
         // a packet arriving — when it lagged, no input was sent at all.
-        if (o.keyUp.isDown())     bits |= ServerboundControlPayload.THROTTLE_UP;
-        if (o.keyDown.isDown())   bits |= ServerboundControlPayload.THROTTLE_DOWN;
-        if (o.keyLeft.isDown())   bits |= ServerboundControlPayload.MOVE_LEFT;
-        if (o.keyRight.isDown())  bits |= ServerboundControlPayload.MOVE_RIGHT;
+        // While the ropes are out the drive keys are let go (reference MCH_AircraftClientTickHandler:166-170; the
+        // server clears them every tick too). Leaving them out here makes the bits change when the ropes come in, so a
+        // key still held is sent at once.
+        boolean driveLocked = vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle rv && rv.isRepelling();
+        if (!driveLocked) {
+            if (o.keyUp.isDown())     bits |= ServerboundControlPayload.THROTTLE_UP;
+            if (o.keyDown.isDown())   bits |= ServerboundControlPayload.THROTTLE_DOWN;
+            if (o.keyLeft.isDown())   bits |= ServerboundControlPayload.MOVE_LEFT;
+            if (o.keyRight.isDown())  bits |= ServerboundControlPayload.MOVE_RIGHT;
+        }
         // The tank brake (reference KeyBrake = KeySwitchHovering = SPACE, held): the vanilla jump key, like WASD above.
         if (vehicle instanceof mcheli.dependent.entity.AbstractMchVehicle bv && bv.hasBrake() && o.keyJump.isDown()) {
             bits |= ServerboundControlPayload.BRAKE;

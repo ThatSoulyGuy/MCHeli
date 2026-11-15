@@ -306,11 +306,36 @@ final class MchRiderPose {
         return this.aim.latched() ? Mth.rotLerp(partialTick, this.aim.prevYaw(), this.aim.yaw()) : v.getYRot();
     }
 
+    /** SERVER: one-shot dismount points by rider UUID ({@link #placeNextDismount}). Not cleared by the passenger hooks:
+     *  vanilla asks for the dismount point AFTER {@code removePassenger}. */
+    private final java.util.Map<java.util.UUID, Vec3> pendingDismount = new java.util.HashMap<>();
+
+    /** SERVER: the next dismount of {@code rider} lands at {@code at} instead of the config point — the ejection seat
+     *  (and the later crew drop and rope slide) put a rider off somewhere else than beside its seat. The caller clears
+     *  it in a {@code finally} ({@link #clearPendingDismount}) in case vanilla never asked (a cancelled dismount). */
+    void placeNextDismount(Entity rider, Vec3 at) {
+        this.pendingDismount.put(rider.getUUID(), at);
+    }
+
+    /** SERVER: drop a point {@link #placeNextDismount} left unused. */
+    void clearPendingDismount(Entity rider) {
+        this.pendingDismount.remove(rider.getUUID());
+    }
+
     /** Config-driven dismount — reference {@code setUnmountPosition:3787-3802}: the config {@code UnmountPosition}
-     *  body-transformed, else {@code (seat.x ± 3 outward, 2.0, seat.z)}. The body of
-     *  {@link AbstractMchVehicle#getDismountLocationForPassenger}: null where that override falls back to vanilla's
-     *  {@code super} placement (no config seat). */
+     *  body-transformed, else {@code (seat.x ± 3 outward, 2.0, seat.z)} of the rider's OWN seat: the pilot's seat 0
+     *  ({@code unmountEntity}:3654), a gunner's seat ({@code onUnmountPlayerSeat}:3522-3524, which the seat entity
+     *  calls for any rider, mob or player) and a mob the DismountAll unload puts off ({@code unmountCrew}:3776-3778).
+     *  A rider with no seat (a forced mount the crew puts off) uses seat 0. A {@code rotSeat} point does not orbit
+     *  with the turret: the reference transforms it by the hull alone ({@code getTransformedPosition(x, y, z)}).
+     *  A point {@link #placeNextDismount} left for this rider comes first, once.
+     *  The body of {@link AbstractMchVehicle#getDismountLocationForPassenger}: null where that override falls back to
+     *  vanilla's {@code super} placement (no config seat). */
     Vec3 handleDismountLocationForPassenger(net.minecraft.world.entity.LivingEntity rider) {
+        Vec3 pending = this.pendingDismount.remove(rider.getUUID());
+        if (pending != null) {
+            return pending;
+        }
         MCH_AircraftInfo info = v.weaponHostInfo();
         if (info == null || info.seatList == null || info.seatList.isEmpty()) {
             return null;
@@ -320,7 +345,8 @@ final class MchRiderPose {
             local = new org.joml.Vector3f((float) info.unmountPosition.x(),
                 (float) info.unmountPosition.y(), (float) info.unmountPosition.z());
         } else {
-            mcheli.agnostic.value.Vec3d s = info.seatList.get(0).pos;
+            int sid = v.crew().dismountSeatOf(rider);
+            mcheli.agnostic.value.Vec3d s = info.seatList.get(sid > 0 && sid < info.seatList.size() ? sid : 0).pos;
             float x = s.x() >= 0 ? (float) s.x() + 3.0F : (float) s.x() - 3.0F;
             local = new org.joml.Vector3f(x, 2.0F, (float) s.z());
         }

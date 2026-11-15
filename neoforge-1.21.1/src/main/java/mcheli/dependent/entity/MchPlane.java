@@ -159,6 +159,16 @@ public class MchPlane extends AbstractMchVehicle {
     /** Reference {@code MCP_EntityPlane.getUnfoldLandingGearThrottle}:908: a plane drops its gear below 0.7 throttle. */
     @Override protected float unfoldLandingGearThrottle() { return 0.7F; }
 
+    /** Reference {@code MCP_EntityPlane.getNumEjectionSeat}:124-132: with {@code EnableEjectionSeat}, one per seat when
+     *  the config has 1 or 2 seats and racks, else none
+     *  ({@link mcheli.agnostic.vehicle.EjectionSeat#numEjectionSeats}). */
+    @Override public int numEjectionSeats() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null
+            ? mcheli.agnostic.vehicle.EjectionSeat.numEjectionSeats(info.isEnableEjectionSeat, info.getNumSeatAndRack())
+            : 0;
+    }
+
     // Reference MCP_EntityPlane.getSoundVolume/getSoundPitch: volume = SoundVolume × slewedThrottle × 0.7; pitch [0.6,1.0].
     // (The port's engine power is already spooled, so it stands in for the reference's separately-slewed soundVolume.)
     @Override protected String defaultEngineSound() { return "plane"; }

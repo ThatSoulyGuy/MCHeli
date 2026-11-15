@@ -175,11 +175,16 @@ public final class MchClientRotation {
         // freely. Forcing lastVehicleId=-1 makes the frame AFTER free-look is released take the reseed branch below,
         // which zeros the stick and re-welds the camera to the hull with no spurious delta — the reference instant
         // snap-back. Ownership stays true (set above), so this frame's held heading still ships to the server.
-        if (MchFreeLook.active()) {
+        // Repelling free-looks too (MchFreeLook.effective; reference isFreeLookMode, EA:5377-5379), so the hull holds
+        // still under the ropes, and the view re-welds the frame after it stops. While repelling A/D are let go too
+        // (reference MCH_AircraftClientTickHandler:166-170 cleared ac.moveLeft/moveRight, which onUpdateAngles reads),
+        // so the hull does not bank under its ropes.
+        if (MchFreeLook.effective(v)) {
             stickX = 0.0;
             stickY = 0.0;
+            boolean ropes = v.isRepelling();
             v.applyClientRotation(new ControlInput(0, 0,
-                false, false, mc.options.keyLeft.isDown(), mc.options.keyRight.isDown(), false,
+                false, false, !ropes && mc.options.keyLeft.isDown(), !ropes && mc.options.keyRight.isDown(), false,
                 true, flightSim, false, pt));
             lastVehicleId = -1;
             return;

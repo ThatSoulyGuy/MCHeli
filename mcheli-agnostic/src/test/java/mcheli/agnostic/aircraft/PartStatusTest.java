@@ -181,6 +181,29 @@ class PartStatusTest {
     }
 
     @Test
+    void repellingIsBitFiveAndNeverSavedNorClearedByTheWreck() {
+        // Reference isRepelling = getCommonStatus(5) (EA:3703-3705); transient (EA:219-222).
+        assertEquals(32, MCH_PartStatus.REPELLING);
+        for (int bit : BITS) {
+            assertEquals(0, bit & MCH_PartStatus.REPELLING);
+        }
+        assertEquals(0, MCH_PartStatus.REPELLING
+            & (0xF << MCH_PartStatus.CAMERA_MODE_SHIFT | 0xFFFF << MCH_PartStatus.BAY_SHIFT));
+        assertEquals(0, MCH_PartStatus.saved(MCH_PartStatus.REPELLING));
+        assertEquals(MCH_PartStatus.WING | MCH_PartStatus.HATCH,
+            MCH_PartStatus.saved(MCH_PartStatus.WING | MCH_PartStatus.HATCH | MCH_PartStatus.REPELLING));
+        assertEquals(0, MCH_PartStatus.restored(MCH_PartStatus.REPELLING, false));
+        assertEquals(MCH_PartStatus.SEARCH_LIGHT, MCH_PartStatus.restored(-1 & ~MCH_PartStatus.SAVED_MASK, true));
+        // Destruction stops repelling itself: the wreck's clear leaves the bit alone.
+        assertEquals(0, MCH_PartStatus.DESTROY_CLEAR & MCH_PartStatus.REPELLING);
+        assertEquals(0xF40, MCH_PartStatus.DESTROY_CLEAR);
+        assertEquals(MCH_PartStatus.HATCH | MCH_PartStatus.REPELLING,
+            MCH_PartStatus.with(MCH_PartStatus.HATCH, MCH_PartStatus.REPELLING, true));
+        assertEquals(MCH_PartStatus.HATCH,
+            MCH_PartStatus.with(MCH_PartStatus.HATCH | MCH_PartStatus.REPELLING, MCH_PartStatus.REPELLING, false));
+    }
+
+    @Test
     void theSaveDropsTheCanopyCameraAndBayBits() {
         int all = -1;
         assertEquals(MCH_PartStatus.WING | MCH_PartStatus.HATCH, MCH_PartStatus.saved(all));

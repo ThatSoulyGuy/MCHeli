@@ -28,7 +28,7 @@ the other way. Agnostic code reaches the world only through the SPI ports and re
 `ControlInput`, an `*Info` definition, a `*State` seam), never an entity class.
 
 Dependent packages (`mcheli.dependent.*`): `entity` (vehicles, `MchBullet`, `MchExplosion`, flares, cartridges, the
-container), `client` (renderers, input, camera, HUD overlay in `client.hud`, client effects in `client.particle`,
+container, the parachute), `client` (renderers, input, camera, HUD overlay in `client.hud`, client effects in `client.particle`,
 screens), `control` (payloads and the rider control state), `particle` (particle options and the effect payloads),
 `port` (SPI implementations and content packs), `registry`, `item`, `menu`, `config`, `mixin`, and the self-tests in
 `mcheli.dependent` itself. `mcheli.MCHeli` is the `@Mod` entry point.
@@ -44,9 +44,10 @@ screens), `control` (payloads and the rider control state), `particle` (particle
 | `config` | `MchSettings` (the definition-time settings installed before parsing) and `MchDamageFactorList` (the rules of the config damage-factor lists). |
 | `info` | The definition-file base: `MCH_BaseInfo`, `MCH_InfoManagerBase` (loads a directory through a `ResourceSource`), `MCH_InputFile`, `MCH_MobDropOption`, and `MCH_SoundsJson` (sound-event naming and grouping rules). |
 | `aircraft` | `MCH_AircraftInfo` (the shared vehicle definition) with its seat, rack and flare info, `MCH_Parts` (the switchable-part animator), `MCH_PartStatus` (the bit layout of the synced part-status word), `MCH_MissileDetector` (the RWR alert spacing and the decoy-or-alert choice), `MCH_CameraMode`, `MCH_RecipeSpec` (`AddRecipe` lines) and `MCH_ItemFlattening` (1.7.10 item name and metadata to a 1.21 id). |
-| `helicopter`, `plane`, `tank`, `vehicle` | The per-category definitions and managers. `vehicle` also holds the vehicle-entity rules that do not need Minecraft: `VehicleArmor`, `VehicleSalvage`, `VehicleFuel`, `VehicleRepair`, `VehicleSeats`, `VehicleWreck` (the despawn countdown, the crash blast and its one-shot gate, the heli tumble seeds), and the client animation state `RunningGear` (wheels and tracks), `RecoilKick` and `RadarSweep`. |
+| `helicopter`, `plane`, `tank`, `vehicle` | The per-category definitions and managers. `vehicle` also holds the vehicle-entity rules that do not need Minecraft: `VehicleArmor`, `VehicleSalvage`, `VehicleFuel`, `VehicleRepair`, `VehicleSeats`, `VehicleWreck` (the despawn countdown, the crash blast and its one-shot gate, the heli tumble seeds), `EjectionSeat` (how many ejection seats, and so parachute slots, a config has; who may eject, and who leaves), `CrewUnmount` (what the pilot's unmount key does, the `MobDropOption` drop cadence behind the hatch, who drops next, when a passenger may parachute out of his seat), `Repelling` (rope repelling: the per-side rope length step, the 60-tick rope-out and the per-hook mob cadence, when the pilot may start, when a player may slide and down which rope, when a rope slider lets go at the rope's end, what the pilot's free-look key does while the ropes are down), `ExitHold` (the client's half-second hold of the jump-key exits, started only by the key's own down edge while seated), and the client animation state `RunningGear` (wheels and tracks), `RecoilKick` and `RadarSweep`. |
+| `parachute` | `ParachuteFlight`, the rules of the reference `MCH_EntityParachute`: the server motion step around the move (gravity, steering, the 0.35 cap, the multiplier ramp, the ground count), the open test, the fall-distance bleed, the riderless heading, the push between two parachutes and the boat probe. |
 | `physics` | `MCH_BoundingBox` (per-part hitboxes), `MCH_Rotor` and `MCH_Blade` (rotor blade folding). |
-| `sim` | Flight simulation. The `FlightModel`s (`HeliFlightModel`, `PlaneFlightModel`, `TankFlightModel`, `VehicleFlightModel`), the server tick `AircraftFlightController`, the mouse-to-attitude `RotationSolver` with one `ControlMapping` per category, `ControlInput`, the state seams (`AircraftState`, `HeliState`, `PlaneState`, `TankState`, `AircraftSimState`), the world probes (`GroundProbe`, `Buoyancy`, `WheelTerrainSampler`, `WheelTerrainSolver`), `LandingGear`, `ModeSwitchCooldown` and `AimLatch` (the pilot's latched aim and the turret slew). |
+| `sim` | Flight simulation. The `FlightModel`s (`HeliFlightModel`, `PlaneFlightModel`, `TankFlightModel`, `VehicleFlightModel`), the server tick `AircraftFlightController`, the mouse-to-attitude `RotationSolver` with one `ControlMapping` per category, `ControlInput`, the state seams (`AircraftState`, `HeliState`, `PlaneState`, `TankState`, `AircraftSimState`), the world probes (`GroundProbe`, with `airBelow`, the rope repelling's altitude; `Buoyancy`, `WheelTerrainSampler`, `WheelTerrainSolver`), `LandingGear`, `ModeSwitchCooldown` and `AimLatch` (the pilot's latched aim and the turret slew). |
 | `weapon` | Weapon definitions (`MCH_WeaponInfo` and its manager). Loadout and fire control: `VehicleWeapons`, `WeaponSlot`, `WeaponAim`, `MCH_WeaponMode`, `WeaponSwitchQueue` (the queued weapon switches), `RotBarrel` (which weapons spin a rotating barrel), `SeatWeaponSync` (the synced selection, mode and spent words and the rider notice) and `BarrelSpin` (the client gatling spin). Projectile math as plain functions: `MCH_WeaponBallistics`, `MCH_MissileGuidance`, `MCH_Detonation`, `MCH_ExplosionMath`, `MCH_LockGeometry`. Also `MCH_LockAudit`, `MCH_DamageFactor`, `MCH_BulletModel`, `MCH_Cartridge`, `MCH_SightType`. |
 | `hud` | The HUD DSL. `MCH_Hud` parses a file and runs its items, `MCH_HudManager` loads them all, `HudExpression` and `HudVariables` bridge to the engine, `HudState` is what a HUD reads, `HudRenderer` is the draw canvas, and `MCH_HudItemStringArgs` lists the `DrawString` arguments. |
 | `model` | The `.mqo` and `.obj` parsers (`MqoModel`, `ObjModel`, `MchModelLoader`) producing an `MchModel`, and `ModelPartIndex` (the reference part-span lookup). Both parsers decode UTF-8 whatever the JVM charset. |
@@ -211,8 +212,30 @@ numeric ids, GL hacks, item recipes) are deliberately absent; see DEFERRED.md.
   and never summonable. The old id `mcheli:demo_bullet` is an alias of `mcheli:bullet`.
 - `mcheli:cartridge` (`MchCartridge`, a shell casing that exists only on clients), `mcheli:flare` (`MchFlare`) and
   `mcheli:container` (`MchContainer`, a placeable 54-slot cargo box).
-- Items: one `VehicleSpawnItem` per vehicle config, plus `fuel`, `wrench`, `container` and the four flat `tab_*`
-  icons. Each category has its own creative tab; UAV configs are hidden.
+- `mcheli:parachute` (`MchParachute`, the reference `MCH_EntityParachute`): a 1.5 x 0.6 entity its rider hangs under,
+  saved with its kind (`ParachuteModelType`) and summonable. Kinds: 1 the hand-held parachute, 2 the ejection seat
+  (rises on its launch, opens once it falls), 3 the crew drop, 0 none. The server runs it (`ParachuteFlight`; the rider
+  never controls it): a steady 0.3 a tick that holds the fall distance near 2, W steers along the rider's yaw, and it
+  ends on its 6th tick on the ground, on touching water (an ejection seat over a pool of more than 37 water cells
+  leaves its rider in a boat) or one tick after its rider is removed. Its box is solid, like a boat, and it lands on
+  any entity but its rider. It never rides anything by an unforced mount (`canRide` false), so a moving minecart does
+  not pick it up as the 1.21 cart picks up any pushable entity (the 1.7.10 cart took only living ones). It tracks to
+  13 chunks with vanilla's 3-tick updates and client interpolation, where the reference sent every 10 ticks and
+  extrapolated. Positions follow the 1.21 rule (the box bottom); the 1.7.10
+  `posY` was 0.3 higher (`MchParachute.Y_OFFSET`), which the rider offset, the boat probe and the smoke trail add back.
+- `mcheli:rope_slider` (`MchRopeSlider`, the reference `MCH_EntityHide`): the invisible 1 x 1 entity a repelling crew
+  member rides down a rope (see Rope repelling below). It syncs its rope index and its vehicle's entity id, is saved
+  with no fields of its own (a 1.21 passenger is saved only through a vehicle that is, so an unsaved slider would
+  delete its rider on a chunk unload) and is not summonable; a reloaded slider has no vehicle, so it falls and lets go
+  on landing. It collides like the reference: solid to other entities, landing on blocks and on any entity that is not
+  living, passing through mobs and players. Like the parachute it never rides anything by an unforced mount, so no
+  minecart picks it up. It tracks to 13 chunks with vanilla's 3-tick updates and client interpolation (the reference
+  sent every 10 ticks and extrapolated), and draws nothing (`NoopRenderer`, the reference `MCH_RenderNull`). Its
+  1.7.10 `posY` was 0.5 above the box bottom (`MchRopeSlider.Y_OFFSET`).
+- Items: one `VehicleSpawnItem` per vehicle config, plus `fuel`, `wrench`, `container`, `parachute` and the four flat
+  `tab_*` icons. Each category has its own creative tab, which also lists the fuel can, wrench, container and
+  parachute; UAV configs are hidden. The parachute item (`MchParachuteItem`) opens a type-1 parachute 3.5 blocks above a
+  player in the air, and is used up on every use outside creative, also where nothing opens, as in the reference.
 - Particles `weapon_fx`, `explode_fx` and `smoke_fx`, the riding menu `mcheli:vehicle`, and the `fuel_refill` recipe
   serializer.
 
@@ -225,17 +248,18 @@ entity:
 
 | Component | Owns | Writes |
 |---|---|---|
-| `MchLogistics` | Fuel burn, the fuel-can slots and siphon, the fuel and ammo supply auras, the can spill on removal | `DATA_FUEL` |
+| `MchLogistics` | Fuel burn, the fuel-can slots and siphon, the parachute slots, the fuel and ammo supply auras, the cargo hold, the spill of all of them on removal | `DATA_FUEL` |
 | `MchCountermeasures` | Flares, the missile decoy, the RWR tones | `DATA_FLARE_STATE` |
 | `MchVehicleAnimation` (public) | The client running gear, gatling barrel, rotor spin, radar sweep and blips, recoil kick | nothing |
 | `MchVehicleEffects` | The client weapon and damage smoke, the server fire cosmetics | nothing |
 | `MchWeaponSync` | The synced weapon view (selection, modes, totals, spent rails, the rider notice) and its HUD readers | `DATA_SEAT_WEAPONS`, `DATA_AMMO_ALL`, `DATA_WEAPON_SPENT` |
-| `MchVehicleParts` (public) | Canopy, hatch, wing and sweep, weapon bays, light hatch, rotation parts, throttle lever, camera turret, landing gear, and their render read-models | `DATA_PART_STATUS`, `DATA_GEAR` |
+| `MchVehicleParts` (public) | Canopy, hatch, wing and sweep, weapon bays, light hatch, rotation parts, throttle lever, camera turret, landing gear, and their render read-models; the repelling bit | `DATA_PART_STATUS`, `DATA_GEAR` |
 | `MchVehicleVision` | Camera modes, the night-vision viewers, the search light | nothing (its bits go through `MchVehicleParts`) |
 | `MchRiderPose` | The aim latch and turret slew, seat attachment, camera eyes, dismount, the model lift, HideGM groups, the view camera | nothing |
 | `MchPartHitboxes` | The per-part boxes and the projectile ray queries | nothing |
 | `MchTerrainContact` | The light sweep, crush and ram, attitude-crash and submersion damage | nothing |
 | `MchVehicleCrew` | The seat map, per-seat controls, boarding and the team gate, the passenger hooks, forced-mount ejects, seat switching, gunner mode | `DATA_SEATS`, `DATA_GUNNER_MODE`, `DATA_SEAT_GUNNER_MODE` |
+| `MchCrewDrop` | The crew leaving other than by the plain dismount: the ejection seat (its gate, who leaves, the eject point, the launch on a parachute, the forced canopy), by key and on destruction; the pilot's crew unmount (the plain unload, or the `MobDropOption` drop behind a forced hatch) and the server-only drop state and position trail it drops from; seat parachuting (a passenger jumping out from the same drop point); rope repelling for the mob crew (start and stop, the per-side rope length and tick counter, the per-hook cadence, the rope sliders, `ropePos`) and the player rope slide (its gate, the next rope) | nothing (the canopy, the hatch and the repelling bit go through `MchVehicleParts`) |
 | `MchFireControl` (with `MchLockAudits`) | The loadout and its saved ammo, the switch queue, the weapon tick and the fire, destruct, the TV missile, resupply, the HUD mortar distance; the server lock audit | `DATA_FIRING`, `DATA_RELOADING`, `DATA_RECOIL_SEQ`, `DATA_RECOIL_VALUE`, `DATA_RECOIL_YAW` |
 | `MchVehicleHull` | HP and the hurt pipeline, salvage and the spawn-item data, the wreck (tumble, crash detonation, despawn), auto repair, area repair and medevac regeneration | `DATA_DAMAGE_TAKEN`, `DATA_DESTROYED` |
 
@@ -304,6 +328,9 @@ while seated (`MchClientInput`). Every action is re-checked on the server.
 | Held seat-switch modifier | Left Alt | `KeyFreeLook` held (left Ctrl) |
 | Free-look toggle (pilot) | M | `KeyFreeLook` (left Ctrl) |
 | Hover mode (heli pilot); brake (tank driver, held) | Jump | `KeySwitchHovering` (Space) |
+| Eject (plane seats 0, 1) | Jump, held half a second (the action bar shows the hold) | `KeySwitchHovering` (Space, one press) |
+| Parachute out (passenger seats 2 and up); slide down a rope (passenger seats 1 and up of a repelling helicopter) | Jump, held half a second (the action bar shows the hold) | `KeySwitchHovering` (Space, one press) |
+| Unmount mobs, or lower and pull in the ropes on a hovering hooked helicopter (pilot); cargo hold (other seats) | Y | `KeyUnmountMob` (Y) |
 
 Where a port default differs, either the reference key is a 1.21 vanilla key (C, X, F, left Ctrl) or the port chose
 its own layout early on (G, H, R). Unported reference keys are listed in DEFERRED.md.
@@ -322,10 +349,10 @@ its own layout early on (G, H, R). Unported reference keys are listed in DEFERRE
 - **Boarding** (`interact`, `interactAt`, reference `interactFirst`). A player may not board, nor click a seat, while
   a player of another team rides (`checkTeam`, vanilla scoreboard teams; a crew player with no team never refuses, a
   player with no team is refused by a teamed crew). A wrench click never boards; with sneak it cycles the paint
-  scheme. A bare sneaking click does nothing (it opened the unported cargo inventory). The pilot seat obeys the
-  canopy and the mode-switch cooldown below.
+  scheme. Any other sneaking click opens the cargo hold below, where there is one, and never boards. The pilot seat
+  obeys the canopy and the mode-switch cooldown below.
 - **Parts** (`DATA_PART_STATUS`, server-written). Bits 0, 3 and 4 are the canopy, wing and hatch (the reference
-  DataWatcher 31 positions), bit 6 the search light, bits 8 to 11 the camera modes of seats 0 and 1, and bits 16 to 31
+  DataWatcher 31 positions), bit 5 rope repelling (never saved), bit 6 the search light, bits 8 to 11 the camera modes of seats 0 and 1, and bits 16 to 31
   the open weapon bays. Agnostic `MCH_Parts` animators ramp toward the bits on both sides, so only the bits sync. The
   canopy opens on the first click on the pilot seat and closes when a pilot takes it; an open canopy blocks flight
   control and gunner mode. The pilot's zoom key (Z) outside gunner mode switches the hatch, or folds or sweeps a
@@ -345,10 +372,17 @@ its own layout early on (G, H, R). Unported reference keys are listed in DEFERRE
 - **Camera.** `CameraMixin` parents the camera to the vehicle: the config `CameraPosition`, a turret orbit for a
   `rotSeat`, the full hull rotation for a locked-view aircraft, and the faded camera roll for tanks. `MchGunnerView`
   owns the gunner zoom (doubling up to `CameraZoom`) and the seat pitch clamp. `MchFreeLook` is the pilot free-look
-  toggle (M); the held modifier (Left Alt) turns the seat keys into "leave your seat". The gunner-mode key (R) also
+  toggle (M); its readers (`MchClientRotation`, `CameraMixin`, the HUD `free_look`) ask `MchFreeLook.effective`, which
+  also holds while the vehicle repels (the reference `isFreeLookMode` = the free-look bit or `isRepelling()`): the
+  mouse stops turning the hull and the view looks around until the ropes come in. The key sets the toggle to the
+  opposite of the free look in effect (`MchFreeLook.press`, `Repelling.freeLookAfterKey`, the reference
+  `isFreeLookMode() ? 2 : 1`), so a press while repelling turns it off. The free-look bit sent to the
+  server is the toggle alone, as it is not load-bearing. The held modifier (Left Alt) turns the seat keys into "leave
+  your seat". The gunner-mode key (R) also
   steps through the configured camera positions, as the reference `KeySwitchMode` state machine did.
 - **HP, armour and wrecks.** Damage goes through the per-part boxes and `VehicleArmor`. At max damage the vehicle
-  becomes a wreck (`DATA_DESTROYED`): the riders are ejected, the wreck tumbles and is darkened, and it is removed
+  becomes a wreck (`DATA_DESTROYED`): the pilot and seat 1 eject on parachutes while the slots hold them (the ejection
+  seat below), every other rider is put off plainly, the wreck tumbles and is darkened, and it is removed
   after 500 ticks. A player may not hurt a vehicle whose pilot is a player he may not harm (PvP off, or the same team
   without friendly fire). A melee hit from a player may instead break an unridden vehicle back into its item
   (`VehicleSalvage`, gated by `preventingBroken`, `breakableOnlyPickaxe` and `dropItemInCreativeMode`). The item keeps
@@ -357,6 +391,93 @@ its own layout early on (G, H, R). Unported reference keys are listed in DEFERRE
   menu while grounded. Supply vehicles refuel and rearm nearby vehicles. Auto-repair mends 1 % HP every 2 s after 30 s
   unhit while HP is at least `autoRepairHP`. The wrench mends 10 HP every 20 ticks. Medevac configs give their crew
   Regeneration.
+- **Parachute slots** (the reference `MCH_AircraftInventory` slots 3 and 4). Every vehicle has a 2-slot parachute
+  container in `MchLogistics`; the riding menu shows `numEjectionSeats()` of them at `(10 + 18i, 105)` under a
+  "Parachute" label, after the fuel slots and before the player's. Only `MchPlane` has any (`EjectionSeat`: one per seat
+  for an `EnableEjectionSeat` config with 1 or 2 seats and racks, else none), so 11 bundled planes show 1 and 10 show 2.
+  The slots take only a parachute, one each (the reference took anything and threw a non-parachute back on close).
+  `haveParachute` and `consumeParachute` read both slots, the first before the second, as the ejection seat does. They
+  save in `FuelSlots` as `SlotAC` 3 and 4, after the cans' 0 to 2 (the reference `ItemsAC` layout, so no new key: a
+  vehicle without a parachute saves as before), and spill with the fuel cans. The menu's open data carries the slot
+  count after the vehicle id, so a client builds the server's slot list even before the vehicle resolves.
+- **Ejection seat** (`MchCrewDrop`, the reference `ejectSeat`, `ejectSeatSub` and `canEjectSeat`). The pilot or the
+  seat-1 rider of a plane holds the jump key for half a second (`MchKeybinds.holdToExit`, 10 client ticks from a press
+  made while seated, with the progress on the action bar; the reference fired on one press) and sends
+  `mcheli:eject_seat`; both sides check `canEjectSeat` (`EjectionSeat`). The press is the key's own down edge on a
+  tick after a seated one (`ExitHold`), never its click queue, which the OS key repeat refills while it is held: a key
+  held across boarding, through a screen or while the action was still shut never starts a hold. With a parachute
+  in the slots (`EjectionSeat.plan`), the rider leaves 2 above his seat point (`pos + R·(seat + (0, 2, 0))`, unlifted,
+  placed through a one-shot dismount point, `MchRiderPose.placeNextDismount`), is launched at the plane's motion plus 2
+  along the hull's up axis with a small random kick, and a type-2 parachute takes him on its next tick; one parachute is
+  used up, a closed canopy is forced open with a 40-tick switch cooldown (`MchVehicleParts.openCanopyForEject`), and
+  `eject_seat` plays. The pilot takes a mob in seat 1 along while a second parachute is left; a player there ejects
+  himself. The pilot's DismountAll unloads the mob crew plainly first (`MchVehicleCrew.flushDeferredDismount`). There
+  is no altitude gate. On destruction the pilot's handle, then seat 1's, are pulled before the plain eject of the
+  rest, mobs included and without the `canEjectSeat` gate, as in the reference.
+- **Crew unmount** (`MchCrewDrop`, the reference `unmountCrew`, `startUnmountCrew` and `onUpdate_UnmountCrew`). The
+  pilot's Y (`mcheli:unmount_crew`, pilot seat, not on a wreck) runs `CrewUnmount.onUnmountKey`: an
+  `EnableParachuting` config (an2, mv-22) with nothing within 10 blocks below starts the crew drop, and Y again stops
+  it; any other vehicle, or one near the ground, puts every mob off beside its own seat (`dismountMobCrew`, the
+  DismountAll unload), and players stay. A config with repelling hooks unloads that way only within 4 blocks of the
+  ground; higher up it repels (below). Starting a drop forces a hatch open at once, whatever the switch cooldown,
+  and restarts it (`MchVehicleParts.forceOpenHatch`). Then, after the move, for a wreck too (`tickServerPostMove`):
+  within 10 blocks of the ground the drop stops; else, once the hatch is past 89 degrees (60 ticks on the mv-22), on
+  each tick that is a multiple of the `MobDropOption` interval (an interval of 0 counts as 1) the first mob from seat
+  2 up leaves at `trail.oldest() + R·MobDropOption.pos` on a type-3 parachute with the vehicle's motion, and the
+  first firing that finds none ends it. Closing the hatch ends it too. The trail is the reference `prevPosition`: ten
+  end-of-tick positions (refilled on the first two ticks), so a drop comes from where the vehicle was 9 ticks ago,
+  turned by its current attitude. The drop state is server-only, neither synced nor saved. Another rider's Y opens
+  the cargo hold.
+- **Seat parachuting** (`MchCrewDrop`, the reference `unmount`, `canUnmount` and `canParachuting`). A player in seat
+  2 or up of an `EnableParachuting` config (an2, mv-22) holds the jump key for half a second (`holdToExit`, as the
+  ejection seat) and sends `mcheli:seat_unmount` (seat 1 and up, not on a wreck), and `unmountSeat` re-checks
+  `canParachuting`, the one rule of both sides (`CrewUnmount.canSeatParachute`): seat 2 or up, a hatch at 89 degrees
+  or more where there is one, and nothing within 13 blocks below. The reference client ignored the hatch and its
+  server the ground; each side now checks both. He then leaves at the crew drop's point
+  (`trail.oldest() + R·MobDropOption.pos`) on a type-3 parachute with the vehicle's motion, which he rides from its
+  first tick. No parachute item is used up.
+- **Rope repelling** (`MchCrewDrop` and `MchRopeSlider`, the reference `startRepelling`, `stopRepelling`,
+  `onUpdate_Repelling`, `onUpdate_UnmountCrewRepelling`, `unmountEntityRepelling`, `canRepelling`, `unmount` and
+  `MCH_EntityHide`). On a config with `AddRepellingHook` lines (7 bundled helicopters), the pilot's Y starts repelling
+  when `canStartRepelling` allows it (`isHovering()`: hover mode, or gunner mode; the hull within 3 degrees of level;
+  less than 0.3 from the trail's oldest position, still for about 9 ticks) and nothing is within 4 blocks below; it
+  sets part-status bit 5 (the only synced part, written through `MchVehicleParts.setRepelling`), lets go of the
+  pilot's throttle and sideways keys and restarts the tick counter. Those keys stay let go while it repels (the
+  reference's per-tick lock, MCH_AircraftClientTickHandler:166-170): the server clears them from the pilot's control
+  state every tick before the snapshot, and the client leaves them out of its control bits and its A/D bank. Both
+  sides then step their own rope length (the server 0.25 a tick, a client 0.3, to 50 or `GroundProbe.airBelow`) and tick
+  counter (to 60, the rope-out time), the server after the move between the crew drop and the trail
+  (`tickServerPostMove`), a client at the end of its tick; neither is synced or saved. From the 61st tick, on every tick
+  that is a multiple of a hook's interval (30 on every bundled hook), the first mob from seat 2 up leaves 2 below
+  `trail.oldest() + R·hook` at rest and rides a new slider of that rope, whose X/Z the slider pins to `ropePos(idx)`
+  (the hook with the current pose) every tick; it falls 0.3 a tick with no fall distance and lets go on the ground (0.5
+  up first, as the reference), at the rope's end (more than the server's rope length + 5 below the hook) or as soon as
+  the vehicle stops repelling, its rider left where he hangs. The cadence never takes seat 1, the pilot or a player. A
+  player in seat 1 or up slides down himself once the counter is past 50 (2.5 s): he holds the jump key for half a
+  second (`holdToExit`) and sends `mcheli:seat_unmount`, and `unmountSeat` re-checks `canRepelling` (the ropes down, the
+  counter past 50, seat 1 or up), the one rule of both sides, each on its own counter. He takes the rope after the last
+  one used by anyone (`Repelling.nextRope`, the cadence included) and leaves 4 below `trail.oldest() + R·hook` (2 lower
+  than a mob, the reference's double -2) on a slider of that rope, riding with his feet 0.3 below its box. Meanwhile the
+  pilot free-looks (Camera, above). Repelling stops on Y again, on every `MchHelicopter.switchHoveringMode` call (its
+  first line, through the `stopRepelling` facade, so even when the switch is refused: the hover key, out of fuel, the
+  last player out, destruction; the client sends the hover key only when `canSwitchHoveringMode` allows it, as the
+  reference, so a gunner-mode press neither switches nor stops), on any vehicle when no player rides any more
+  (`handlePassengerRemoved`) and on destruction (`baseDestroyVehicle`). While it repels the vehicle's culling box
+  reaches down the ropes (the reference aircraft skipped the frustum test), so they stay drawn with the hull off
+  screen.
+- **Cargo hold** (`InventorySize`, 26 bundled configs, 0 to 54 slots; the reference aircraft's own
+  `W_EntityContainer` inventory). A `SimpleContainer` of that size in `MchLogistics`, beside the fuel slots: the same
+  kind of state (an item container on the vehicle, saved with slot indices, spilled by the same removal-reason gate),
+  so it shares their save, load and spill and adds no component. It opens as the vanilla chest menu
+  (`MenuType.GENERIC_9xN`, nothing registered, no screen of our own) with `size / 9` rows, the 1.7.10 chest rule, so
+  the two 10-slot tanks show 9 slots and a hold under 9 slots opens nothing. Routes: a sneaking click without the
+  wrench (`MchVehicleCrew.handleInteract`), and the riding menu's Inventory button (`mcheli:vehicle_gui`
+  `OPEN_CARGO`, any seat). `stillValid` is the reference `isUseableByPlayer`: 8 blocks on foot, 64 for a seated
+  rider, never after removal. NBT: `Items`, one entry per stack with its `Slot` byte (the reference keys); a save
+  without the key loads an empty hold, and a vehicle without a hold writes none. A stack whose slot a smaller
+  `InventorySize` lacks is kept aside, saved back and returned when the size allows (the reference deleted it). The
+  hold spills with the fuel cans on a `KILLED` or `DISCARDED` removal only, and a wreck keeps it until then. The HUD
+  `inventory` value is the hold's size (`cargoSize`).
 - **Terrain.** Tanks and cars crush the blocks on the server's crush lists and ram entities (`collisionEntityDamage`,
   `collisionEntityTankDamage`). Every vehicle clears the snow layers, lily pads and cake under it (the reference
   `onUpdate_updateBlock` sweep). The crushing and the sweep are gated by `collisionDestroyBlock` and `mobGriefing`.
@@ -472,8 +593,8 @@ the ported reference engine (`mcheli.agnostic.eval`), then evaluated on its doub
   occupies (a helicopter or plane pilot in gunner mode sees the seat-1 HUD), draws only in first person unless
   `displayHUDThirdPerson` is set, and draws the night-vision noise first. `MchHudVarState` is the live `HudState`. It snapshots the viewer's own
   seat weapon once per frame, so a gunner sees his own weapon, ammo, reload, heat and lock. Its "seam" methods return
-  the reference's "feature absent" values for systems the port lacks (UAV station, cargo inventory, the TV-missile
-  readouts, TestMode), so the configs' `If` guards keep those blocks hidden. `NeoHudRenderer` draws over `GuiGraphics`
+  the reference's "feature absent" values for systems the port lacks (UAV station, the TV-missile readouts,
+  TestMode), so the configs' `If` guards keep those blocks hidden. `NeoHudRenderer` draws over `GuiGraphics`
   in issue order (lines are flushed per call).
 - One more divergence: a weapon `DrawString` argument is skipped while the viewer has no current weapon (the
   reference showed the last weapon's stale values). `DrawCameraRot` is drawn whenever a HUD lists it, pilot HUDs
@@ -483,8 +604,9 @@ the ported reference engine (`mcheli.agnostic.eval`), then evaluated on its doub
 
 ## Networking
 
-Every payload is a `CustomPacketPayload` record registered by `MchControlNetwork` with protocol version `"1"`. Bump it
-on a wire-incompatible change. Every serverbound handler runs on the main thread and first requires that the sender
+Every payload is a `CustomPacketPayload` record registered by `MchControlNetwork` with protocol version `"2"`
+(`MchControlNetwork.PROTOCOL`; 2 since the riding menu's open data gained the parachute slot count). Bump it on a
+wire-incompatible change. Every serverbound handler runs on the main thread and first requires that the sender
 rides the addressed vehicle (for `notify_lock`, which names no vehicle, the one he rides); the table lists the checks
 after that. Clientbound handlers are guarded with `FMLEnvironment.dist`, so a dedicated server never links client
 classes.
@@ -495,7 +617,7 @@ classes.
 | `mcheli:rotation` | C→S | vehicleId, yaw, pitch, roll | The pilot's client-built rotation, once per tick. | Non-finite angles are rejected. Seat 0 of a mouse-steered vehicle only. Yaw and roll are wrapped and pitch is clamped to ±90°; no rate limit, as in the reference. |
 | `mcheli:weapon_switch` | C→S | vehicleId, direction | Next or previous weapon for the sender's seat (F, or the mouse wheel). | Not on a wreck, not while the pilot is in the resupply GUI. Presses are queued per seat, bounded at one lap of the loadout. |
 | `mcheli:weapon_mode` | C→S | vehicleId | Switch the selected weapon's mode (K). | A seat with a selected weapon, not a wreck, no resupply GUI. Only a weapon with at least two modes and no `FixMode` changes; starts the 15-tick lockout. |
-| `mcheli:vehicle_gui` | C→S | vehicleId, action, weapon | Open the riding menu, or reload a weapon from the player's inventory. | The sender's vehicle must be this one, and the sender must be in seat 0. |
+| `mcheli:vehicle_gui` | C→S | vehicleId, action, weapon | Open the riding menu (its open data: the vehicle id, then the parachute slot count), open the cargo hold (the menu's Inventory button), or reload a weapon from the player's inventory. | The sender's vehicle must be this one. The riding menu and the reload need seat 0; the cargo hold any seat, and a vehicle that has one. |
 | `mcheli:seat_switch` | C→S | vehicleId, action | Next seat, previous seat, or grab the pilot seat. | Moves only into an empty seat. Grabbing the pilot seat also needs `CanRide` and the seat rules (`ExclusionSeat`). |
 | `mcheli:gunner_mode` | C→S | vehicleId | Toggle the pilot's gunner mode, or a switchable gunner seat's (R). | Seat 0: leaving is always allowed. Entering needs `EnableGunnerMode`, a closed canopy and no player in seat 1 (unless concurrent gunner mode); a helicopter must not be hovering and must have roll and pitch under 40°; a plane needs roll and pitch within 40°, throttle over 0.6 and nothing within 5 blocks below. Another seat: `canSwitchGunnerModeOtherSeat` (a switchable gunner seat, not on a ground emplacement). Any other seat is ignored. |
 | `mcheli:camera_mode` | C→S | vehicleId | Step the seat's camera mode, or toggle the search light (N). | Seat 0 or 1. Search light: not a wreck. Camera: `EnableNightVision` and not a wreck. |
@@ -503,7 +625,10 @@ classes.
 | `mcheli:hatch_switch` | C→S | vehicleId | Open or close the hatch, else fold or sweep the wing (Z outside gunner mode). | Seat 0, not a wreck, the part at rest and the shared cooldown ready; the wing also needs `canFoldWing`/`canUnfoldWing`. |
 | `mcheli:use_flare` | C→S | vehicleId | Dispense flares (V). | Seat 0 or 1 and `canDeployFlare`. |
 | `mcheli:vtol_toggle` | C→S | vehicleId | Toggle the VTOL nozzle (H, plane pilot). | A plane; seat 0 and `canSwitchVtol` (VTOL config, cooldown ready, not mid-transition, roll within 30°). |
-| `mcheli:hover_toggle` | C→S | vehicleId | Toggle helicopter hovering mode (jump). | A helicopter; seat 0 and `canSwitchHoveringMode` (not in gunner mode, blades usable, roll and pitch under 40°). |
+| `mcheli:hover_toggle` | C→S | vehicleId | Toggle helicopter hovering mode (jump); it always stops rope repelling first, as the reference `switchHoveringMode`. | A helicopter; seat 0, then the stop, then `canSwitchHoveringMode` (not in gunner mode, blades usable, roll and pitch under 40°) for the toggle. |
+| `mcheli:eject_seat` | C→S | vehicleId | Pull the ejection handle (jump held half a second). | A plane, not a wreck, and `canEjectSeat` (seat 0 or 1, `EnableEjectionSeat`, not a UAV's pilot seat), the rule the client checks too; the reference server checked none of it. Then a parachute in the slots, or nothing happens. |
+| `mcheli:unmount_crew` | C→S | vehicleId | Unmount the mob crew (the pilot's Y): the plain unload, start or stop the crew drop, or start or stop rope repelling. | Seat 0 and not a wreck, the rule the client checks too; the reference server checked neither. |
+| `mcheli:seat_unmount` | C→S | vehicleId | A passenger leaves his seat (jump held half a second): he slides down the next rope of a repelling helicopter, or parachutes out from the crew drop's point. | Seat 1 or up and not a wreck; then `canRepelling` (repelling, the counter past 50), the rule the client checks too, as in the reference; else `canParachuting` (seat 2 or up of an `EnableParachuting` config, the hatch at 89 degrees or more, nothing within 13 blocks below), the rule the client checks too; the reference server checked neither the wreck nor the ground, and its client not the hatch. Otherwise nothing happens. |
 | `mcheli:landing_gear` | C→S | vehicleId | Raise or lower the landing gear (B). | Seat 0, not a wreck, a gear config, `canFold`/`canUnfold` and the shared cooldown. |
 | `mcheli:notify_lock` | C→S | targetId | "I am locking this entity": starts or feeds the lock audit and drives the target's RWR tone. | The sender's seat must hold a lock-on weapon and the target must exist. The RWR tone is relayed only within the weapon's lock range (plus slack), at most once per 10 ticks per seat, and only to a flare-equipped intact target. |
 | `mcheli:rwr` | S→C | kind | The RWR tone, "being locked" or "missile inbound". | Sent to seats 0 and 1 of a flare-equipped vehicle. |
@@ -516,11 +641,13 @@ classes.
 
 | Entity | Accessors |
 |---|---|
-| `AbstractMchVehicle` | `DATA_CONFIG` (which vehicle), `DATA_SEATS` (seat index to entity id), `DATA_ROLL`, `DATA_SIM_THROTTLE` (the real throttle), `DATA_THROTTLE` (spooled engine power for rotors and sound), `DATA_SKIN`, `DATA_GEAR` (true = up), `DATA_PART_STATUS`, `DATA_GUNNER_MODE`, `DATA_SEAT_GUNNER_MODE` (switchable gunner seats, a bit per seat), `DATA_RELOADING` (pilot in the resupply GUI), `DATA_SEAT_WEAPONS`, `DATA_AMMO_ALL`, `DATA_WEAPON_SPENT`, `DATA_FLARE_STATE`, `DATA_RECOIL_SEQ`, `DATA_RECOIL_VALUE`, `DATA_RECOIL_YAW`, `DATA_FIRING` (gatling spin), `DATA_FUEL`, `DATA_DAMAGE_TAKEN`, `DATA_DESTROYED` |
+| `AbstractMchVehicle` | `DATA_CONFIG` (which vehicle), `DATA_SEATS` (seat index to entity id), `DATA_ROLL`, `DATA_SIM_THROTTLE` (the real throttle), `DATA_THROTTLE` (spooled engine power for rotors and sound), `DATA_SKIN`, `DATA_GEAR` (true = up), `DATA_PART_STATUS` (the part bits, the camera modes, the bays, the repelling bit), `DATA_GUNNER_MODE`, `DATA_SEAT_GUNNER_MODE` (switchable gunner seats, a bit per seat), `DATA_RELOADING` (pilot in the resupply GUI), `DATA_SEAT_WEAPONS`, `DATA_AMMO_ALL`, `DATA_WEAPON_SPENT`, `DATA_FLARE_STATE`, `DATA_RECOIL_SEQ`, `DATA_RECOIL_VALUE`, `DATA_RECOIL_YAW`, `DATA_FIRING` (gatling spin), `DATA_FUEL`, `DATA_DAMAGE_TAKEN`, `DATA_DESTROYED` |
 | `MchHelicopter` | `DATA_FOLD` (rotor fold state 0 to 3), `DATA_HOVER` |
 | `MchPlane` | `DATA_VTOL` (the nozzle target; the angle ramps on both sides) |
 | `MchBullet` | Model, colour, gravity, acceleration factor, trail kind, size and start tick, marker state, `DATA_GUIDED`, `DATA_TORPEDO`, in-water gravity, `DATA_RICOCHET`, splash power, in-water velocity |
 | `MchFlare` | The airburst fuse |
+| `MchParachute` | `DATA_TYPE` (the kind 0 to 3, id 8; the reference DataWatcher 31). Its open state is not synced: a client reads it from the synced velocity, as the reference did. |
+| `MchRopeSlider` | `DATA_ROPE_INDEX` (id 8, -1 none; the reference DataWatcher 30), `DATA_PARENT` (id 9, the vehicle's entity id, 0 none; DataWatcher 31). The rope lengths are not synced: each side grows its own from the repelling bit, as in the reference. |
 
 The `AbstractMchVehicle` accessors are declared in one block of that class, in id order (8 to 29; `MchHelicopter` and
 `MchPlane` continue from 30), and nowhere else: an accessor for that class declared in another class would take its
@@ -542,9 +669,15 @@ not saved, as in the reference.
 - Composition follows `MCH_RenderAircraft.doRender`: `renderPreBodyParts` (a plane's nozzles, wings with pylons and
   rotors, so the body glass blends over them), the `$body` span and the static declared parts, the category's
   `renderDynamicParts`, the common parts (`renderCommonParts`, canopy last), then the search-light beams
-  (`MchRenderTypes.SEARCH_LIGHT`). Part lookups use the agnostic `ModelPartIndex`, cached per model. Every pass takes
+  (`MchRenderTypes.SEARCH_LIGHT`) and, while repelling, the ropes (`renderRopes`, `MchRenderTypes.ROPE`: one opaque
+  black 1-pixel line per hook, down the hull's own axis by this client's rope length, in the lifted model pose, so
+  the rope's foot sits about `|minY|` above the unlifted point the sliders hang under). Part lookups use the agnostic `ModelPartIndex`, cached per model. Every pass takes
   the reference hull tint (`wreckColor`: grey 191 intact, 38 for a wreck). `MchModelRenderer.shadeModel` mirrors
   `glShadeModel` (`smoothShading` and the config's `SmoothShading`).
+- `MchParachuteRenderer` (the reference `MCH_RenderParachute`) draws the bundled `parachute1` model for type 1 and the
+  `parachute2` spans `$parachute` or, for an ejection seat not yet open, `$seat`, 0.3 above the box bottom, with the
+  hull's 0.75 tint and blended pass. Its culling box covers the 4.2-block canopy. A rising seat trails the reference
+  smoke on the client.
 - Spawn-item icons are the vehicle's own model (`VehicleItemRenderer`, a `builtin/entity` item model). Vehicles render
   out to `renderDistanceWeight` (default 10, about 1000 blocks) and rounds to 256 blocks, both capped by tracking.
 - A client resource reload (F3+T) clears the model cache (`MchContentPacks.clearModelCaches`), the item icon cache and
@@ -587,11 +720,16 @@ build on any failure.
 | `particle` | Weapon visuals come from the configs (muzzle colour, cartridge model and scale, type-driven trails). |
 | `hud` | The engine evaluates sample expressions; every HUD a loaded config names draws with zero draw-time failures. |
 | `heat` | Barrel heat fills, locks out fire at the cap and cools. |
-| `hp` | HP accumulation, per-part armour order, environmental gates, destruction and the wreck countdown; the synced-data id of every accessor, the NBT round trip (a heli, a legacy ammo save, a piloted tank, a wreck) and the spawn-item fuel and damage; the seeded wreck tumble, the one-shot crash detonation, and salvage into the spawn item. |
+| `hp` | HP accumulation, per-part armour order, environmental gates, destruction and the wreck countdown (50 ticks for a target drone); the synced-data id of every accessor, the NBT round trip (a heli, a legacy ammo save, a piloted tank, a wreck, the fuel-can slots) and the spawn-item fuel and damage; the seeded wreck tumble, the one-shot crash detonation, and salvage into the spawn item. |
 | `crewfuel` | The seat map, dynamic per-seat weapon eligibility, drive authority, the ammo economy and fuel burn; gunner mode (dedicated and switchable gunner seats); the team, wrench-paint and canopy-less cooldown boarding gates; the camera night vision released on logout; the fuel cans spilled by removal reason, the part switches (the canopy boarding gate, the hatch, the shared switch cooldown, the gear, the weapon bays, the search light) and the forced mounts (a full vehicle, a seat-less extra rider, DismountAll, the Seats restore). |
 | `contentpack` | Both pack layouts load; illegal, reserved and duplicate names are skipped; sound grouping and precedence. |
-| `crush` | An abandoned tank tilts onto a slope; a driven tank crushes the right blocks only; gunner aim; the rider pose (the turret slew and latch, the seat attachment, the camera eyes, dismount). |
+| `crush` | An abandoned tank tilts onto a slope; a driven tank crushes the right blocks only; gunner aim; the rider pose (the turret slew and latch, the seat attachment, the camera eyes, dismount by each rider's own seat). |
 | `recipes` | Every generated recipe loads (at least 98), no UAV recipe, potion and legacy-name ingredients, the fuel refill. |
+| `cargo` | The cargo hold: the config sizes and chest rows (the 54 clamp, the 10-slot tanks); the sneaking click (opens the chest, never boards; the wrench still paints; a wreck and a hold-less vehicle refuse); the 8/64-block reach; shift-click both ways; the riding menu's Inventory payload from any seat (the riding menu itself unchanged); the `Items`/`Slot` NBT round trip, a save without the key, a smaller config keeping a stack aside; the spill on discard and kill and none on a chunk unload or a dimension change. |
+| `parachute` | The parachute: its synced-data id, registration and recipe; the hand-held use (spent, lifted 3 blocks, the rider's feet under the box) and its refusals (spent on the ground or riding, kept in creative); the steady descent and the 6th-tick landing; the ejection seat's launch and opening; steering, its decay and the sneak drop; the riderless heading; water (a boat for an ejection seat over a full pool, none otherwise); NBT; a removed rider; the push between two parachutes; a moving minecart brushing a parachute and never taking it (an unforced mount refused, a forced one allowed). |
+| `eject` | The ejection seat's parachute slots: the census (exactly the 21 `EnableEjectionSeat` planes, 1 or 2 slots); the riding menu's layout (by constructor and by the real OPEN payload), the open data round trip (also unresolved, and a bounded count), the slot rules and shift-click; `FuelSlots` `SlotAC` 3 and 4 (golden), the reload, an empty save as before, an out-of-range slot dropped; the slot order of `haveParachute`/`consumeParachute`; the spill on discard and none on a chunk unload. The ejection seat through the real `mcheli:eject_seat` handler: the pilot's eject (the eject point `pos + R·(seat + (0, 2, 0))`, also against the reference `RotVec3`, the launch with the vehicle's motion and the kick, the rider's yaw and fall distance, the slot used up, the forced canopy and its 40-tick cooldown, the rider on his parachute the next tick); a mob co-pilot taken along, or kept with one parachute; a player co-pilot left to eject himself; the refusals (no parachute, an an2 pilot and seat-2 rider, an ah-64 pilot, a wreck); DismountAll putting the mob crew off first; a ground eject's 24-block rise; destruction with 2, 1 and 0 parachutes and with a mob pilot. |
+| `crewdrop` | The pilot's crew unmount through the real `mcheli:unmount_crew` handler: the position trail (its oldest entry 9 ticks old); the plain unload beside each mob's own seat (an m1a2, an an2 near the ground, an mh-6 near the ground); the refusals (a seat-1 player, a wreck, a hooked heli in the air); the an2 drop (one mob per 5-tick firing from seat 2 up, type-3 parachutes at the 9-tick-old position + `R·MobDropOption`, with the vehicle's motion, ridden the next tick; seat 1 stays; the empty firing ends it); Y twice; the mv-22's forced hatch through a running cooldown, no drop until it passes 89 degrees, then one per 10-tick firing, and the pilot closing it ends the drop; the ground ending a drop. Seat parachuting through the real `mcheli:seat_unmount` handler: an an2 seat-2 player off at once at the 9-tick-old position + `R·MobDropOption` on a type-3 parachute with the plane's motion, ridden the next tick; seat 1, the pilot and a non-rider refused; the mv-22 refusing behind its shut hatch, still at 88.5 degrees, and letting him go once it is open; `canParachuting` false 11 blocks above the ground and true at 12, the server refusing at 11 too; an ah-64 gunner, a p180 passenger and a wreck refused. |
+| `repel` | Rope repelling through the real `mcheli:unmount_crew`, `mcheli:hover_toggle` and `mcheli:seat_unmount` handlers: the census (11 hooks in 7 helicopters, every interval 30, never with parachuting), the slider's registration and ids; the start gates (hover off, pitched, rolled, moving) and the start (bit 5, the pilot's keys let go); the server rope (0.25 a tick to the air below) and the counter; the cadence (none in the rope-out time, then one mob per hook per 30-tick firing from seat 2 up, each on a slider at the 9-tick-old position + `R·hook - 2.5`, ridden 0.2 above its box, under its hook every tick, falling exactly as the reference with no fall distance, letting go on the ground, the pigs unhurt; seat 1 stays); the rope end at 50 + 5; each stop (Y, the hover payload, the hover payload in gunner mode as a server-path check, destruction, the last player out) letting every slider go on the next tick; the pilot's drive keys sent through the real `mcheli:control` handler while repelling let go before they move the hull, and kept again once the ropes are in; the culling box reaching down the rope; a slider refusing an unforced mount; a hooked heli near the ground unloading plainly; a heli saved without the bit; a slider saved and reloaded with its pig, falling with no parent and letting go on landing. The player rope slide: no slide in the first 50 ticks (the payload and `unmountSeat` refused); from the 51st, seat 1 down rope 1 and seat 4 down rope 0, each 4 below the hook point on the trail position (the slider 4.5 below), riding with his feet 0.3 under the slider; after the cadence's firing put the pigs on ropes 0 and 1, seat 5 down rope 0; each under his hook with no fall distance and let go 0.2 above the ground, unhurt; the pilot never slides. |
 
 To add a test, extend `MchSelfTest` and add it to `MchSelfTests.ALL`. The base class supplies the area, a timeout, a
 `TestPlayer` that can ride vehicles, and helpers to call payload handlers with a test payload context.

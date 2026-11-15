@@ -177,8 +177,9 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
             } finally {
                 MchModelRenderer.shadeModel(prevShade);
             }
-            // Last: the beams use their own buffer, which ends the model batch.
+            // Last: the beams and the ropes use their own buffers, which end the model batch.
             renderSearchLights(entity, info, pose, buffers, partialTick, entityYaw, hullPitch);
+            renderRopes(entity, info, pose, buffers);
             pose.popPose();
         }
         super.render(entity, entityYaw, partialTick, pose, buffers, packedLight);
@@ -259,8 +260,8 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
 
     /**
      * The shared animated parts — the port of {@code MCH_RenderAircraft.renderCommonPart} (:437-450) minus the parts
-     * drawn elsewhere (weapons, wheels, tracks and rollers by the category renderers; the rope with the unported
-     * repelling). Reference order: rotation parts, hatches, steering wheels, light hatches, throttle levers, camera
+     * drawn elsewhere (weapons, wheels, tracks and rollers by the category renderers; the rope by
+     * {@link #renderRopes}, after the model batch). Reference order: rotation parts, hatches, steering wheels, light hatches, throttle levers, camera
      * turrets, landing gear, weapon bays and the canopy LAST, so the canopy glass blends over everything under it.
      */
     private void renderCommonParts(T e, MCH_AircraftInfo info, MchModel model, PoseStack pose, VertexConsumer vc,
@@ -426,6 +427,31 @@ public abstract class MchModelEntityRenderer<T extends AbstractMchVehicle> exten
                     .setColor(ce >> 16 & 0xFF, ce >> 8 & 0xFF, ce & 0xFF, ce >>> 24);
             }
             pose.popPose();
+        }
+    }
+
+    /**
+     * The repelling ropes, the port of {@code MCH_RenderAircraft.renderRope} (:1108-1134, drawn first in
+     * {@code renderCommonPart}, :438; here after the model batch, in the same model pose): while the vehicle repels,
+     * one opaque black 1-pixel line per {@code AddRepellingHook}, from the hook straight down the hull's own -Y axis by
+     * this client's rope length (the hull is level within 3 degrees while repelling). The pose carries the model lift,
+     * so the rope's foot sits about {@code |minY|} above the unlifted point the server's sliders hang under.
+     */
+    private static void renderRopes(AbstractMchVehicle e, MCH_AircraftInfo info, PoseStack pose,
+                                    MultiBufferSource buffers) {
+        if (info == null || info.repellingHooks.isEmpty() || !e.isRepelling()) {
+            return;
+        }
+        VertexConsumer vc = buffers.getBuffer(MchRenderTypes.ROPE);
+        PoseStack.Pose last = pose.last();
+        float len = e.ropesLength();
+        for (MCH_AircraftInfo.RepellingHook h : info.repellingHooks) {
+            float x = (float) h.pos.x();
+            float y = (float) h.pos.y();
+            float z = (float) h.pos.z();
+            // The lines shader widens each segment across its normal's screen direction: the rope's own direction.
+            vc.addVertex(last, x, y, z).setColor(0, 0, 0, 255).setNormal(last, 0.0F, -1.0F, 0.0F);
+            vc.addVertex(last, x, y + len, z).setColor(0, 0, 0, 255).setNormal(last, 0.0F, -1.0F, 0.0F);
         }
     }
 

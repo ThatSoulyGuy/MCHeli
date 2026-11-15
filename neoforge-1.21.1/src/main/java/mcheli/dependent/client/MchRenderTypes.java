@@ -2,6 +2,7 @@ package mcheli.dependent.client;
 
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.VertexFormat;
+import java.util.OptionalDouble;
 import java.util.function.Function;
 import net.minecraft.Util;
 import net.minecraft.client.renderer.RenderStateShard;
@@ -47,6 +48,22 @@ public final class MchRenderTypes {
             .setTransparencyState(RenderStateShard.LIGHTNING_TRANSPARENCY)
             .setCullState(RenderStateShard.NO_CULL)
             .setWriteMaskState(RenderStateShard.COLOR_WRITE)
+            .createCompositeState(false));
+
+    /**
+     * The repelling ropes (reference {@code MCH_RenderAircraft.renderRope}): untextured, unlit opaque lines, 1 pixel
+     * wide, the reference's {@code GL_LINE_STRIP} at the default line width with {@code GL_TEXTURE_2D} and
+     * {@code GL_LIGHTING} off. Vanilla's {@code lines()} would draw them at least 2.5 pixels wide (scaled with the
+     * window), so this keeps its shards with a fixed 1.0 width.
+     */
+    public static final RenderType ROPE = RenderType.create(
+        "mcheli_rope", DefaultVertexFormat.POSITION_COLOR_NORMAL, VertexFormat.Mode.LINES, 256, false, false,
+        RenderType.CompositeState.builder()
+            .setShaderState(RenderStateShard.RENDERTYPE_LINES_SHADER)
+            .setLineState(new RenderStateShard.LineStateShard(OptionalDouble.of(1.0)))
+            .setLayeringState(RenderStateShard.VIEW_OFFSET_Z_LAYERING)
+            .setCullState(RenderStateShard.NO_CULL)
+            .setWriteMaskState(RenderStateShard.COLOR_DEPTH_WRITE)
             .createCompositeState(false));
 
     public static RenderType vehicle(ResourceLocation texture) {

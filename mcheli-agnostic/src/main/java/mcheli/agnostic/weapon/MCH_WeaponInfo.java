@@ -2,6 +2,7 @@ package mcheli.agnostic.weapon;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import mcheli.agnostic.info.MCH_BaseInfo;
 import mcheli.agnostic.math.MCH_Color;
 import mcheli.agnostic.spi.EntityRef;
@@ -23,7 +24,10 @@ import mcheli.agnostic.spi.Role;
  *       See {@link MCH_DamageFactor} for the PLAYER behavior note.</li>
  * </ul>
  * All parse logic (including the reference's {@code soundpattern != 0} branch quirk, which makes the
- * {@code SoundPattern} directive a no-op) is preserved exactly.
+ * {@code SoundPattern} directive a no-op) is preserved exactly, with one deliberate change: the values that key a
+ * lookup (the type, group, sound, sight, model, particle, cartridge, item and DamageFactor names) are lower-cased with
+ * {@link Locale#ROOT}. The reference used the default locale, under which a Turkish JVM turns {@code AAMISSILE} into
+ * {@code aamıssıle}, and that misses its type branch.
  */
 public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
    public final String name;
@@ -287,17 +291,17 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
       if (item.compareTo("displayname") == 0) {
          this.displayName = data;
       } else if (item.compareTo("type") == 0) {
-         this.type = data.toLowerCase();
+         this.type = data.toLowerCase(Locale.ROOT);
          if (this.type.equalsIgnoreCase("bomb") || this.type.equalsIgnoreCase("dispenser")) {
             this.gravity = -0.03F;
             this.gravityInWater = -0.03F;
          }
       } else if (item.compareTo("group") == 0) {
-         this.group = data.toLowerCase().trim();
+         this.group = data.toLowerCase(Locale.ROOT).trim();
       } else if (item.compareTo("power") == 0) {
          this.power = this.toInt(data);
       } else if (item.equalsIgnoreCase("sound")) {
-         this.soundFileName = data.toLowerCase().trim();
+         this.soundFileName = data.toLowerCase(Locale.ROOT).trim();
       } else if (item.compareTo("acceleration") == 0) {
          this.acceleration = this.toFloat(data, 0.0F, 100.0F);
       } else if (item.compareTo("accelerationinwater") == 0) {
@@ -331,7 +335,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
       } else if (item.equalsIgnoreCase("CameraRotationSpeedPitch")) {
          this.cameraRotationSpeedPitch = this.toFloat(data, 0.0F, 100.0F);
       } else if (item.compareTo("sight") == 0) {
-         data = data.toLowerCase();
+         data = data.toLowerCase(Locale.ROOT);
          if (data.compareTo("movesight") == 0) {
             this.sight = MCH_SightType.ROCKET;
          }
@@ -364,7 +368,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
             int n = this.toInt(s[0], 1, 64);
             if (n > 0) {
                int damage = s.length >= 3 ? this.toInt(s[2], 0, 100000000) : 0;
-               this.roundItems.add(new MCH_WeaponInfo.RoundItem(n, s[1].toLowerCase(java.util.Locale.ROOT).trim(), damage));
+               this.roundItems.add(new MCH_WeaponInfo.RoundItem(n, s[1].toLowerCase(Locale.ROOT).trim(), damage));
             }
          }
       } else if (item.compareTo("sounddelay") == 0) {
@@ -415,9 +419,9 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
          } else if (item.compareTo("maxheatcount") == 0) {
             this.maxHeatCount = this.toInt(data, 0, 100000);
          } else if (item.compareTo("modelbullet") == 0) {
-            this.bulletModelName = data.toLowerCase().trim();
+            this.bulletModelName = data.toLowerCase(Locale.ROOT).trim();
          } else if (item.equalsIgnoreCase("ModelBomblet")) {
-            this.bombletModelName = data.toLowerCase().trim();
+            this.bombletModelName = data.toLowerCase(Locale.ROOT).trim();
          } else if (item.compareTo("fae") == 0) {
             this.isFAE = this.toBool(data);
          } else if (item.compareTo("guidedtorpedo") == 0) {
@@ -469,7 +473,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
                   );
             }
          } else if (item.equalsIgnoreCase("TrajectoryParticle")) {
-            this.trajectoryParticleName = data.toLowerCase().trim();
+            this.trajectoryParticleName = data.toLowerCase(Locale.ROOT).trim();
             if (this.trajectoryParticleName.equalsIgnoreCase("none")) {
                this.trajectoryParticleName = "";
             }
@@ -486,7 +490,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
                float sc = s.length >= 5 ? this.toFloat(s[4]) : 1.0F;
                float gr = s.length >= 6 ? this.toFloat(s[5]) : -0.04F;
                float bo = s.length >= 7 ? this.toFloat(s[6]) : 0.5F;
-               this.cartridge = new MCH_Cartridge(s[0].toLowerCase(), ac, yw, pt, bo, gr, sc);
+               this.cartridge = new MCH_Cartridge(s[0].toLowerCase(Locale.ROOT), ac, yw, pt, bo, gr, sc);
             }
          } else if (item.equalsIgnoreCase("BulletColorInWater") || item.equalsIgnoreCase("BulletColor") || item.equalsIgnoreCase("SmokeColor")) {
             String[] s = data.split("\\s*,\\s*");
@@ -517,7 +521,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
             }
 
             // Keep the raw name; resolveItems() turns it (with dispenseDamege, its 1.7.10 metadata) into the handle.
-            this.dispenseItemName = s[0].toLowerCase(java.util.Locale.ROOT).trim();
+            this.dispenseItemName = s[0].toLowerCase(Locale.ROOT).trim();
             this.dispenseItem = null;
          } else if (item.equalsIgnoreCase("DispenseRange")) {
             this.dispenseRange = this.toInt(data, 1, 100);
@@ -546,7 +550,7 @@ public class MCH_WeaponInfo extends MCH_BaseInfo implements Cloneable {
             String[] s = this.splitParam(data);
             if (s.length >= 2) {
                Role role = null;
-               String className = s[0].toLowerCase();
+               String className = s[0].toLowerCase(Locale.ROOT);
                if (className.equals("player")) {
                   role = Role.PLAYER;
                } else if (className.equals("heli") || className.equals("helicopter")) {

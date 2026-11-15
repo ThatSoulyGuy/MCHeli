@@ -17,9 +17,10 @@ import net.minecraft.world.entity.player.Player;
  * {@link AbstractMchVehicle#DATA_GEAR}); every animator ramps toward its bit on BOTH sides, like the reference.
  *
  * <p>The only writer of DATA_PART_STATUS and DATA_GEAR: {@link MchVehicleVision} changes the camera and search-light
- * bits through {@link #setCameraModeBits} and {@link #toggleSearchLight}. The one part/mode switch cooldown stays in the
- * entity ({@link AbstractMchVehicle#modeSwitchCooldown()}), shared with the plane's VTOL switch and pilot boarding.
- * The public methods are the client render read-models; everything else is reached through the entity.
+ * bits through {@link #setCameraModeBits} and {@link #toggleSearchLight}, {@link MchCrewDrop} the repelling bit through
+ * {@link #setRepelling}. The one part/mode switch cooldown stays in the entity
+ * ({@link AbstractMchVehicle#modeSwitchCooldown()}), shared with the plane's VTOL switch and pilot boarding. The public
+ * methods are the client render read-models; everything else is reached through the entity.
  */
 public final class MchVehicleParts {
 
@@ -244,6 +245,17 @@ public final class MchVehicleParts {
         }
     }
 
+    /** SERVER: reference {@code openCanopy_EjectSeat} (EA:5610-5615): an ejection seat forces the canopy open whatever
+     *  the cooldown, then holds every switch for 40 ticks. The part sounds play as for any switch (the reference's
+     *  {@code playSound = false} was ignored by {@code MCH_Parts.setStatusServer}), and the canopy stays open. On a
+     *  wreck the bit is set but the animator stays frozen, as the reference {@code updateParts}. */
+    void openCanopyForEject() {
+        if (v.haveCanopy() && !v.level().isClientSide) {
+            setPartBit(MCH_PartStatus.CANOPY, true);
+            v.modeSwitchCooldown().set(40);
+        }
+    }
+
     /** SERVER: close the canopy if it is open (reference {@code closeCanopy}). */
     void closeCanopy() {
         if (v.haveCanopy() && v.modeSwitchCooldown().ready() && !v.level().isClientSide && (partStatus() & MCH_PartStatus.CANOPY) != 0) {
@@ -306,6 +318,18 @@ public final class MchVehicleParts {
     public float hatchFactor(float pt) { return this.hatchPart != null ? this.hatchPart.lerp(pt) / this.hatchPart.rotationMax : 0.0F; }
     /** The hatch's current travel fraction (reference {@code partHatch.getFactor()}, the sweep-wing stand-in). */
     float hatchFactor() { return this.hatchPart != null ? this.hatchPart.getFactor() : 0.0F; }
+    /** The hatch's current angle 0..90 (reference {@code getHatchRotation}), which the crew drop waits on. */
+    float hatchRotation() { return this.hatchPart != null ? this.hatchPart.rotation : 0.0F; }
+
+    /** SERVER: reference {@code foldHatch(true, true)} (EA:5522-5526), the crew drop's forced open: the hatch is
+     *  switched open whatever the cooldown, and every switch then waits the usual 20 ticks. The part sounds play as
+     *  for any switch. On a wreck the bit is set but the animator stays frozen, as the reference {@code updateParts}. */
+    void forceOpenHatch() {
+        if (v.haveHatch() && !v.level().isClientSide) {
+            setPartBit(MCH_PartStatus.HATCH, true);
+            v.modeSwitchCooldown().start();
+        }
+    }
 
     boolean haveWing() { ensureParts(); return this.wingPart != null; }
 
@@ -376,6 +400,7 @@ public final class MchVehicleParts {
             } else if (v.canUnfoldHatch()) {
                 setPartBit(MCH_PartStatus.HATCH, false);
                 v.modeSwitchCooldown().start();
+                v.crewDrop().stopUnmountCrew(); // reference foldHatch(false) (EA:5527-5529): closing it ends a crew drop
             }
         } else if (v.canFoldWing()) {
             setPartBit(MCH_PartStatus.WING, true);
@@ -439,6 +464,21 @@ public final class MchVehicleParts {
     /** Switch the search light (the vision's camera key on a vehicle with a search light). */
     void toggleSearchLight() {
         setPartBit(MCH_PartStatus.SEARCH_LIGHT, (partStatus() & MCH_PartStatus.SEARCH_LIGHT) == 0);
+    }
+
+    // -- the rope-repelling bit, written here for MchCrewDrop --
+
+    /** SERVER: the repelling flag (reference {@code setRepellingStat}, common-status bit 5, EA:3707-3709); the bit's
+     *  only writer. Never saved ({@link MCH_PartStatus#SAVED_MASK}). */
+    void setRepelling(boolean on) {
+        if (!v.level().isClientSide) {
+            setPartBit(MCH_PartStatus.REPELLING, on);
+        }
+    }
+
+    /** The synced repelling flag, on either side (reference {@code isRepelling}, EA:3703-3705). */
+    boolean isRepelling() {
+        return (partStatus() & MCH_PartStatus.REPELLING) != 0;
     }
 
     /** Part status to save (reference {@code PartStatus & getLastPartStatusMask()} plus {@code SearchLight}). */

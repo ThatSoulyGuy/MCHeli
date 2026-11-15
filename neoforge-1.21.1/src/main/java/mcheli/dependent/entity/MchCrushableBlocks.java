@@ -24,7 +24,7 @@ import org.slf4j.Logger;
  *
  * <p>There is deliberately NO hardness or blast-resistance test anywhere: in the reference the whitelist IS the rule.
  * Anything not listed is inert, and a no-break block additionally aborts the rest of that vertical column (see
- * {@code AbstractMchVehicle.destroyBlockRange}). Evaluation order is fixed and matters: <b>noBreak</b> is tested before
+ * {@code MchTerrainContact.destroyBlockRange}). Evaluation order is fixed and matters: <b>noBreak</b> is tested before
  * <b>materialBreak</b>, which is what keeps glowstone intact for a tank even though 1.7.10 classed it as
  * {@code Material.glass}.
  *

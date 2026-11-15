@@ -122,4 +122,37 @@ class AircraftInfoParsingTest {
         assertEquals(1, info.partWheel.size());
         assertEquals(Vec3d.ZERO, info.turretPosition);
     }
+
+    @Test
+    void parsesRepellingHooks() {
+        // Reference MCH_AircraftInfo:567-572: x, y, z[, interval]; the interval is toInt(s[3], 1, 100000), default 10.
+        String cfg = """
+            AddSeat = 0, 1.0, 2.0
+            AddRepellingHook =  1.64, 2.05, -2.30
+            AddRepellingHook = -1.64, 2.05, -2.30, 30
+            AddRepellingHook = 0, 1, 0, 0
+            AddRepellingHook = 0, 1, 0, 200000
+            AddRepellingHook = 1, 2
+            """;
+        TestAircraftManager mgr = new TestAircraftManager();
+        assertTrue(mgr.load(memSource("helicopters", "hooks.txt", cfg), NOP, "helicopters"));
+        MCH_AircraftInfo info = (MCH_AircraftInfo) mgr.getMap().get("hooks");
+        assertNotNull(info);
+        assertTrue(info.haveRepellingHook());
+        assertEquals(4, info.repellingHooks.size(), "a line with fewer than 3 values is skipped");
+        assertEquals(new Vec3d(1.64, 2.05, -2.30), info.repellingHooks.get(0).pos);
+        assertEquals(10, info.repellingHooks.get(0).interval);
+        assertEquals(new Vec3d(-1.64, 2.05, -2.30), info.repellingHooks.get(1).pos);
+        assertEquals(30, info.repellingHooks.get(1).interval);
+        assertEquals(1, info.repellingHooks.get(2).interval, "0 is clamped to 1");
+        assertEquals(100000, info.repellingHooks.get(3).interval, "200000 is clamped to 100000");
+
+        // Reference :324-327: EnableParachuting together with hooks turns both off.
+        TestAircraftManager both = new TestAircraftManager();
+        assertTrue(both.load(memSource("helicopters", "both.txt",
+            "AddSeat = 0, 1.0, 2.0\nEnableParachuting = true\nAddRepellingHook = 1, 2, 3\n"), NOP, "helicopters"));
+        MCH_AircraftInfo b = (MCH_AircraftInfo) both.getMap().get("both");
+        assertNotNull(b);
+        assertTrue(!b.haveRepellingHook() && !b.isEnableParachuting);
+    }
 }

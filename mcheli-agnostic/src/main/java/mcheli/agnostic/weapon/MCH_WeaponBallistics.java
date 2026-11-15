@@ -42,7 +42,7 @@ public final class MCH_WeaponBallistics {
         if (type == null) {
             return false;
         }
-        String t = type.toLowerCase();
+        String t = type.toLowerCase(java.util.Locale.ROOT);
         return t.equals("machinegun1") || t.equals("machinegun2") || t.equals("rocket");
     }
 
@@ -55,7 +55,7 @@ public final class MCH_WeaponBallistics {
         if (type == null) {
             return false;
         }
-        switch (type.toLowerCase()) {
+        switch (type.toLowerCase(java.util.Locale.ROOT)) {
             case "rocket":
             case "mkrocket":
             case "aamissile":
@@ -77,7 +77,7 @@ public final class MCH_WeaponBallistics {
         if (type == null) {
             return 2.5F;
         }
-        switch (type.toLowerCase()) {
+        switch (type.toLowerCase(java.util.Locale.ROOT)) {
             case "aamissile":
                 return 3.5F;
             case "asmissile":
@@ -166,7 +166,7 @@ public final class MCH_WeaponBallistics {
         if (type == null) {
             return "bullet";
         }
-        switch (type.toLowerCase()) {
+        switch (type.toLowerCase(java.util.Locale.ROOT)) {
             case "rocket":
             case "mkrocket":
                 return "rocket";

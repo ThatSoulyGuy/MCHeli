@@ -1634,11 +1634,12 @@ public abstract class MCH_AircraftInfo extends MCH_BaseInfo {
       }
    }
 
-   /** An {@code AddRepellingHook} line. Parsed but unused: rope repelling is not ported (DEFERRED.md), so the fields
-    *  stay package-private; widen them when a dependent consumer is written. */
+   /** An {@code AddRepellingHook = x, y, z[, interval]} line (reference :1579-1587): where a rope hangs from, in model
+    *  space, and how often (in ticks) a mob of the crew slides down it while repelling ({@code toInt(s[3], 1, 100000)},
+    *  default 10). Read by the vehicle's rope repelling and the rope render. */
    public static class RepellingHook {
-      final Vec3d pos;
-      final int interval;
+      public final Vec3d pos;
+      public final int interval;
 
       public RepellingHook(Vec3d pos, int inv) {
          this.pos = pos;

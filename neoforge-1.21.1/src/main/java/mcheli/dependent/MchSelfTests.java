@@ -88,6 +88,11 @@ public final class MchSelfTests {
         ALL.put("contentpack", DemoContentPackSelfTest::new);
         ALL.put("crush", DemoCrushSelfTest::new);
         ALL.put("recipes", DemoRecipeSelfTest::new);
+        ALL.put("cargo", DemoCargoSelfTest::new);
+        ALL.put("parachute", DemoParachuteSelfTest::new);
+        ALL.put("eject", DemoEjectSelfTest::new);
+        ALL.put("crewdrop", DemoCrewDropSelfTest::new);
+        ALL.put("repel", DemoRepelSelfTest::new);
     }
 
     /** The names {@code -PmcheliSelfTests} accepts. */

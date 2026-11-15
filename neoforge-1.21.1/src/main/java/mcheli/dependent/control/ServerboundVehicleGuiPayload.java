@@ -20,26 +20,36 @@ import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
  * The riding GUI's serverbound control channel — the 1.21.1 analogue of the reference's {@code MCH_PacketGuiOpen} /
- * supply packets. Two actions:
+ * supply packets. Three actions:
  *
  * <ul>
  *   <li>{@link #OPEN} — the rider pressed the GUI key (default {@code G}). The server opens
- *       {@link MchVehicleMenu} for them, but only if they are actually aboard the addressed vehicle.</li>
+ *       {@link MchVehicleMenu} for them, but only if they are actually aboard the addressed vehicle (the open buffer
+ *       is {@link MchVehicleMenu#writeOpenData}: the vehicle id and the parachute slot count).</li>
  *   <li>{@link #RELOAD} — the rider clicked the GUI's Reload button; the server rearms their selected weapon via
  *       {@link AbstractMchVehicle#supplyAmmoFromPlayer}, which enforces the reference's supply rules (grounded,
  *       not already full, {@code RoundItem}s affordable).</li>
+ *   <li>{@link #OPEN_CARGO} — the rider clicked the GUI's Inventory button (reference
+ *       {@code MCH_PacketIndOpenScreen} with gui id 3); the server opens the vehicle's cargo hold
+ *       ({@link AbstractMchVehicle#openCargo}).</li>
  * </ul>
  *
- * <p>The server is the sole authority on both: the client never opens the menu itself and never touches ammo.
+ * <p>The server is the sole authority on all three: the client never opens a menu itself and never touches ammo.
  */
 public record ServerboundVehicleGuiPayload(int vehicleId, int action, int weapon) implements CustomPacketPayload {
 
     public static final int OPEN = 0;
     public static final int RELOAD = 1;
+    public static final int OPEN_CARGO = 2;
 
     /** An OPEN carries no weapon index. */
     public static ServerboundVehicleGuiPayload open(int vehicleId) {
         return new ServerboundVehicleGuiPayload(vehicleId, OPEN, -1);
+    }
+
+    /** Open the cargo hold's chest screen; carries no weapon index. */
+    public static ServerboundVehicleGuiPayload openCargo(int vehicleId) {
+        return new ServerboundVehicleGuiPayload(vehicleId, OPEN_CARGO, -1);
     }
 
     /** Rearm the weapon the GUI is SHOWING (the reference's {@code currentWeaponId}) — not the one selected to fire. */
@@ -71,6 +81,13 @@ public record ServerboundVehicleGuiPayload(int vehicleId, int action, int weapon
             if (!(e instanceof AbstractMchVehicle v) || player.getVehicle() != v || !(player instanceof ServerPlayer sp)) {
                 return;
             }
+            if (p.action() == OPEN_CARGO) {
+                // Any seat: reference MCH_CommonPacketHandler.onPacketIndOpenScreen:36-40 opens the hold of the
+                // aircraft the sender rides (getAircraft_RiddenOrControl), from the pilot's GUI button and from a
+                // gunner's KeyUnmountMob (Y, MchKeybinds) alike. openCargo refuses a vehicle without a hold.
+                v.openCargo(sp);
+                return;
+            }
             // PILOT-ONLY: the reference gates the resupply GUI behind the pilot seat (pc.openGui sits inside if(isPilot),
             // and supplyAmmo only ever acts on getRiddenByEntity()). A gunner's G is the seat-switch key there, not this.
             // Gating here also keeps isPilotReloading consistent — it only watches the pilot's open container.
@@ -85,7 +102,7 @@ public record ServerboundVehicleGuiPayload(int vehicleId, int action, int weapon
                     @Override public AbstractContainerMenu createMenu(int id, Inventory inv, Player pl) {
                         return new MchVehicleMenu(id, inv, v);
                     }
-                }, buf -> buf.writeVarInt(v.getId()));
+                }, buf -> MchVehicleMenu.writeOpenData(buf, v)); // the id, then the parachute slot count
                 case RELOAD -> v.supplyAmmoFromPlayer(sp, p.weapon());
                 default -> { }
             }

@@ -145,6 +145,34 @@ public final class GroundProbe {
         return false;
     }
 
+    /** The most cells {@link #airBelow} counts (reference {@code getAlt}, EA:1819). */
+    public static final int AIR_BELOW_CAP = 256;
+
+    /**
+     * Reference {@code MCH_EntityAircraft.getAlt(px, py, pz)} (EA:1817-1825), the rope repelling's altitude: how many
+     * AIR cells there are straight down from the cell at {@code (x, y, z)} (that cell included), up to
+     * {@link #AIR_BELOW_CAP}. Any non-air block stops it, water and plants too (the reference compared the block id
+     * with 0). A cell above the world's top counts as air.
+     *
+     * <p>Deliberate divergence (the 1.21 build range, as every probe here): the reference rounded with {@code (int)},
+     * stopped at {@code py - i <= 0} and counted {@code py - i >= 256} as air, the 1.7.10 world's bounds. Here the
+     * cell is floor-rounded and the bounds are the world's own ({@link WorldView#minBuildHeight()} and
+     * {@link WorldView#maxBuildHeight()}), so a rope still grows over the negative-y ground of a 1.21 world (or a
+     * superflat one at y = -60), where the reference would have counted nothing. Inside 0..255 the two agree.
+     */
+    public static int airBelow(WorldView world, double x, double y, double z) {
+        int bx = (int) Math.floor(x);
+        int by = (int) Math.floor(y);
+        int bz = (int) Math.floor(z);
+        int minY = world.minBuildHeight();
+        int maxY = world.maxBuildHeight();
+        int i = 0;
+        while (i < AIR_BELOW_CAP && !(y - i <= minY) && (by - i > maxY || world.getBlockId(bx, by - i, bz) == 0)) {
+            i++;
+        }
+        return i;
+    }
+
     // MCH_Lib.isBlockInWater (the 7-cell submersion test) is not here: its only vehicle use, the submersion damage, is
-    // AbstractMchVehicle.waterAtProbe, and the projectiles test water natively in MchBullet.
+    // MchTerrainContact.waterAtProbe, and the projectiles test water natively in MchBullet.
 }

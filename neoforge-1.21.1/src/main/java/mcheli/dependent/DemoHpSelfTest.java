@@ -1,6 +1,7 @@
 package mcheli.dependent;
 
 import mcheli.agnostic.aircraft.MCH_AircraftInfo;
+import mcheli.agnostic.vehicle.VehicleWreck;
 import mcheli.dependent.config.MchConfig;
 import mcheli.dependent.entity.AbstractMchVehicle;
 import mcheli.dependent.entity.MchHelicopter;
@@ -36,12 +37,15 @@ import net.minecraft.world.phys.Vec3;
  *   <li><b>M3 environmental gates</b> — lava (×2..9) and onFire BYPASS armor; {@code inWall} (crash/water) goes
  *       THROUGH it.</li>
  *   <li><b>M4 destruction/wreck</b> — reaching maxHp flips the synced destroyed flag, ejects riders, arms the 500-tick
- *       despawn countdown, and the wreck falls (the flight-state seam killed its lift) then counts down.</li>
+ *       despawn countdown, and the wreck falls (the flight-state seam killed its lift) then counts down. A target
+ *       drone (bqm_74e) arms 50 ticks instead (reference {@code destroyAircraft}:602-606), whether a lethal hit or its
+ *       fuel-out self-destruct destroys it, and counts down in step with the heli wreck.</li>
  *   <li><b>M6 persistence + synced-data layout</b> — pins, by golden values recorded on the tree before the
  *       AbstractMchVehicle split: the synced-data id of every accessor (by reflection, so no debug API), a heli NBT
  *       round trip (key set, tag types, contract values, restore, re-save), the legacy {@code AcWeaponsAmmo} write-back,
  *       a piloted in-world tank (aim latch, keyed ammo, seat entry, re-save), the wreck's Destroyed/Despawn and the
- *       spawn-item fuel/damage stamp.</li>
+ *       spawn-item fuel/damage stamp; the fuel-can slot positions (a slot-1 can round trip, and a save without slot
+ *       keys still loading).</li>
  *   <li><b>M7 hull</b> — pins, by golden values recorded before the hull left AbstractMchVehicle: the seeded wreck
  *       tumble of a heli, a banked plane and a tank, the one-shot crash detonation on the ground slam, and the salvage
  *       of an unridden vehicle into a spawn item that carries its fuel and damage (and none for a player-ridden one).</li>
@@ -58,6 +62,10 @@ public final class DemoHpSelfTest extends MchSelfTest {
     private boolean wreckDestroyedOk;
     private boolean wreckEjectOk;
     private int wreckStartDespawn;
+    // M4 target drones: one killed by a lethal hit in start(), one dry twin that destroys itself on its first tick.
+    private MchPlane droneHit;
+    private MchPlane droneDry;
+    private boolean droneHitArmedOk;
 
     // M5: end-to-end real-bullet per-part armor (the case the happy path missed).
     private MchTank m5Tank;
@@ -81,12 +89,16 @@ public final class DemoHpSelfTest extends MchSelfTest {
         + "PortalCooldown:3,Pos:9,Rotation:9,RotorSpeed:6,SearchLight:1,Seats:9,TextureName:8,UUID:11";
     /** The contract keys of that save (SNBT, in {@link #M6_VALUE_KEYS} order). Today's oddities are pinned on purpose:
      *  SearchLight is written (false) for a light-less config, TextureName whenever the skin resolves, and an unridden
-     *  vehicle writes an empty Seats list. */
+     *  vehicle writes an empty Seats list. FuelSlots changed deliberately from the recorded
+     *  {@code [{count:1,id:"mcheli:fuel"}]}: each can now carries its slot ({@code SlotAC}, the reference
+     *  {@code MCH_AircraftInventory} key), so a can no longer moves to slot 0 on reload. */
     private static final String[] M6_VALUE_KEYS = {"Config", "PartStatus", "SearchLight", "AcDamage", "Destroyed",
         "Despawn", "AcFuel", "FuelSlots", "Seats", "TextureName", "AcRoll", "FoldBlade", "RotorSpeed"};
     private static final String M6_HELI_VALUES = "Config=\"ah-64\";PartStatus=0;SearchLight=0b;AcDamage=37;"
-        + "Destroyed=0b;Despawn=0;AcFuel=600;FuelSlots=[{count:1,id:\"mcheli:fuel\"}];Seats=[];"
+        + "Destroyed=0b;Despawn=0;AcFuel=600;FuelSlots=[{SlotAC:0b,count:1,id:\"mcheli:fuel\"}];Seats=[];"
         + "TextureName=\"ah-64-il\";AcRoll=12.5f;FoldBlade=0b;RotorSpeed=0.0d";
+    /** A can in slot 1 only, as saved. */
+    private static final String M6_SLOT1_FUEL = "[{SlotAC:1b,count:1,id:\"mcheli:fuel\"}]";
     /** The piloted in-world tank's {@code AcWeaponsAmmoByName} keys, sorted. */
     private static final String M6_TANK_AMMO_KEYS = "m240_r,m2_rws,mg7_62mm_mbt,rehinmetall_apfsds,rehinmetall_he";
     private static final float M6_PILOT_YAW = 37.5F;
@@ -135,6 +147,7 @@ public final class DemoHpSelfTest extends MchSelfTest {
         runM2(level, ds);   // sets m2Ok (gated on the real m1a2 config)
         runM3(level, ds);   // sets m3Ok (gated on the real m1a2 config)
         setupM4(level, ds, x, y, z);
+        setupM4Drones(level, ds, spawn.getX() + 46.5, y, spawn.getZ());
         setupM5(level, spawn.getX() + 40, spawn.getY() + 50, spawn.getZ() + 4);
         this.m6StaticOk = runM6(level);
         setupM6Tank(level, spawn.getX() + 0.5, spawn.getY() + 45.0, spawn.getZ() + 0.5); // clear of the M4/M5 probes
@@ -369,13 +382,56 @@ public final class DemoHpSelfTest extends MchSelfTest {
         }
         boolean itemOk = stampOk && readOk;
 
-        boolean ok = idsOk && saveOk && restored && resaveOk && legacyOk && itemOk;
-        LOG.info("[HP-SELFTEST] M6 observed: idsBase={} idsHeli={} idsPlane={} heliKeys={} heliValues={} skin={} fuel={}",
-            idsBase, idsHeli, idsPlane, keys, values, h.getSkinIndex(), h.getFuel());
+        // 7. Fuel-can slot positions: a can in slot 1 reloads into slot 1 and re-saves as it was read; a save written
+        //    before the slot key (entries without SlotAC) still loads, filling the slots in list order as before.
+        //    That old save holds three cans told apart by their drain (the old fromTag packed them into slots 0..2): a
+        //    load that read the missing key as slot 0 would keep only the last of them, in slot 0.
+        String slot1 = "n/a", legacySlots = "n/a";
+        boolean slot1Ok = false, legacySlotsOk = false;
+        MchHelicopter hs = newHeli(level);
+        MchHelicopter hs2 = MchRegistries.HELI.get().create(level);
+        MchHelicopter hl = MchRegistries.HELI.get().create(level);
+        if (hs != null && hs2 != null && hl != null) {
+            hs.fuelInventory().setItem(1, can.copy());
+            CompoundTag st = hs.saveWithoutId(new CompoundTag());
+            slot1 = String.valueOf(st.get("FuelSlots"));
+            hs2.load(st);
+            slot1Ok = slot1.equals(M6_SLOT1_FUEL) && hs2.fuelInventory().getItem(0).isEmpty()
+                && ItemStack.matches(hs2.fuelInventory().getItem(1), can) && hs2.fuelInventory().getItem(2).isEmpty()
+                && String.valueOf(hs2.saveWithoutId(new CompoundTag()).get("FuelSlots")).equals(M6_SLOT1_FUEL);
+            ItemStack drained100 = can.copy();
+            drained100.setDamageValue(100);
+            ItemStack drained200 = can.copy();
+            drained200.setDamageValue(200);
+            ItemStack[] oldCans = {can, drained100, drained200};
+            CompoundTag old = st.copy();
+            ListTag oldSlots = new ListTag();
+            for (ItemStack c : oldCans) {
+                oldSlots.add(c.save(level.registryAccess()));
+            }
+            old.put("FuelSlots", oldSlots); // the vanilla SimpleContainer.createTag shape the port wrote: no slot key
+            hl.load(old);
+            ListTag reSlots = hl.saveWithoutId(new CompoundTag()).getList("FuelSlots", Tag.TAG_COMPOUND);
+            legacySlots = String.valueOf(reSlots);
+            boolean inOrder = true, resavedKeyed = reSlots.size() == oldCans.length;
+            for (int i = 0; i < oldCans.length; i++) {
+                inOrder &= ItemStack.matches(hl.fuelInventory().getItem(i), oldCans[i]);
+                CompoundTag e = reSlots.getCompound(i);
+                resavedKeyed &= e.contains("SlotAC", Tag.TAG_BYTE) && e.getByte("SlotAC") == i
+                    && ItemStack.matches(ItemStack.parse(level.registryAccess(), e).orElse(ItemStack.EMPTY), oldCans[i]);
+            }
+            legacySlotsOk = inOrder && resavedKeyed;
+        }
+        boolean fuelSlotsOk = slot1Ok && legacySlotsOk;
+
+        boolean ok = idsOk && saveOk && restored && resaveOk && legacyOk && itemOk && fuelSlotsOk;
+        LOG.info("[HP-SELFTEST] M6 observed: idsBase={} idsHeli={} idsPlane={} heliKeys={} heliValues={} skin={} "
+                + "fuel={} slot1FuelSlots={} legacyResave={}",
+            idsBase, idsHeli, idsPlane, keys, values, h.getSkinIndex(), h.getFuel(), slot1, legacySlots);
         LOG.info("[HP-SELFTEST] M6 persistence (static): ids={} save={} restored={} resave={}{} legacyAmmo={} "
-                + "itemData={}(fuel={} damage={}) -> {}",
+                + "itemData={}(fuel={} damage={}) fuelSlots={}(slot1={} legacy={}) -> {}",
             idsOk, saveOk, restored, resaveOk, resaveOk ? "" : "(diff " + resaveDiff + ")", legacyOk, itemOk, cfgFuel,
-            cfgDamage, ok ? "OK" : "FAIL");
+            cfgDamage, fuelSlotsOk, slot1Ok, legacySlotsOk, ok ? "OK" : "FAIL");
         return ok;
     }
 
@@ -658,6 +714,35 @@ public final class DemoHpSelfTest extends MchSelfTest {
         this.wreck = h;
     }
 
+    /** M4's target drones, in open air 12 blocks past the M7 rows: a lethal hit on one bqm_74e
+     *  ({@code TargetDrone = true}) arms its countdown at once; its dry twin (vehicles spawn with no fuel), started
+     *  past the reference's 20-tick grace ({@code countOnUpdate > 20}, :1406), destroys itself on its first tick. */
+    private void setupM4Drones(ServerLevel level, DamageSources ds, double x, double y, double z) {
+        MchPlane hit = MchRegistries.PLANE.get().create(level);
+        MchPlane dry = MchRegistries.PLANE.get().create(level);
+        if (hit == null || dry == null) return;
+        hit.setConfigName("bqm_74e");
+        hit.setPos(x, y, z + 24.5);
+        level.addFreshEntity(hit);
+        boolean killed = hit.hurt(ds.generic(), 99999.0F) && hit.isDestroyed();
+        this.droneHitArmedOk = hit.isTargetDrone() && killed
+            && hit.despawnCount() == VehicleWreck.TARGET_DRONE_DESPAWN_TICKS;
+        this.droneHit = hit;
+        dry.setConfigName("bqm_74e");
+        dry.setPos(x, y, z - 10.5);
+        dry.tickCount = 20; // the level adds one before the first tick, so that tick passes the grace
+        level.addFreshEntity(dry);
+        this.droneDry = dry;
+    }
+
+    /** A drone wreck at the check: still a wreck, and counting down exactly {@code 500 - 50} ticks behind the M4 heli
+     *  wreck, both armed in the same tick and decremented every tick since. */
+    private boolean droneInStep(AbstractMchVehicle d) {
+        return d != null && this.wreck != null && d.isTargetDrone() && d.isDestroyed() && !d.isRemoved()
+            && d.despawnCount() > 0 && this.wreck.despawnCount() - d.despawnCount()
+                == VehicleWreck.DESPAWN_TICKS - VehicleWreck.TARGET_DRONE_DESPAWN_TICKS;
+    }
+
     @Override
     protected void tick() {
         tickM5();   // fires at tick 5 (before the M4 check)
@@ -668,19 +753,25 @@ public final class DemoHpSelfTest extends MchSelfTest {
         boolean countedDown = this.wreck != null && this.wreck.despawnCount() < this.wreckStartDespawn
             && this.wreck.despawnCount() > 0;
         boolean stillWreck = this.wreck != null && !this.wreck.isRemoved();
-        boolean m4Ok = this.wreckDestroyedOk && this.wreckEjectOk && fell && countedDown && stillWreck;
-        LOG.info("[HP-SELFTEST] M4 destruction: destroyed={} eject={} fell={}(dy={}) countdown={}({}->{}) stillWreck={} -> {}",
+        boolean droneHitOk = this.droneHitArmedOk && droneInStep(this.droneHit);
+        boolean droneDryOk = droneInStep(this.droneDry);
+        boolean m4Ok = this.wreckDestroyedOk && this.wreckEjectOk && fell && countedDown && stillWreck && droneHitOk
+            && droneDryOk;
+        LOG.info("[HP-SELFTEST] M4 destruction: destroyed={} eject={} fell={}(dy={}) countdown={}({}->{}) "
+                + "stillWreck={} droneHit={}(armed={} at {}) droneFuelOut={}(at {}) -> {}",
             this.wreckDestroyedOk, this.wreckEjectOk, fell,
             this.wreck != null ? fmt(this.wreck.getY() - this.wreckStartY) : "n/a",
             countedDown, this.wreckStartDespawn, this.wreck != null ? this.wreck.despawnCount() : -1,
-            stillWreck, m4Ok ? "OK" : "FAIL");
+            stillWreck, droneHitOk, this.droneHitArmedOk, this.droneHit != null ? this.droneHit.despawnCount() : -1,
+            droneDryOk, this.droneDry != null ? this.droneDry.despawnCount() : -1, m4Ok ? "OK" : "FAIL");
 
         boolean m6Ok = checkM6World();
         boolean m7Ok = checkM7();
 
         boolean pass = m1Ok && m2Ok && m3Ok && m4Ok && m5Ok && m6Ok && m7Ok;
-        finish(pass, "vehicle HP/armor/destruction/persistence (M1={} M2={} M3={} M4={} M5={} M6={} M7={})",
-            m1Ok, m2Ok, m3Ok, m4Ok, m5Ok, m6Ok, m7Ok);
+        finish(pass, "vehicle HP/armor/destruction/persistence (M1={} M2={} M3={} M4={} (drone wrecks={}) M5={} M6={} "
+                + "M7={})",
+            m1Ok, m2Ok, m3Ok, m4Ok, droneHitOk && droneDryOk, m5Ok, m6Ok, m7Ok);
     }
 
     @Override

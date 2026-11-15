@@ -49,7 +49,7 @@ public final class MCH_WeaponMode {
         if (type == null) {
             return "";
         }
-        switch (type.toLowerCase()) {
+        switch (type.toLowerCase(java.util.Locale.ROOT)) {
             case "machinegun2":
                 return mode == 0 ? "" : " [HE]";
             case "rocket":

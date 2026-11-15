@@ -17,7 +17,7 @@ import mcheli.agnostic.math.MchMath;
  * deliberately <i>different quantities</i> in the reference; they coincide only when a weapon's operator happens to
  * be the pilot, which on a tank is true of the main gun and false of every secondary.
  *
- * <p>Both the server's shot ({@code AbstractMchVehicle.fireSelectedWeapon}) and the rendered barrel
+ * <p>Both the server's shot ({@code MchFireControl.fireSelectedWeapon}) and the rendered barrel
  * ({@code MchModelEntityRenderer.renderWeaponParts}) call these methods with the same inputs, so the projectile
  * leaves exactly where the barrel points, by construction rather than by two formulas being kept in step by hand.
  *

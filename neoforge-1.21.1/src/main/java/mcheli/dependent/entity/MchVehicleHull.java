@@ -38,7 +38,8 @@ final class MchVehicleHull {
     /** MCHeli's OWN damage cooldown (2/1/10/20 for lava/explosion/onFire/destroy). Distinct from vanilla
      *  {@code invulnerableTime} — the vehicle extends {@link Entity} (not LivingEntity), which has no i-frame gate. */
     private int mchTimeSinceHit;
-    /** Wreck lifetime countdown (500 ticks ≈ 25 s), decremented each server tick once destroyed, then {@code discard()}. */
+    /** Wreck lifetime countdown (500 ticks ≈ 25 s, 50 for a target drone), decremented each server tick once
+     *  destroyed, then {@code discard()}. */
     private int despawnCount;
     /** Drives the {@code isExploded()} one-shot gate so a tumbling wreck crash-detonates exactly once. */
     private int damageSinceDestroyed;
@@ -384,8 +385,17 @@ final class MchVehicleHull {
     void baseDestroyVehicle(Entity killer, boolean terrainKill) {
         if (v.level().isClientSide) return;
         v.getEntityData().set(AbstractMchVehicle.DATA_DESTROYED, true);
-        this.despawnCount = VehicleWreck.DESPAWN_TICKS;
+        // Reference destroyAircraft:592: switchHoveringMode(false) stops repelling first, on every vehicle (the heli's
+        // own hover drop does it too), so the sliders let go and the ropes come in.
+        v.crewDrop().stopRepelling();
+        // Reference destroyAircraft:602-606: a target drone's wreck lasts 50 ticks, any other 500. Both the lethal hit
+        // and the drone's fuel-out self-destruct arm it here.
+        this.despawnCount = VehicleWreck.despawnTicks(v.isTargetDrone());
         v.seedWreckTumble();
+        // Reference destroyAircraft:615-621: the pilot, then seat 1, eject on a parachute while the slots hold one.
+        // Deliberate divergence (kept from the port): every rider left is put off plainly here, where the reference
+        // kept them aboard the burning wreck (EA:1385-1392).
+        v.crewDrop().ejectOnDestroy();
         v.ejectPassengers();
         if (v.level() instanceof ServerLevel sl) {
             if (terrainKill) {
@@ -440,6 +450,7 @@ final class MchVehicleHull {
         MchExplosion.explode(sl, v.position(), blast[0], blast[1], true, true, 5, null, null, null); // reference :2043: no one
     }
 
-    /** Wreck lifetime countdown (500 at destruction, →0 then discard); exposed for diagnostics/self-test. */
+    /** Wreck lifetime countdown (500 at destruction, 50 for a target drone, →0 then discard); exposed for
+     *  diagnostics/self-test. */
     int despawnCount() { return this.despawnCount; }
 }

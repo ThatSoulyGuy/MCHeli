@@ -40,6 +40,10 @@ public final class MchClientEvents {
         event.registerEntityRenderer(MchRegistries.CARTRIDGE.get(), MchCartridgeRenderer::new);
         event.registerEntityRenderer(MchRegistries.CONTAINER.get(), MchContainerRenderer::new);
         event.registerEntityRenderer(MchRegistries.FLARE.get(), MchFlareRenderer::new);
+        event.registerEntityRenderer(MchRegistries.PARACHUTE.get(), MchParachuteRenderer::new);
+        // The rope slider draws nothing, only its rider (reference MCH_RenderNull, MCH_ClientProxy:113).
+        event.registerEntityRenderer(MchRegistries.ROPE_SLIDER.get(),
+            net.minecraft.client.renderer.entity.NoopRenderer::new);
     }
 
     /** The riding GUI (fuel slots + reload) — bound to the menu type registered in {@link MchRegistries}. */

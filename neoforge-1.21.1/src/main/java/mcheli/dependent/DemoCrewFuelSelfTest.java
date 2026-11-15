@@ -473,7 +473,8 @@ public final class DemoCrewFuelSelfTest extends MchSelfTest {
      *   <li>G9 team gate (reference {@code checkTeam}, {@code MCH_EntityAircraft:4283-4295}): a player may not board a
      *       vehicle a teamed player crews unless he is on that team; a crew without a team never refuses.</li>
      *   <li>G10 paint (reference {@code interactFirst}:4318-4329): only a SNEAKING click WITH THE WRENCH cycles the
-     *       paint; a wrench click never boards; a bare sneaking click does nothing (the cargo inventory is unported).</li>
+     *       paint; a wrench click never boards; a bare sneaking click on the hold-less ah-64 does nothing (it opens the
+     *       cargo hold where there is one, see {@link DemoCargoSelfTest}).</li>
      *   <li>G11 the mode-switch cooldown refuses pilot boarding on a vehicle WITHOUT a canopy too (:4353).</li>
      *   <li>G12 a pilot logging out of a two-player vehicle with a night vision camera loses the effect before the
      *       player file is saved ({@link MchServerEvents}).</li>
@@ -536,8 +537,9 @@ public final class DemoCrewFuelSelfTest extends MchSelfTest {
             "a wrench click without sneaking leaves the paint alone");
         mech.setItemInHand(hand, ItemStack.EMPTY);
         mech.setShiftKeyDown(true);
-        req(!painted.interact(mech, hand).consumesAction() && painted.getSkinIndex() == (skin0 + 1) % skins,
-            "a bare sneaking click no longer cycles the paint (the reference opened the unported cargo inventory)");
+        req(!painted.interact(mech, hand).consumesAction() && painted.getSkinIndex() == (skin0 + 1) % skins
+                && mech.containerMenu == mech.inventoryMenu,
+            "a bare sneaking click on the hold-less ah-64 neither cycles the paint nor opens a screen");
         mech.setShiftKeyDown(false);
         req(!mech.isPassenger(), "neither a wrench click nor a sneaking click boards");
         LOG.info("[CREW/FUEL SELF-TEST] G10 wrench paint OK (sneak+wrench cycles, bare sneak inert, no boarding)");

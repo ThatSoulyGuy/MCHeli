@@ -38,7 +38,7 @@ public record MchSmokeOptions(float size, int argb, int maxAge, int flags) imple
     /** Reference {@code toWhite} (MCH_EntityParticleSmoke:31-39): while the channels differ by more than 0.2, each
      *  channel eases 1.6%/tick toward the brightest one. Its reference users are the coloured smoke weapons (bundled
      *  {@code smoke_red} etc.; their emitter, {@code MCH_EntityAircraft.onUpdate_ParticleSmoke}, is ported as
-     *  {@code AbstractMchVehicle.spawnWeaponSmoke}, which does not set this flag) and the smoke grenade (not ported). */
+     *  {@code MchVehicleEffects.spawnWeaponSmoke}, which does not set this flag) and the smoke grenade (not ported). */
     public static final int TO_WHITE = 8;
 
     /** The port's general-purpose smoke (no reference flags). */

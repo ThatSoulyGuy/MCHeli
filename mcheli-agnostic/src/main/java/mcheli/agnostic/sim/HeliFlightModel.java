@@ -80,7 +80,8 @@ public final class HeliFlightModel implements FlightModel {
             st.setCurrentThrottle(0.0);
         }
         // The reference also advances rotationRotor here (MCH_EntityHeli:543-546). It only animates the blades, which the
-        // client does itself (AbstractMchVehicle.advanceRotorSpin, and MchHelicopter's fold animator), so it is not kept.
+        // client does itself (MchVehicleAnimation.advanceRotorSpin, and MchHelicopter's fold animator), so it is not
+        // kept.
     }
 
     /** {@code onUpdateAircraft} between control and server: hover/gunner pitch levelling + the wreck throttle bleed. */

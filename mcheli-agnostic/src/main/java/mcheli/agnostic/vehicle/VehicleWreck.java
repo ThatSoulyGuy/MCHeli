@@ -4,7 +4,7 @@ import mcheli.agnostic.math.MchMath;
 
 /**
  * The wreck rules of {@code MCH_EntityAircraft}: the despawn countdown and the default (heli) tumble seeds of
- * {@code destroyAircraft} (:605-610), the heli yaw spin ({@code MCH_EntityHeli}:770-772), the one-shot crash-detonation
+ * {@code destroyAircraft} (:602-610), the heli yaw spin ({@code MCH_EntityHeli}:770-772), the one-shot crash-detonation
  * gate {@code isExploded} (:966-967) with its ground-slam trigger (:1524), and the fuel-scaled blast of
  * {@code explosionByCrash} (:2032-2043). Static and pure: the dependent hull feeds it plain values, the RNG draws stay
  * there in the reference order, and the arithmetic is unit-tested. The per-type tumble overrides (plane, tank, ground
@@ -15,6 +15,18 @@ public final class VehicleWreck {
 
     /** Wreck lifetime in ticks (reference {@code setDespawnCount(500)}, about 25 s); the wreck is discarded after it. */
     public static final int DESPAWN_TICKS = 500;
+
+    /** A target drone's wreck lifetime in ticks (reference {@code setDespawnCount(50)}, 2.5 s). */
+    public static final int TARGET_DRONE_DESPAWN_TICKS = 50;
+
+    /**
+     * The despawn countdown {@code destroyAircraft} arms (reference :602-606): {@link #TARGET_DRONE_DESPAWN_TICKS}
+     * for a target drone (a config with {@code TargetDrone = true}, reference {@code isTargetDrone}), else
+     * {@link #DESPAWN_TICKS}.
+     */
+    public static int despawnTicks(boolean targetDrone) {
+        return targetDrone ? TARGET_DRONE_DESPAWN_TICKS : DESPAWN_TICKS;
+    }
 
     /**
      * True after a wreck has already crash-detonated (reference {@code isExploded}, :966-967): destroyed, and the

@@ -18,7 +18,7 @@ public final class AircraftSimState {
     // FLOAT in the reference (MCH_EntityHeli.prevRollFactor, default 0) — the heli's roll-factor 2-sample average.
     public float prevRollFactor;
     // Not kept: the reference rotationRotor (blade animation only — the client spins the blades itself, see
-    // AbstractMchVehicle.advanceRotorSpin and MchHelicopter's fold animator) and countOnUpdate (EntityRef.ageTicks()).
+    // MchVehicleAnimation.advanceRotorSpin and MchHelicopter's fold animator) and countOnUpdate (EntityRef.ageTicks()).
 
     public AircraftSimState() {
         this(0.0);

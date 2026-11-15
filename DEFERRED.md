@@ -24,7 +24,8 @@ Reference paths are relative to `mcheli-1.7.10/src/main/java/mcheli/`. Line numb
 - **To port:** the station entity, item and container; a station role in `Role`; routing the operator's
   `ServerboundControlPayload` and rotation to the linked UAV; the render-view swap to the UAV (the same `CameraMixin`
   path the TV-missile camera needs); the link id in NBT; the signal range; UAV recipes; the UAV always-zoom in
-  `MchKeybinds`.
+  `MchKeybinds`; the UAV pilot's dismount when a UAV is destroyed, before the ejection seats (`destroyAircraft`,
+  `MCH_EntityAircraft:611-613`; the ejection seat's UAV pilot rule in `canEjectSeat` is already ported).
 
 ### TV-missile camera
 
@@ -76,35 +77,6 @@ Reference paths are relative to `mcheli-1.7.10/src/main/java/mcheli/`. Line numb
 - **To port:** the entity and item, a seat camera through `CameraMixin`, a control payload, and the existing
   `MchBullet.callAirstrike` as the strike.
 
-### Parachutes, ejection seat and crew unmount
-
-- **In 1.7.10:** `parachute/` (`MCH_EntityParachute`, `MCH_ItemParachute`, `MCH_RenderParachute`). Ejection seat:
-  `MCH_EntityAircraft.ejectSeat`/`canEjectSeat` (:3818-3868), `openCanopy_EjectSeat`, triggered from
-  `MCP_ClientPlaneTickHandler:219` and on destruction (`destroyAircraft`, :615-620). 21 bundled configs set
-  `EnableEjectionSeat`. Seat parachuting (`EnableParachuting`, 2 configs; `canParachuting` :1972) and the crew unmount
-  (`unmountCrew`/`startUnmountCrew` :3670-3751, `onUpdate_UnmountCrew` :1892, the `MobDropOption` of 2 configs, the
-  hatch opening for it, and the `KeyUnmountMob` key, Y).
-- **In the port:** the config keys parse (`MCH_AircraftInfo.isEnableEjectionSeat`, `isEnableParachuting`,
-  `mobDropOption`) and nothing reads them. A wreck ejects its riders plainly. The client option `dismountAll` does make
-  mob crew leave when the pilot does.
-- **Why:** it needs the parachute entity first.
-- **To port:** the parachute entity, item and renderer; the eject path (a key on the jump binding for planes, as the
-  reference shared it with `KeySwitchHovering`; the canopy opening; launching the rider with a parachute); destruction
-  ejecting seats 0 and 1 when enabled; the crew-unmount sequence with the hatch and `MobDropOption`; a key for unmounting
-  mobs.
-
-### Rope repelling
-
-- **In 1.7.10:** `AddRepellingHook` (7 bundled helicopters, 11 lines: CH-47, Ka-27, MH-6, MH-60G, Mi-24PS, SH-3,
-  SH-60). In hover mode the ropes lower and the crew slides down them (`MCH_EntityAircraft.onUpdate_Repelling` and
-  `onUpdate_UnmountCrewRepelling`, :1827-1890), and leaving hover mode stops it (`stopRepelling`).
-- **In the port:** the hooks parse into `MCH_AircraftInfo.repellingHooks` and nothing uses them. `RepellingHook.pos` and
-  `interval` are package-private, so dependent code could not read them yet; widen them when this is ported.
-- **Why:** it is part of the crew-unmount sequence above and needs a rope render.
-- **To port:** a rope length state (synced or deterministic), the per-hook unmount cadence, the rope renderer (the
-  reference draws it in `renderCommonPart`, the counterpart of `MchModelEntityRenderer.renderCommonParts`), and the
-  hover-mode hook in `MchHelicopter.switchHoveringMode`.
-
 ### Entity racks: carrying vehicles and containers
 
 - **In 1.7.10:** `AddRack` / `RideRack` (9 and 8 bundled configs), `aircraft/MCH_SeatRackInfo`,
@@ -116,24 +88,16 @@ Reference paths are relative to `mcheli-1.7.10/src/main/java/mcheli/`. Line numb
 - **Why:** it needs one vehicle to carry another, plus its own keys and payloads.
 - **To port:** a rack-riding relation (vanilla passengers with a rack seat map would fit the existing seat code), the
   load and unload rules (`canRideAircraft`, distance, in-flight option), two keys and payloads, and rendering the
-  carried entity at the rack.
+  carried entity at the rack. In flight the reference dropped a rack's load on a parachute
+  (`MCH_EntityAircraft:3990-4011`, the crew drop's `dropEntityParachute`, ported in `MchCrewDrop`).
 
 ### Tow chain
 
 - **In 1.7.10:** `chain/` (`MCH_EntityChain`, `MCH_ItemChain`, `MCH_RenderChain`). A chain item links two entities so a
   vehicle can tow another.
 - **In the port:** not ported (`ItemRecipe_Chain` is absent).
-- **To port:** the chain entity with its two linked ends and pull physics, the item, and the renderer.
-
-### Cargo inventory
-
-- **In 1.7.10:** `InventorySize` (26 bundled configs) gives a vehicle an item inventory (`aircraft/MCH_AircraftInventory`
-  beyond the fuel slots), opened by a sneaking right-click (`MCH_EntityAircraft.interactFirst:4326-4329`).
-- **In the port:** the riding menu (`MchVehicleMenu`) holds only the three fuel slots. The HUD `inventory` value reads
-  0, and a bare sneaking right-click on a vehicle does nothing (`AbstractMchVehicle.interact`). The paint cycles only
-  with the wrench in hand, as in the reference.
-- **To port:** a `SimpleContainer` of `InventorySize` slots saved in NBT, a menu, and the sneak-click route; drop it
-  with the wreck, as the fuel slots already are.
+- **To port:** the chain entity with its two linked ends and pull physics, the item (which refuses to link a
+  parachute, `chain/MCH_ItemChain:47`), and the renderer.
 
 ### Throwables
 
@@ -240,10 +204,13 @@ Reference paths are relative to `mcheli-1.7.10/src/main/java/mcheli/`. Line numb
   15 blocks.
 - **Camera distance keys.** `KeyCameraDistanceUp/Down` (Page Up/Down) and `DisableThirdPersonCameraDistChange` adjust the
   third-person distance in the reference (`MCH_ClientCommonTickHandler:132-133`). Not ported.
-- **Render options.** `HideKeybind` (on-screen key hints), `EnableModEntityRender` (riders drawn with the vehicle's
+- **Render options.** `HideKeybind` (on-screen key hints, among them "Eject seat" in an ejection-seat plane,
+  `MCP_GuiPlane:85-88`, and "Parachuting / Repelling / Dismount : Y", `MCH_AircraftCommonGui:178-190`; the port shows
+  only the jump key's hold progress on the action bar), `EnableModEntityRender` (riders drawn with the vehicle's
   pitch and roll), `MobRenderDistanceWeight` and the hide-held-item behaviour behind `DisableItemRender` are not ported.
-- **Key-press sounds.** The reference client played OK/NG click sounds when a key's action was accepted or declined. Only
-  the weapon-mode key clicks in the port.
+- **Key-press sounds.** The reference client played OK/NG click sounds when a key's action was accepted or declined
+  (also the NG sound of a passenger's jump key with nothing to do, `MCH_ClientSeatTickHandler:83`). Only the
+  weapon-mode key clicks in the port.
 - **Fire-rate padding.** The reference client padded each weapon's interval by delay band (+1/+2/+3/+6/+10 ticks,
   `weapon/MCH_WeaponCreator:88-102`, the client copy that gated fire), so the delay players saw was slightly longer
   than the port's server `Delay`. Revisit if exact rate parity matters.
@@ -252,25 +219,27 @@ Reference paths are relative to `mcheli-1.7.10/src/main/java/mcheli/`. Line numb
 - **Resupply ground check.** `canSupply` (fuel siphon and supply auras) uses a collision-shape probe with floor rounding,
   slightly different from the reference `getBlockIdY(this, 1, -3)`. Moving it to `GroundProbe` needs the `crewfuel`
   self-test's one-block fixture changed.
+- **Tank ejection.** The reference tank packet handler ran `ejectSeat` (`tank/MCH_TankPacketHandler:36-37`), but no
+  tank client ever sent it and a tank has no parachute slots, so it is not ported: `mcheli:eject_seat` is plane-only.
 - **Cargo container physics.** `MchContainer` falls and settles with simplified physics; it does not float.
 - **World-view details.** `NeoWorldView.spawnParticle` ignores parameterised particles (block, item, dust), and
   `isAABBInWater` over-reports water for shallow or flowing cells at the box's lower edge (both carry a TODO).
 - **Not saved:** `AircraftUniqueId` (no UAV link yet), `AcDismounted`, and the heli rotor angle (cosmetic, client-side).
   The VTOL nozzle state is not saved either, which is faithful (the reference save mask is 24).
-- **Unported keys.** `KeyUnmountMob` (Y), `KeyCameraDistanceUp/Down`, `KeyPutToRack` (J), `KeyDownFromRack` (U),
-  `KeyScoreboard` (L) and `KeyMultiplayManager` (M), each with its feature above.
+- **Unported keys.** `KeyCameraDistanceUp/Down`, `KeyPutToRack` (J), `KeyDownFromRack` (U), `KeyScoreboard` (L) and
+  `KeyMultiplayManager` (M), each with its feature above.
 - **Unported config options,** each with its feature: `TestMode`, `EnableCommand`, `CommandPermission`,
   `LWeaponAutoFire`, `StingerLockRange`, `MountMinecart*`, `EnablePutRackInFlying`, `RangeFinderSpot*`,
   `RangeFinderConsume`, the marker options, `DisableThirdPersonCameraDistChange`, `HideKeybind`,
   `EnableModEntityRender`, `MobRenderDistanceWeight`, `DisableItemRender`, and the `ItemRecipe_*` options of unported
-  items (GLTD, chain, parachute, UAV stations, drafting table, range finder, Stinger, Javelin and their missiles).
+  items (GLTD, chain, UAV stations, drafting table, range finder, Stinger, Javelin and their missiles).
   Options that are obsolete in 1.21 are dropped for good: the key codes (vanilla Controls), numeric item and block ids,
-  log flags, version gating, the GL and texture-manager hacks, the creative-tab icon options, and the fuel, container
-  and wrench recipes (datapack JSON now).
+  log flags, version gating, the GL and texture-manager hacks, the creative-tab icon options, and the fuel, container,
+  wrench and parachute recipes (datapack JSON now, `data/mcheli/recipe/`).
 
 ## Engineering follow-ups
 
-- **What the `AbstractMchVehicle` split left.** The entity is now a coordinator over 14 components (see
+- **What the `AbstractMchVehicle` split left.** The entity is now a coordinator over 15 components (see
   ARCHITECTURE.md, Entities and registration). The split moved code verbatim, so these were left because each would
   restructure code it promised not to change:
   - `fireSelectedWeapon`'s per-type dispatch (in `MchFireControl`) as an agnostic shot plan (`ShotPlan`), unit-tested
@@ -284,25 +253,11 @@ Reference paths are relative to `mcheli-1.7.10/src/main/java/mcheli/`. Line numb
     buffer, the pending rider rotation.
   - Retiring the one-line delegates by moving their callers onto the components (about 45 weapon-HUD calls in 10
     files, the crew facts, HP and fuel, the part gates). They were kept so no caller had to change.
-  - Stale plain-text mentions of moved methods in files the split did not touch: `AircraftSimState.java:21` and
-    `HeliFlightModel.java:83` (`advanceRotorSpin`, now `MchVehicleAnimation`), `GroundProbe.java:149` (`waterAtProbe`)
-    and `MchCrushableBlocks.java:27` (`destroyBlockRange`, both now `MchTerrainContact`), `WeaponAim.java:20`
-    (`fireSelectedWeapon`, now `MchFireControl`), `MchSmokeOptions.java:41` (`spawnWeaponSmoke`, now
-    `MchVehicleEffects`), `MchFlare.java:20` (`AbstractMchVehicle` `tickFlares`, now
-    `MchCountermeasures.tickServer`).
 - **Observations from the split, not changed** (each may be faithful; check the reference before calling it a bug):
-  - A target drone's wreck lingers 500 ticks. The reference arms it for 50 (`destroyAircraft`,
-    `MCH_EntityAircraft:602-606`); the port uses `VehicleWreck.DESPAWN_TICKS` for every wreck.
-  - Without a config `UnmountPosition`, every rider dismounts at the pilot seat's side (`seat0.x ± 3`). The reference
-    places a gunner by its own seat (`MCH_EntityAircraft:3524`, `:3776-3778`).
-  - `FuelSlots` saves no slot index (vanilla `SimpleContainer.createTag`/`fromTag`), so a can in slot 1 or 2 reloads
-    into slot 0.
   - A rider restored from `Seats` keeps its entry until it re-boards that vehicle, so the same UUID boarding much later
     by a plain click gets its old seat back instead of the automatic one.
   - `isMissilePartHidden(name)` reads the first slot whose weapon name matches, so a weapon listed in two separate
     `AddWeapon` groups only hides by the first group's reload.
-  - The weapon type is lower-cased with the default locale (`MCH_WeaponInfo`, `fireSelectedWeapon`). A pack spelling
-    with an upper-case `I` (`AAMISSILE`) would miss its branch on a Turkish-locale JVM; `Locale.ROOT` would close it.
   - A dry weapon inside its switch lockout reports a positive reload fraction (`WeaponSlot.reloadFraction` takes the
     absolute value of the lockout's negative wait).
   - The running-gear field comment calls track side 0 left, while the tick treats side 1 (+X) as the hull's left.
@@ -314,10 +269,23 @@ Reference paths are relative to `mcheli-1.7.10/src/main/java/mcheli/`. Line numb
   - On the server, `searchLightValue` aims with a zero camera-turret look (only the client advances it) and
     `wouldSwitchWeapon` advances a server-only HUD copy of the loadout. Both are client readers; nothing on the server
     depends on them.
+  - A dismounted rider is placed once, by vanilla's `dismountTo`. The reference also held it at the unmount point for
+    the next 5 ticks (`UnmountReserve`, `MCH_EntityAircraft:1367-1383`, 8 for a rack) and gave it the vehicle's fall
+    distance.
+  - `MchContainer` saves its 54 slots with vanilla `SimpleContainer.createTag`/`fromTag` (no slot index), so its items
+    are packed into the first slots on reload. The reference saved a `Slot` byte per stack (`W_EntityContainer:173`,
+    :189); the fuel and parachute slots now do the same with `SlotAC` and the vehicle cargo hold with `Slot`
+    (`MchLogistics.save`).
+  - Display text still formats numbers with the default locale (the HUD `DrawString` formats, the riding screen), as
+    in the reference; config tokens, ids, keys and file names are locale-independent. The `hud` self-test's
+    `x%.1f` format check assumes a decimal point, so it would fail on a JVM whose locale writes a decimal comma.
   - Self-test noise: the dispenser torch count (5 to 8) and the `hp` M3 lava damage (×2..9) vary between runs (unseeded
     entity RNG), and an offline run may log one authlib `publickeys` timeout trace.
 - **Vehicle update interval.** Vehicle entity types keep vanilla's 3-tick update interval; the reference registered 10
-  with velocity updates. Long-range smoothness of fast aircraft rests on client interpolation.
+  with velocity updates. Long-range smoothness of fast aircraft rests on client interpolation. The parachute does the
+  same (vanilla-style interpolation, no client extrapolation), where the reference sent it every 10 ticks and
+  extrapolated between updates (`MCH_EntityParachute:105-122`, :164-187), and so does the rope slider
+  (`MCH_EntityHide:126-139`, :199-219).
 
 ## Behaviour changes vs the pre-campaign port
 
@@ -360,6 +328,9 @@ behaviour; the deliberate departures from 1.7.10 are marked.
   `preventingBroken` disables it, `breakableOnlyPickaxe` requires a pickaxe. In creative the item drops only when
   sneaking (`dropItemInCreativeMode` flips that). Before, only a creative player could reclaim a vehicle.
 - A recovered vehicle item keeps the vehicle's fuel and damage (`itemFuel`, `itemDamage`).
+- Fuel cans keep their riding-menu slot across a save and reload (before, they moved to the first slot).
+- Without a config `UnmountPosition`, a gunner or a crew mob gets off beside its own seat, as in 1.7.10. Before, every
+  rider was put down beside the pilot seat.
 - Placing a vehicle uses up the item in survival. A vehicle can be placed on a water surface, is refused when the spot
   is obstructed, stands side-on to the player at a cardinal heading, and takes the next paint scheme each time. A
   dispenser can place vehicles. An item whose config did not load does nothing (before, it spawned a fallback vehicle).
@@ -380,17 +351,101 @@ behaviour; the deliberate departures from 1.7.10 are marked.
   of its seats, while a player on a team he is not on rides it. A player on no team is refused by any teamed crew
   player, and a crew of players without a team never refuses anyone. Seat switches aboard are not gated, and a gunner
   refused this way keeps his seat when he tries to grab the pilot seat (1.7.10 left him on foot).
-- The paint scheme cycles only on a sneaking right-click with the wrench, as in 1.7.10. A wrench click never boards. A
-  bare sneaking right-click now does nothing: in 1.7.10 it opened the cargo inventory, which is not ported. Before, any
-  sneaking right-click cycled the paint.
+- The paint scheme cycles only on a sneaking right-click with the wrench, as in 1.7.10. A wrench click never boards.
+  Any other sneaking right-click opens the vehicle's cargo hold, as in 1.7.10, and does nothing on a vehicle without
+  one. Before, any sneaking right-click cycled the paint.
+- Vehicles with `InventorySize` (26 bundled configs, 9 to 54 slots) have their cargo hold back: the vanilla chest
+  screen, opened by a sneaking right-click or the riding menu's Inventory button, saved with the vehicle and spilled
+  when it is broken, killed or its wreck despawns. Two deliberate departures from 1.7.10: the click that opens it is
+  used up (the held item is not used as well), and a stack whose slot a smaller `InventorySize` no longer has (an
+  edited config or pack) is kept in the save and comes back when the size does, where 1.7.10 deleted it.
+- The parachute is back (`WWW / S S / _W_` of white wool and string, in every MCHeli creative tab). Used in the air it
+  opens about 3 blocks above you and lets you down at 6 blocks a second without fall damage; W drifts you forward and
+  sneaking lets go. As in 1.7.10 the item is used up on every use outside creative, also on the ground or while
+  riding, where nothing opens, and the canopy is solid: it lands on mobs, items and vehicles below it. Three deliberate
+  departures from 1.7.10, two of them reference bugs:
+  - A parachute drifting without a rider turns to face the way it drifts. In 1.7.10 its heading was mirrored, so one
+    drifting north or south turned to face backwards (reference bug, `MCH_EntityParachute:284`).
+  - A rising ejection seat's smoke trail drifts along both horizontal axes with half the seat's motion. In 1.7.10 all
+    three motion lines were written to the X axis, so the puffs moved along X by the seat's Z motion (reference bug,
+    :203-205).
+  - The ejection seat's boat landing probes the water with floor rounding over the world's real build height (1.7.10
+    cast with `(int)`, off by one at negative coordinates, and stopped at y 0..255), and a parachute that touches water
+    is removed by the server alone (1.7.10 also removed the client copy itself; the client now waits a moment for the
+    server).
+- The 21 ejection-seat planes (`EnableEjectionSeat`) have their parachute slots back in the riding menu (G), under the
+  fuel cans: one for a single-seater, two for a two-seater, as in 1.7.10. Each parachute keeps its slot across a save
+  and reload, and they spill with the fuel cans when the vehicle is broken or its wreck despawns. Deliberate departure
+  from 1.7.10: the slots take only parachutes (1.7.10 took any item and gave a non-parachute back when the menu
+  closed).
+- The ejection seat is back on those planes. With a parachute in the slots, the pilot or the seat-1 rider holds the
+  jump key and is thrown 2 blocks above his seat, rises about 26 blocks on the seat (also from the ground: there is no
+  altitude limit, as in 1.7.10) and floats down once it opens; the canopy swings open and stays open, and every part
+  switch waits 2 seconds. The pilot takes a mob co-pilot along while a second parachute is left; a player co-pilot
+  ejects himself, and with the client option `dismountAll` the mob crew gets off plainly as the pilot ejects. A plane
+  that is shot down ejects its pilot and seat 1, mobs included, while parachutes are left; a
+  canopy-less B-2A ejects through its hull, as in 1.7.10. Three deliberate departures from 1.7.10, one of them a
+  reference bug:
+  - The jump key must be held for half a second from a press made in the seat (the action bar shows the hold;
+    releasing it cancels; a key already held when boarding does not count), where 1.7.10 ejected on a single press of
+    the same key that toggles a helicopter's hover mode.
+  - The server checks that the sender sits in seat 0 or 1 of an ejection-seat plane that is not a wreck, the rule the
+    client always checked. 1.7.10's server trusted the client and checked only the parachute slots (reference bug: the
+    two gates disagreed).
+  - Riders who do not eject from a destroyed vehicle are put off plainly, as the port already did, where 1.7.10 kept
+    them aboard the burning wreck.
+- The pilot's crew-unmount key is back (Unmount Mobs, Y, as in 1.7.10). It puts every mob of the crew off beside its
+  own seat; players stay. On the An-2 and the MV-22 (`EnableParachuting`) with nothing within 10 blocks below, it
+  drops the mob crew instead, one at a time from seat 2 up on parachutes (every 5 ticks from the An-2, every 10 from
+  the MV-22, whose rear hatch swings open first, ignoring the switch cooldown, and must be fully open), from where the
+  plane was half a second earlier; Y again, the ground within 10 blocks, nobody left or closing the hatch stops it.
+  On a helicopter with repelling hooks it unloads only within 4 blocks of the ground, and higher up lowers the ropes
+  (see below). Another rider's Y opens the cargo hold where there is one, as in 1.7.10. Two
+  deliberate departures from 1.7.10, both reference bugs:
+  - The server checks that the sender is the pilot of a vehicle that is not a wreck, the rule the client always
+    checked. 1.7.10's server ran the unload for any rider who sent it (the two gates disagreed).
+  - A `MobDropOption` interval of 0 drops every tick. 1.7.10 divided by it and threw an exception every tick of the
+    drop (no bundled config has 0).
+- A player passenger can parachute out of the An-2 and the MV-22 again (seat 2 and up, as in 1.7.10): he holds the
+  jump key and leaves on a parachute from the crew drop's point, with the plane's motion, once nothing is within 13
+  blocks below and the MV-22's rear hatch is fully open. No parachute item is needed, as in 1.7.10. Two deliberate
+  departures from 1.7.10, one of them a reference bug:
+  - The jump key must be held for half a second (the action bar shows the hold), where 1.7.10 jumped on a single press.
+  - The client and the server check the same rule. 1.7.10's client ignored the MV-22's hatch (so the request behind a
+    shut hatch was silently refused), and its server checked neither the 13 blocks below nor a wreck, trusting the
+    client (reference bug: the two gates disagreed).
+- Rope repelling is back on the seven hooked helicopters (CH-47, Ka-27, MH-6, MH-60G, Mi-24PS, SH-3, SH-60), as in
+  1.7.10. The pilot hovers (or is in gunner mode), holds the helicopter level and still, and presses Y: black ropes
+  grow from the hooks, and after 3 seconds each rope lowers one mob of the crew (seat 2 and up) every 1.5 seconds. It
+  slides down under its hook with no fall damage and gets off on the ground, at the end of the 50-block rope (then it
+  falls), or wherever it is when repelling stops: Y again, a press of the hover key (outside gunner mode, where the
+  key does nothing, as in 1.7.10), running out of fuel while hovering, the last player getting off or the
+  helicopter's destruction. A player passenger (seat 1 and up) can slide
+  down himself once the ropes have been out 2.5 seconds: he holds the jump key, takes the rope after the last one used
+  (by a player or a mob) and starts 4 blocks below its hook, 2 lower than a mob, as in 1.7.10. While the ropes are
+  down the pilot looks around freely: the mouse no longer turns the helicopter, W, S, A and D do nothing and the
+  HUD's FREE LOOK cue lights, as in 1.7.10, until the ropes come in (a press of the free-look key meanwhile leaves
+  free look off afterwards, as in 1.7.10). Three deliberate departures from 1.7.10:
+  - The jump key must be held for half a second to slide (the action bar shows the hold), where 1.7.10 slid on a
+    single press.
+  - A rope grows down to the real ground over the whole 1.21 build height. 1.7.10 counted the air below only down to
+    y 0, so over ground below y 0 its ropes stopped short, and below y 0 they never grew; it also rounded toward zero
+    at negative coordinates.
+  - The rope slider updates every 3 ticks with vanilla client interpolation, as the vehicles and the parachute (1.7.10
+    sent it every 10 ticks and extrapolated in between), and a client waits for the server to remove a slider that
+    lets go (1.7.10 also removed its own copy). The ropes are drawn about a third of a block above the point the
+    sliders hang under, because the port lifts the vehicle model off the ground by its lowest point.
 
 ### Controls
 
 - The default zoom key moved from C to Z (C is vanilla's save-toolbar key). Outside gunner mode the pilot's Z opens the
   hatch, or folds or sweeps a plane's wing. Players who rebound the key keep their binding.
-- New keys: Camera Mode / Search Light (N), Switch Weapon Mode (K), Landing Gear (B). The 1.7.10 defaults for the first
-  two (C and X) collide with vanilla keys.
+- New keys: Camera Mode / Search Light (N), Switch Weapon Mode (K), Landing Gear (B), Unmount Mobs (Y, the 1.7.10
+  default; see Vehicles and items). The 1.7.10 defaults for the first two (C and X) collide with vanilla keys.
 - The jump key toggles a helicopter's hovering mode for its pilot and is the tank brake (held), as SPACE was in 1.7.10.
+  Held for half a second in a plane's seat 0 or 1, it ejects, in seat 2 or up of the An-2 or the MV-22 it
+  parachutes you out, and in seat 1 or up of a repelling helicopter it slides you down a rope (1.7.10: one press; see
+  Vehicles and items).
 - The weapon switch key (vanilla swap-offhand, F) no longer also swaps your hands while seated. The mouse wheel switches
   weapons too (client option `switchWeaponWithMouseWheel`, on by default).
 - Mouse flight: moving the mouse up now pitches the nose up (it was inverted), at the 1.7.10 stick gain, about 6.7 times
@@ -420,7 +475,8 @@ behaviour; the deliberate departures from 1.7.10 are marked.
 - Helicopters have the 1.7.10 hovering mode (jump key). Switching it levels the pilot's view, and leaving gunner or
   hover mode restores the throttle you had before.
 - Tank hulls can tilt past `MinRotationPitch`/`MaxRotationPitch` on slopes (those limits bind only the rider's look).
-- A wreck's spin follows its bleeding throttle. Target drones self-destruct when their fuel runs out.
+- A wreck's spin follows its bleeding throttle. Target drones self-destruct when their fuel runs out, and a target
+  drone's wreck disappears after 2.5 s instead of 25 s, as in 1.7.10.
 
 ### HUD
 
@@ -440,6 +496,10 @@ behaviour; the deliberate departures from 1.7.10 are marked.
   player).
 - Content packs under `<gamedir>/mcheli/` must be installed on the server and every client; a client missing one is
   refused at login with the list of missing ids.
+- The server and its clients must run the same MCHeli build: the network protocol is now version 2 (the riding menu
+  carries the parachute slots), so a client or server from before this change is refused at login.
 - UAV configs cannot be placed or crafted until the UAV station is ported.
+- Weapon packs parse the same under any system locale. Before, a server on a Turkish locale misread weapon types and
+  names spelled with an upper-case `I` (`AAMISSILE`, `DamageFactor = HELICOPTER`).
 - Blast block damage obeys both `mobGriefing` and `explosionDestroyBlock`. Vehicle block crushing obeys `mobGriefing`
   and `collisionDestroyBlock`.

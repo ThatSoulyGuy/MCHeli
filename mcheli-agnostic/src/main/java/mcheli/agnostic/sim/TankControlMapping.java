@@ -95,7 +95,7 @@ public final class TankControlMapping implements RotationSolver.ControlMapping {
             }
         }
 
-        // updateRecoil(partialTicks): the hull recoil kick is a dependent render effect (AbstractMchVehicle.recoil*).
+        // updateRecoil(partialTicks): the hull recoil kick is a dependent render effect (MchVehicleAnimation.recoil*).
         // WheelMng suspension: lerp pitch/roll toward the terrain target solved for this tick. This is what lets the
         // tank climb — the pitched hull's forward thrust (rot2Vec3(yaw, pitch-10) in TankFlightModel) gains an upward
         // component and drives up the grade. Null (no wheels configured) -> the target is level.

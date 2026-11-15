@@ -51,7 +51,8 @@ import net.neoforged.neoforge.event.EventHooks;
  * spool, and the rotation authority and client interpolation above. Each area lives in one same-package component that
  * holds only a back-reference to this entity, is created in a field initializer, and writes only its own accessors:
  * <ul>
- *   <li>{@link MchLogistics} — fuel burn, the fuel-can slots and siphon, the supply auras ({@link #DATA_FUEL}).</li>
+ *   <li>{@link MchLogistics} — fuel burn, the fuel-can slots and siphon, the parachute slots, the supply auras, the
+ *       cargo hold ({@link #DATA_FUEL}).</li>
  *   <li>{@link MchCountermeasures} — flares, the missile decoy, the RWR tones ({@link #DATA_FLARE_STATE}).</li>
  *   <li>{@link MchVehicleAnimation} (public, {@link #animation()}) — the client running gear, gatling barrel, rotor,
  *       radar and recoil kick.</li>
@@ -66,6 +67,9 @@ import net.neoforged.neoforge.event.EventHooks;
  *   <li>{@link MchTerrainContact} — the light sweep, crush and ram, attitude-crash and submersion damage.</li>
  *   <li>{@link MchVehicleCrew} — the seat map, boarding, the passenger hooks, gunner mode ({@link #DATA_SEATS},
  *       {@link #DATA_GUNNER_MODE}, {@link #DATA_SEAT_GUNNER_MODE}).</li>
+ *   <li>{@link MchCrewDrop} — the ejection seat, by key and on destruction; the pilot's crew unmount and the
+ *       {@code MobDropOption} drop with its position trail; seat parachuting; rope repelling for the mob crew and the
+ *       player rope slide, the per-side rope length and the rope sliders (writes nothing).</li>
  *   <li>{@link MchFireControl} (with its {@link MchLockAudits}) — the loadout, the weapon tick and the fire
  *       ({@link #DATA_FIRING}, {@link #DATA_RELOADING}, {@link #DATA_RECOIL_SEQ}, {@link #DATA_RECOIL_VALUE},
  *       {@link #DATA_RECOIL_YAW}).</li>
@@ -204,10 +208,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     private final MchPartHitboxes hitboxes = new MchPartHitboxes(this);
     private final MchTerrainContact terrain = new MchTerrainContact(this);
     private final MchVehicleCrew crew = new MchVehicleCrew(this);
+    private final MchCrewDrop crewDrop = new MchCrewDrop(this);
     private final MchFireControl fireControl = new MchFireControl(this);
     private final MchVehicleHull hull = new MchVehicleHull(this);
 
-    /** The fuel and supply economy: the burn, the fuel-can slots and their siphon, the supply auras. */
+    /** The fuel and supply economy: the burn, the fuel-can slots and their siphon, the supply auras, the cargo hold. */
     MchLogistics logistics() {
         return this.logistics;
     }
@@ -264,6 +269,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
      *  the Seats NBT. */
     MchVehicleCrew crew() {
         return this.crew;
+    }
+
+    /** The crew leaving other than by the plain dismount: the ejection seat. */
+    MchCrewDrop crewDrop() {
+        return this.crewDrop;
     }
 
     /** The server fire control: the loadout and its saved ammo, the switch queue, the weapon tick and the fire, the
@@ -613,7 +623,8 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     /**
      * Config-driven dismount — reference {@code setUnmountPosition:3787-3802}: the config {@code UnmountPosition}
-     * body-transformed, else {@code (seat.x ± 3 outward, 2.0, seat.z)}; vanilla's placement when the config has no seat.
+     * body-transformed, else {@code (seat.x ± 3 outward, 2.0, seat.z)} of the rider's own seat; vanilla's placement
+     * when the config has no seat.
      * @see MchRiderPose#handleDismountLocationForPassenger
      */
     @Override
@@ -1006,7 +1017,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         setConfigName(tag.getString("Config"));
         this.vehicleParts.load(tag); // PartStatus (saved bits) + SearchLight
         this.hull.load(tag); // AcDamage (clamped to the config) + Destroyed and Despawn (raw)
-        this.logistics.load(tag); // AcFuel (raw set) + FuelSlots
+        this.logistics.load(tag); // AcFuel (raw set) + FuelSlots + Items (the cargo hold, sized by the config above)
         this.crew.loadSeats(tag); // Seats: each rider's saved seat, handed back when it re-boards
         this.fireControl.loadAmmo(tag); // AcWeaponsAmmoByName, else the legacy AcWeaponsAmmo (applied when the loadout builds)
         // Paint scheme, roll and the pilot-aim latch (reference readEntityFromNBT :748-753). The skin is stored by
@@ -1050,7 +1061,7 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         tag.putString("Config", configName());
         this.vehicleParts.save(tag); // PartStatus (saved bits) + SearchLight
         this.hull.save(tag); // AcDamage + Destroyed + Despawn
-        this.logistics.save(tag); // AcFuel + FuelSlots
+        this.logistics.save(tag); // AcFuel + FuelSlots + Items (only for a vehicle with a cargo hold)
         this.crew.saveSeats(tag); // Seats: {Id, Seat} per seated rider
         this.fireControl.saveAmmo(tag); // AcWeaponsAmmoByName (the live loadout, else the restored totals) or the legacy array
         String skin = skinTextureName();
@@ -1063,10 +1074,14 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
 
     /** The AABB used for frustum culling. The collision box is a small faithful 2.0×0.7 core, but the MODEL spans the
      *  full rotor/wing (up to ~19 blocks), so inflate generously — else the vehicle pops out of view whenever its tiny
-     *  core box leaves the frustum even though the model is on screen. */
+     *  core box leaves the frustum even though the model is on screen. While repelling it also reaches down the ropes
+     *  (this side's {@link #ropesLength}, up to 50, drawn straight down the hull's -Y, level within 3 degrees), so the
+     *  ropes stay drawn while only their lower part is on screen: the reference aircraft skipped the frustum test
+     *  altogether ({@code ignoreFrustumCheck}, MCH_EntityAircraft:245). */
     @Override
     public AABB getBoundingBoxForCulling() {
-        return this.getBoundingBox().inflate(16.0);
+        AABB box = this.getBoundingBox().inflate(16.0);
+        return isRepelling() ? box.expandTowards(0.0, Math.min(0.0F, ropesLength()) - 1.0, 0.0) : box;
     }
 
     /** The entity box from the config {@code Width}/{@code Height} (reference {@code onAcInfoReloaded} →
@@ -1262,8 +1277,11 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             this.vehicleParts.tickLandingGear(); // the synced gear status + the local 2.5 deg/tick travel the renderer draws
             this.animation.tickClient(); // running gear + gatling barrel, rotor spin, radar sweep, recoil kick (in order)
             clientAmbientEffects(); // rotor down-wash, damage smoke — the reference's onUpdate_Client particle spawns
+            this.crewDrop.tickClient(); // the client's own rope length and repelling counter (reference onUpdate:1535)
             return;
         }
+
+        this.crewDrop.beginServerTick(); // the position trail refills on the first two ticks (reference onUpdate:1358)
 
         // Server-authoritative physics. Snapshot prev pos/rot before moving.
         this.xo = this.getX();
@@ -1290,6 +1308,13 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         if (pilot() == null) {
             getControlState().clearMomentary(); // no PILOT: the vehicle holds no drive keys and coasts (a lone gunner
             this.riderOwnsRotation = false;     // may still aim + fire, but never drives)
+        }
+        if (isRepelling()) {
+            // Reference MCH_AircraftClientTickHandler:166-170: while the ropes are out the pilot's throttle and
+            // sideways keys are let go every tick (startRepelling let them go once), so W/S/A/D never move the hull
+            // under its sliders; the client leaves them out of its control bits too, and resends them when it stops.
+            MchControlState cs = getControlState();
+            cs.throttleUp = cs.throttleDown = cs.moveLeft = cs.moveRight = false;
         }
         ControlInput in = getControlState().snapshot(1.0F); // the PILOT's keys; server tick -> partialTicks = 1.0F
 
@@ -1339,6 +1364,8 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
             // Alive: attitude-crash into terrain + water-submersion damage (both route through hurt(inWall)).
             this.terrain.collisionGroundDamage();
         }
+        // The crew drop, then the end-of-tick position into the trail, for a wreck too (reference onUpdate:1534-1543).
+        this.crewDrop.tickServerPostMove();
         this.hull.clearPartFactor(); // clear any unread part factor so it can't leak to a later hit (reference :1363)
 
         // Engine power: full while a rider holds throttle-up, idle (0.5) while ridden, spooling to 0 when abandoned.
@@ -1586,11 +1613,13 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         this.crew.handlePassengerAdded(p);
     }
 
-    /** @see MchVehicleCrew#handlePassengerRemoved */
+    /** @see MchVehicleCrew#handlePassengerRemoved
+     *  @see MchCrewDrop#handlePassengerRemoved */
     @Override
     protected void removePassenger(Entity p) {
         super.removePassenger(p);
         this.crew.handlePassengerRemoved(p);
+        this.crewDrop.handlePassengerRemoved(p); // after the crew hook: isRidePlayer sees the passengers left
     }
 
     /**
@@ -1639,6 +1668,225 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
         return this.logistics.fuelInventory();
     }
 
+    /** The vehicle's 2 PARACHUTE SLOTS (reference {@code MCH_AircraftInventory} SLOT_PARACHUTE0/1, :17-18), which the
+     *  ejection seat draws from. Every vehicle has the container; the riding menu shows {@link #numEjectionSeats()} of
+     *  them. */
+    public static final int PARACHUTE_SLOTS = mcheli.agnostic.vehicle.EjectionSeat.MAX_SEATS;
+
+    /**
+     * How many ejection seats this vehicle has, which is also how many parachute slots its riding menu shows: 0 here
+     * (reference {@code MCH_EntityAircraft.getNumEjectionSeat}:3873-3875); {@link MchPlane} overrides it from its
+     * config. Readable on both sides (the config is synced).
+     */
+    public int numEjectionSeats() {
+        return 0;
+    }
+
+    /** @see MchLogistics#parachuteInventory */
+    public net.minecraft.world.SimpleContainer parachuteInventory() {
+        return this.logistics.parachuteInventory();
+    }
+
+    /**
+     * True while a parachute slot holds a parachute (reference {@code MCH_AircraftInventory.haveParachute}:34-43).
+     * @see MchLogistics#haveParachute
+     */
+    public boolean haveParachute() {
+        return this.logistics.haveParachute();
+    }
+
+    /**
+     * SERVER: use up one parachute, the first slot's before the second's (reference
+     * {@code MCH_AircraftInventory.consumeParachute}:45-53).
+     * @see MchLogistics#consumeParachute
+     */
+    public void consumeParachute() {
+        this.logistics.consumeParachute();
+    }
+
+    // ---- the ejection seat (reference canEjectSeat / ejectSeat / ejectSeatSub, EA:3818-3871); the body lives in
+    //      MchCrewDrop ----
+
+    /**
+     * Reference {@code canEjectSeat} (EA:3868-3871): {@code e} sits in seat 0 or 1 of an {@code EnableEjectionSeat}
+     * config, and not in a UAV's pilot seat. Both sides: the jump key's pre-check and the payload's re-check.
+     * @see MchCrewDrop#canEjectSeat
+     */
+    public boolean canEjectSeat(Entity e) {
+        return this.crewDrop.canEjectSeat(e);
+    }
+
+    /**
+     * SERVER: pull the ejection handle for {@code e} (reference {@code ejectSeat}, EA:3818-3839). With a parachute in
+     * the slots, the rider of seat 0 or 1 leaves 2 above his seat on an ejection-seat parachute (a mob co-pilot goes
+     * with the pilot while a second parachute is left), the canopy opens and the seat sound plays. No
+     * {@link #canEjectSeat} check here (the payload has one; destruction skips it, as in the reference).
+     * @see MchCrewDrop#ejectSeat
+     */
+    public void ejectSeat(Entity e) {
+        this.crewDrop.ejectSeat(e);
+    }
+
+    /** Diagnostics: the ticks left on the shared part/mode switch cooldown (the ejection seat sets 40). */
+    public int modeSwitchCooldownTicks() {
+        return this.modeSwitchCooldown.get();
+    }
+
+    // ---- the crew unmount (reference unmountCrew / startUnmountCrew / onUpdate_UnmountCrew, EA:1892-1904 and
+    //      :3670-3785); the body lives in MchCrewDrop ----
+
+    /**
+     * SERVER: the pilot's unmount key, Y (reference {@code unmountCrew()}, EA:3681-3701). An {@code EnableParachuting}
+     * config with nothing within 10 blocks below starts dropping its mob crew from seat 2 up, one every
+     * {@code MobDropOption} interval on a parachute, once a hatch is forced fully open; a second press stops it. A
+     * config with repelling hooks lowers its ropes when {@link #canStartRepelling} allows it, or pulls them in while it
+     * repels. Any other vehicle puts every mob off beside its own seat (a hooked one only within 4 blocks of the
+     * ground). Players stay aboard. The payload checks the pilot seat.
+     * @see MchCrewDrop#unmountCrew
+     */
+    public void unmountCrew() {
+        this.crewDrop.unmountCrew();
+    }
+
+    /** Diagnostics (server): a crew drop is running (the reference's server-only {@code isParachuting}). */
+    public boolean isDroppingCrew() {
+        return this.crewDrop.isDroppingCrew();
+    }
+
+    /** Diagnostics (server): the oldest entry of the end-of-tick position trail, the origin of the next drop. */
+    public Vec3 crewTrailOldest() {
+        return this.crewDrop.crewTrailOldest();
+    }
+
+    // ---- seat parachuting and the rope slide (reference unmount / canUnmount / canParachuting / canRepelling,
+    //      EA:1827-1829 and :1924-1978); the body lives in MchCrewDrop ----
+
+    /**
+     * May {@code e} parachute out of its seat now: an {@code EnableParachuting} config (an2, mv-22), seat 2 or up, a
+     * hatch at 89 degrees or more where there is one, and nothing within 13 blocks below. Both sides, one rule: the
+     * jump key's pre-check and the server's re-check in {@link #unmountSeat}.
+     * @see MchCrewDrop#canParachuting
+     */
+    public boolean canParachuting(Entity e) {
+        return this.crewDrop.canParachuting(e);
+    }
+
+    /**
+     * May {@code e} slide down a rope now (reference {@code canRepelling}, EA:1827-1829): the ropes are down and this
+     * side's repelling counter is past 50, and {@code e} rides a seat from 1 up. Both sides, one rule: the jump key's
+     * pre-check and the server's re-check in {@link #unmountSeat}.
+     * @see MchCrewDrop#canRepelling
+     */
+    public boolean canRepelling(Entity e) {
+        return this.crewDrop.canRepelling(e);
+    }
+
+    /**
+     * SERVER: a passenger's jump key (reference {@code unmount}, EA:1934-1970). When {@link #canRepelling} allows it,
+     * {@code e} slides down the next rope from 4 below its hook; else, when {@link #canParachuting} allows it, it
+     * leaves at the crew drop's point (the {@code MobDropOption} position of the 9-tick-old trail) on a type-3
+     * parachute with the vehicle's motion; otherwise nothing happens. The payload checks the seat and the wreck.
+     * @see MchCrewDrop#unmountSeat
+     */
+    public void unmountSeat(Entity e) {
+        this.crewDrop.unmountSeat(e);
+    }
+
+    // ---- rope repelling (reference startRepelling / stopRepelling / onUpdate_Repelling /
+    //      onUpdate_UnmountCrewRepelling, EA:1817-1890 and :3703-3749); the body lives in MchCrewDrop ----
+
+    /**
+     * Reference {@code isHovering} (EA:5345-5347): the pilot's gunner mode; {@link MchHelicopter} adds its hover mode.
+     * Repelling may start only while this holds. Both sides (both modes are synced).
+     */
+    public boolean isHovering() {
+        return isGunnerModeActive();
+    }
+
+    /**
+     * The ropes are down (reference {@code isRepelling}, common-status bit 5 of {@link #DATA_PART_STATUS}, written by
+     * the server only). Both sides.
+     * @see MchCrewDrop#isRepelling
+     */
+    public boolean isRepelling() {
+        return this.crewDrop.isRepelling();
+    }
+
+    /**
+     * This side's rope length, 0 or negative (reference {@code ropesLength}): each side grows its own, the server 0.25
+     * and a client 0.3 a tick, to at most 50 or the ground below. The server's lets the sliders go at the rope's end, a
+     * client's is what the rope render draws.
+     * @see MchCrewDrop#ropesLength
+     */
+    public float ropesLength() {
+        return this.crewDrop.ropesLength();
+    }
+
+    /**
+     * This side's ticks since repelling started, 0 to 60 (reference {@code tickRepelling}): the mob cadence starts once
+     * it reaches 60.
+     * @see MchCrewDrop#tickRepelling
+     */
+    public int tickRepelling() {
+        return this.crewDrop.tickRepelling();
+    }
+
+    /**
+     * Rope {@code idx}'s hook in the world, with the current pose (reference {@code getRopePos}, EA:3711-3715); this
+     * vehicle's position for an index it has no hook for. Both sides (the sliders hang under it).
+     * @see MchCrewDrop#ropePos
+     */
+    public Vec3 ropePos(int idx) {
+        return this.crewDrop.ropePos(idx);
+    }
+
+    /**
+     * SERVER: may the pilot start repelling now (reference {@code canStartRepelling}, EA:3740-3749): hooks,
+     * {@link #isHovering()}, the hull within 3 degrees of level, and still for about 9 ticks.
+     * @see MchCrewDrop#canStartRepelling
+     */
+    public boolean canStartRepelling() {
+        return this.crewDrop.canStartRepelling();
+    }
+
+    /**
+     * SERVER: pull the ropes in (reference {@code stopRepelling}, EA:3727-3730); every slider lets go on its next tick.
+     * {@link MchHelicopter#switchHoveringMode} calls it first, as the reference's switchHoveringMode (EA:5325).
+     * @see MchCrewDrop#stopRepelling
+     */
+    void stopRepelling() {
+        this.crewDrop.stopRepelling();
+    }
+
+    /** The cargo hold's size: the config {@code InventorySize}, 0 to 54 (reference {@code getSizeInventory}:5670-5672;
+     *  the HUD {@code inventory} value). Readable on both sides. */
+    public int cargoSize() {
+        MCH_AircraftInfo info = weaponHostInfo();
+        return info != null ? Math.max(0, info.inventorySize) : 0;
+    }
+
+    /** The rows the cargo chest screen shows, {@code cargoSize() / 9} (the 1.7.10 chest rule); 0 = no cargo screen. */
+    public int cargoRows() {
+        return Math.min(6, cargoSize() / 9);
+    }
+
+    /**
+     * SERVER: the cargo hold, {@link #cargoSize()} slots, saved as {@code Items} and spilled with the vehicle.
+     * @see MchLogistics#cargo
+     */
+    public net.minecraft.world.SimpleContainer cargoInventory() {
+        return this.logistics.cargo();
+    }
+
+    /**
+     * Open the cargo hold's chest screen for {@code player} (a sneaking click, the riding GUI's Inventory button);
+     * false when this vehicle has none. On a client it only predicts the server's answer.
+     * @see MchLogistics#openCargo
+     */
+    public boolean openCargo(Player player) {
+        return this.logistics.openCargo(player);
+    }
+
     /**
      * Rearm ONE weapon by index from the riding GUI (the port of {@code supplyAmmo} / {@code canPlayerSupplyAmmo});
      * returns true if a supply pulse was granted.
@@ -1684,8 +1932,9 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     public WeaponSlot weaponAt(int i) { return this.weaponSync.weaponAt(i); }
 
     /**
-     * Spill the fuel slots when the vehicle leaves the world for good — the port of {@code MCH_AircraftInventory.setDead}
-     * (:63-75), which drops the inventory contents on death.
+     * Spill the cargo hold, the fuel slots and the parachute slots when the vehicle leaves the world for good — the
+     * port of {@code W_EntityContainer.setDead} (:127-162) and {@code MCH_AircraftInventory.setDead} (:63-75), which
+     * drop the contents on death.
      * @see MchLogistics#spillOnRemove
      */
     @Override
@@ -1976,7 +2225,8 @@ public abstract class AbstractMchVehicle extends Entity implements MchControllab
     public void refreshExtraBoxes() { this.hitboxes.update(); }
 
     /**
-     * Wreck lifetime countdown (500 at destruction, →0 then discard); exposed for diagnostics/self-test.
+     * Wreck lifetime countdown (500 at destruction, 50 for a target drone, →0 then discard); exposed for
+     * diagnostics/self-test.
      * @see MchVehicleHull#despawnCount
      */
     public int despawnCount() { return this.hull.despawnCount(); }

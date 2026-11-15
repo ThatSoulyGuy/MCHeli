@@ -460,7 +460,7 @@ final class MchFireControl {
         } else {
             return;
         }
-        String preType = slot.info.type == null ? "" : slot.info.type.toLowerCase();
+        String preType = slot.info.type == null ? "" : slot.info.type.toLowerCase(java.util.Locale.ROOT);
         // Smoke and dummy weapons fire nothing: their reference shot() returns false, so no ammo, delay or report.
         if (preType.equals("smoke") || preType.equals("dummy")) {
             return;

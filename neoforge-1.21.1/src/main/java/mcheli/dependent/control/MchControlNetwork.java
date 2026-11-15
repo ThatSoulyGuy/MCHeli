@@ -4,14 +4,18 @@ import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 /**
- * Registers the MCHeli network payloads. Wired onto the mod event bus from {@link mcheli.MCHeli}. Version "1" is the
- * protocol version; bump it on a wire-incompatible change.
+ * Registers the MCHeli network payloads. Wired onto the mod event bus from {@link mcheli.MCHeli}. {@link #PROTOCOL} is
+ * the protocol version; bump it on a wire-incompatible change. "2": the riding menu's open buffer carries the parachute
+ * slot count after the vehicle id, so a client from before it would build a different slot list.
  */
 public final class MchControlNetwork {
     private MchControlNetwork() {}
 
+    /** The network protocol version (a client and a server with different versions refuse each other). */
+    public static final String PROTOCOL = "2";
+
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("1");
+        PayloadRegistrar registrar = event.registrar(PROTOCOL);
         registrar.playToServer(
             ServerboundControlPayload.TYPE,
             ServerboundControlPayload.STREAM_CODEC,
@@ -72,6 +76,18 @@ public final class MchControlNetwork {
             ServerboundNotifyLockPayload.TYPE,
             ServerboundNotifyLockPayload.STREAM_CODEC,
             ServerboundNotifyLockPayload::handle);
+        registrar.playToServer(
+            ServerboundEjectSeatPayload.TYPE,
+            ServerboundEjectSeatPayload.STREAM_CODEC,
+            ServerboundEjectSeatPayload::handle);
+        registrar.playToServer(
+            ServerboundUnmountCrewPayload.TYPE,
+            ServerboundUnmountCrewPayload.STREAM_CODEC,
+            ServerboundUnmountCrewPayload::handle);
+        registrar.playToServer(
+            ServerboundSeatUnmountPayload.TYPE,
+            ServerboundSeatUnmountPayload.STREAM_CODEC,
+            ServerboundSeatUnmountPayload::handle);
         // The port's first CLIENTBOUND payload — the RWR cockpit warning tone (handler is Dist-guarded).
         registrar.playToClient(
             ClientboundRwrPayload.TYPE,

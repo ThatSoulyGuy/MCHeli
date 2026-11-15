@@ -17,8 +17,8 @@ import net.minecraft.world.phys.Vec3;
  * A flare / countermeasure decoy — a faithful distillation of {@code MCH_EntityFlare}. Purely COSMETIC: it is
  * non-pickable and never damages, so projectiles and the lock tracker ignore it (the reference likewise keeps flares
  * out of the weapon path). The actual countermeasure — nulling the target of missiles homing on a flaring aircraft —
- * lives server-side in {@link AbstractMchVehicle} ({@code tickFlares}, the port of {@code MCH_MissileDetector}); the
- * flare entity just falls and burns.
+ * lives server-side in the vehicle's {@code MchCountermeasures.tickServer} (the port of {@code MCH_MissileDetector});
+ * the flare entity just falls and burns.
  *
  * <p>Physics mirror the reference: gravity {@code -0.013}/tick, {@code 0.992} horizontal drag (type-4 flares float via
  * a lighter override), size 6, invulnerable. Death: a {@code fuseCount} airburst (type 10 ring), a 300-tick cap, or on

@@ -69,6 +69,10 @@ public class MchHelicopter extends AbstractMchVehicle {
     /** The requested hovering mode (synced; reference {@code isHoveringMode}). */
     public boolean isHoveringMode() { return this.entityData.get(DATA_HOVER); }
 
+    /** Reference {@code isHovering} (EA:5345-5347): gunner mode or hover mode, the rope repelling gate. */
+    @Override
+    public boolean isHovering() { return super.isHovering() || isHoveringMode(); }
+
     /** Reference {@code MCH_EntityHeli.canSwitchHoveringMode}:306 — not in gunner mode (base :5341), usable blades and a
      *  near-level attitude (|wrapped roll| and |wrapped pitch| under 40). It gates turning the mode OFF too. */
     public boolean canSwitchHoveringMode() {
@@ -80,11 +84,19 @@ public class MchHelicopter extends AbstractMchVehicle {
         return roll < 40.0F && pitch < 40.0F;
     }
 
-    /** SERVER: reference {@code switchHoveringMode(mode)} (MCH_EntityAircraft:5324-5339): when allowed and changing,
-     *  entering saves the sim throttle and leaving restores it (shared with gunner mode). The reference also levelled
-     *  the rider's view pitch; the pilot's client does that when it sends the toggle. */
+    /** SERVER: reference {@code switchHoveringMode(mode)} (MCH_EntityAircraft:5324-5339): repelling stops first,
+     *  whatever follows (EA:5325, so the hover key, running out of fuel, the last player getting off and destruction
+     *  all pull the ropes in, the stop holding even when the switch itself is refused; the client sends the hover key
+     *  only when {@link #canSwitchHoveringMode} allows it, as the reference's MCH_ClientHeliTickHandler:166-172, so a
+     *  gunner-mode press neither switches nor stops); then, when allowed and changing, entering saves the sim throttle
+     *  and leaving restores it (shared with gunner mode). The reference also levelled the rider's view pitch; the
+     *  pilot's client does that when it sends the toggle. */
     public void switchHoveringMode(boolean on) {
-        if (this.level().isClientSide || !canSwitchHoveringMode() || isHoveringMode() == on) {
+        if (this.level().isClientSide) {
+            return;
+        }
+        stopRepelling();
+        if (!canSwitchHoveringMode() || isHoveringMode() == on) {
             return;
         }
         if (on) {

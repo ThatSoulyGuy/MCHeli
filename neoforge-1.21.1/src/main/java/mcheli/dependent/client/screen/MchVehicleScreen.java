@@ -21,13 +21,16 @@ import net.neoforged.neoforge.network.PacketDistributor;
 /**
  * The riding GUI — the 1.21.1 port of {@code MCH_AircraftGui}. Same geometry as the reference (210×236, drawn from the
  * bundled {@code textures/gui/gui.png}), same widgets in the same places: the fuel column on the left with its vertical
- * gauge and percentage, the weapon name + ammo readout, and Reload / weapon-cycle / Close buttons.
+ * gauge and percentage, the parachute slots of an ejection-seat plane below it, the weapon name + ammo readout, and
+ * Reload / weapon-cycle / Close buttons.
  *
  * <p>Reference geometry, reproduced exactly: background {@code (0,0,210,236)}; fuel bar 12 px wide at {@code x+57},
  * growing UP from {@code y+80} to a height of {@code fuelP × 50}, sourced from the sheet at {@code (215,0)}; the fuel
- * percentage at {@code (30,65)}, red below 20 %; the weapon name at {@code (79,30)}; the ammo readout
+ * percentage at {@code (30,65)}, red below 20 %; the "Parachute" label at {@code (9,95)} and the slot frames
+ * {@code (215,55,18,18)} at {@code (9 + 18i, 104)}; the weapon name at {@code (79,30)}; the ammo readout
  * {@code "%4d/%4d"} at {@code (145,70)}, red when empty and green when full; Reload at {@code (85,40,50,20)}; the
- * weapon-cycle pair at {@code (140,40)} / {@code (160,40)}, both 20×20; Close at {@code (160,10,40,20)}.
+ * weapon-cycle pair at {@code (140,40)} / {@code (160,40)}, both 20×20; Close at {@code (160,10,40,20)}; Inventory (a
+ * vehicle with a cargo hold) at {@code (120,90,80,20)}.
  *
  * <p>All state changes are SERVERBOUND: the button ships a {@link ServerboundVehicleGuiPayload} and the server decides
  * (it re-checks grounded/not-full/affordable). The client only mirrors what the entity has synced.
@@ -69,6 +72,13 @@ public class MchVehicleScreen extends AbstractContainerScreen<MchVehicleMenu> {
             .bounds(this.leftPos + 160, this.topPos + 40, 20, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.mcheli.close"), b -> onClose())
             .bounds(this.leftPos + 160, this.topPos + 10, 40, 20).build());
+        // Reference MCH_AircraftGui:55,61-63,138-139: an Inventory button at (120,90,80,20) on a vehicle with a cargo
+        // hold; the server swaps this screen for the hold's chest screen. Shown only where that screen has rows.
+        if (this.vehicle != null && this.vehicle.cargoRows() > 0) {
+            addRenderableWidget(Button.builder(Component.translatable("gui.mcheli.inventory"),
+                    b -> PacketDistributor.sendToServer(ServerboundVehicleGuiPayload.openCargo(this.vehicle.getId())))
+                .bounds(this.leftPos + 120, this.topPos + 90, 80, 20).build());
+        }
 
         this.prev.active = weapons >= 2;
         this.next.active = weapons >= 2;
@@ -164,6 +174,11 @@ public class MchVehicleScreen extends AbstractContainerScreen<MchVehicleMenu> {
         // 420×472-texel panel. Reproduce that by passing 256 as the texture size to the 8-arg blit — the (u,v,w,h)
         // are then u/256 of the bound 512px texture, i.e. exactly the reference's texel span.
         g.blit(TEXTURE, x, y, 0, 0, this.imageWidth, this.imageHeight, 256, 256);
+        // One slot frame per parachute slot, the sheet's 18x18 frame at (215,55) one pixel up-left of the slot
+        // (reference MCH_AircraftGui:205-207). Drawn from the menu's count, so it matches the slots even unresolved.
+        for (int i = 0; i < this.menu.parachuteSlots(); i++) {
+            g.blit(TEXTURE, x + 9 + 18 * i, y + 104, 215, 55, 18, 18, 256, 256);
+        }
 
         if (this.vehicle == null) {
             return;
@@ -185,6 +200,10 @@ public class MchVehicleScreen extends AbstractContainerScreen<MchVehicleMenu> {
     protected void renderLabels(GuiGraphics g, int mouseX, int mouseY) {
         // Foreground coordinates are container-local (the matrix is already translated by leftPos/topPos).
         g.drawString(this.font, this.title, 10, 10, 0xFFFFFF, false);
+        if (this.menu.parachuteSlots() > 0) {
+            // Reference MCH_AircraftGui:148-150: the label above the parachute slots of an ejection-seat plane.
+            g.drawString(this.font, Component.translatable("gui.mcheli.parachute"), 9, 95, 0xFFFFFF, false);
+        }
 
         WeaponSlot w = this.vehicle != null ? this.vehicle.weaponAt(this.shownWeapon) : null;
         if (w == null) {

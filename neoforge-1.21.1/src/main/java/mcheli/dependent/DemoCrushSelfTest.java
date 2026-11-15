@@ -44,7 +44,9 @@ import net.minecraft.world.phys.Vec3;
  * 15 deg/tick ({@code turretOrbitYaw}) while the elevation follows the live look ({@code turretAimPitch}); the seat
  * attachments, the config and gunner camera eyes and the dismount point are pinned as vectors relative to the hull;
  * then the pilot leaves and the latch must hold the turret and the elevation. The values were recorded twice on the
- * tree before the rider pose moved out of the entity, so the move is checked against them.
+ * tree before the rider pose moved out of the entity, so the move is checked against them. Each rider dismounts by
+ * his own seat (reference {@code setUnmountPosition}): the gunner's point, queried aboard and where he lands when he
+ * leaves last, is his seat's, and the pilot lands on his recorded point.
  *
  * <p>The generated vehicle crafting recipes used to be a probe here too; they are {@link DemoRecipeSelfTest} now.
  */
@@ -85,7 +87,11 @@ public final class DemoCrushSelfTest extends MchSelfTest {
     private static final float[] POSE_HOLD_YAW = {95.0F, 95.0F, 95.0F};
     private static final float[] POSE_HOLD_PITCH = {-20.0F, -20.0F, -20.0F};
     /** Relative to the hull: on tick 7 the gunner and pilot attachments, the pilot and gunner eyes and the pilot's
-     *  dismount point; on tick 11 (no pilot) the gunner attachment and eye. */
+     *  dismount point; on tick 11 (no pilot) the gunner attachment and eye. Then the entries added with the per-seat
+     *  dismount (reference {@code setUnmountPosition}:3787-3802 by the rider's own seat): on tick 7 the gunner's
+     *  dismount point, by his seat 1 at (-0.55, 1.00, -0.96), i.e. {@code Ry(-25)} of (-3.55, 2, -0.96); where the
+     *  pilot really stands after leaving on tick 8 (his seat-0 point above); where the gunner really stands after
+     *  leaving on tick 12 (his own point, not the pilot's). */
     private static final double[][] POSE_VECTORS = {
         {1.1063843965530396, 1.2354760020971298, 0.0036857128143310547},
         {-0.21650639176368713, 2.23547600209713, -0.12499994039535522},
@@ -94,6 +100,9 @@ public final class DemoCrushSelfTest extends MchSelfTest {
         {2.613269090652466, 2.0, 1.494431734085083},
         {1.1063843965530396, 1.2354760020971298, 0.0036857128143310547},
         {0.09997254610061646, 3.835475906729698, -0.9191575050354004},
+        {-2.8116791248321533, 2.0, -2.3703503608703613},
+        {2.613269090652466, 2.0, 1.494431734085083},
+        {-2.8116791248321533, 2.0, -2.3703503608703613},
     };
     /** The other pose reads, as one string: modelMinY, hidesRider, the HideGM groups, the camera-position count and
      *  switch, the view camera after setViewCameraId(1), the seats. (The latch itself is pinned by the hold samples;
@@ -111,7 +120,7 @@ public final class DemoCrushSelfTest extends MchSelfTest {
     private final float[] poseAimPitch = new float[6];
     private final float[] poseHoldYaw = new float[3];
     private final float[] poseHoldPitch = new float[3];
-    private final double[][] poseVectors = new double[7][];
+    private final double[][] poseVectors = new double[10][];
     private String poseMisc = "n/a";
 
     @Override
@@ -309,8 +318,8 @@ public final class DemoCrushSelfTest extends MchSelfTest {
             gunnerIn);
     }
 
-    /** Probe E, per tick: the pilot turns on tick 1, the pose is sampled on ticks 2..7, the pilot leaves on tick 8 and
-     *  the latch is sampled on ticks 9..11. */
+    /** Probe E, per tick: the pilot turns on tick 1, the pose is sampled on ticks 2..7, the pilot leaves on tick 8, the
+     *  latch is sampled on ticks 9..11 and the gunner leaves on tick 12. */
     private void tickPoseProbe(int ticks) {
         if (poseTank == null || posePilot == null || poseGunner == null || !poseBoarded) {
             return;
@@ -328,6 +337,9 @@ public final class DemoCrushSelfTest extends MchSelfTest {
                 poseVectors[2] = xyz(relative(poseTank.firstPersonEye(posePilot, 1.0F), at));
                 poseVectors[3] = xyz(relative(poseTank.firstPersonEye(poseGunner, 1.0F), at));
                 poseVectors[4] = xyz(relative(poseTank.getDismountLocationForPassenger(posePilot), at));
+                if (poseGunner instanceof net.minecraft.world.entity.LivingEntity gunner) {
+                    poseVectors[7] = xyz(relative(poseTank.getDismountLocationForPassenger(gunner), at));
+                }
                 int camBefore = poseTank.getViewCameraId();
                 poseTank.setViewCameraId(1);
                 int camAfter = poseTank.getViewCameraId();
@@ -341,6 +353,7 @@ public final class DemoCrushSelfTest extends MchSelfTest {
         } else if (ticks == 8) {
             posePilot.stopRiding();
             poseLeft = !posePilot.isPassenger() && poseTank.pilot() == null;
+            poseVectors[8] = xyz(relative(posePilot.position(), poseTank.position()));
         } else if (ticks >= 9 && ticks <= 11) {
             poseHoldYaw[ticks - 9] = poseTank.turretOrbitYaw(1.0F);
             poseHoldPitch[ticks - 9] = poseTank.turretAimPitch(1.0F);
@@ -348,6 +361,12 @@ public final class DemoCrushSelfTest extends MchSelfTest {
                 Vec3 at = poseTank.position();
                 poseVectors[5] = xyz(poseTank.riderAttachment(poseGunner, 1.0F));
                 poseVectors[6] = xyz(relative(poseTank.firstPersonEye(poseGunner, 1.0F), at));
+            }
+        } else if (ticks == 12) {
+            // The real dismount: vanilla asks for the point after the seat map has let the gunner go.
+            poseGunner.stopRiding();
+            if (!poseGunner.isPassenger()) {
+                poseVectors[9] = xyz(relative(poseGunner.position(), poseTank.position()));
             }
         }
     }
